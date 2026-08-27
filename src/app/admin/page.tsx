@@ -1,0 +1,729 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import TopHeader from "@/components/layout/TopHeader";
+import { useSede } from "@/context/SedeContext";
+import { supabase } from "@/lib/supabase/client";
+import AppModal, { ModalState } from "@/components/AppModal";
+import { logActivity } from "@/lib/activityLogger";
+import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
+
+const playSuccessSound = () => {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.3);
+  } catch (e) {
+    console.log("Audio error", e);
+  }
+};
+
+const playErrorSound = () => {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(220, ctx.currentTime); // A3
+    osc.frequency.setValueAtTime(140, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.4);
+  } catch (e) {
+    console.log("Audio error", e);
+  }
+};
+
+export default function AdminDashboardRecepcion() {
+  const { activeSede } = useSede();
+
+  // State for modal
+  const [appModal, setAppModal] = useState<ModalState>({ isOpen: false, message: "" });
+
+  // State for pending bono requests in reception
+  const [pendingBonoRequests, setPendingBonoRequests] = useState<any[]>([]);
+
+  useEffect(() => {
+    const loadPendingBonoRequests = async () => {
+      try {
+        // 1. Fetch pending requests from Supabase database
+        const { data: dbPending } = await supabase
+          .from("alumnos")
+          .select("*")
+          .ilike("plan_activo", "Pendiente:%");
+
+        const dbMapped = (dbPending || []).map(student => {
+          const match = student.plan_activo?.match(/Pendiente:\s*([^(]+)(?:\(([^)]+)\))?/);
+          const bonoNombre = match ? match[1].trim() : student.plan_activo;
+          const bonoPrecio = match && match[2] ? match[2].trim() : "";
+
+          return {
+            id: student.id,
+            student_id: student.id,
+            student_name: student.nombre_completo,
+            student_email: student.email,
+            bono_nombre: bonoNombre,
+            bono_precio: bonoPrecio || "En recepción",
+            fecha: "Hoy",
+            estado: "Pendiente de cobro en Recepción"
+          };
+        });
+
+        // 2. Combine with localStorage
+        const storedLocal = JSON.parse(localStorage.getItem("pending_bono_requests") || "[]");
+        const combined = [...dbMapped];
+
+        storedLocal.forEach((lReq: any) => {
+          if (!combined.some(c => c.id === lReq.id || (c.student_email && c.student_email === lReq.student_email))) {
+            combined.push(lReq);
+          }
+        });
+
+        setPendingBonoRequests(combined);
+      } catch (e) {
+        setPendingBonoRequests([]);
+      }
+    };
+
+    loadPendingBonoRequests();
+    window.addEventListener("storage", loadPendingBonoRequests);
+    const interval = setInterval(loadPendingBonoRequests, 3000);
+
+    return () => {
+      window.removeEventListener("storage", loadPendingBonoRequests);
+      clearInterval(interval);
+    };
+  }, []);
+
+  // State for today's classes & check-ins
+  const [clasesHoy, setClasesHoy] = useState<any[]>([]);
+  const [selectedClaseId, setSelectedClaseId] = useState<string | null>(null);
+  const [todayCheckins, setTodayCheckins] = useState<any[]>([]);
+
+  // State for metrics
+  const [metrics, setMetrics] = useState({
+    checkinsCount: 0,
+    ocupacionPorcentaje: 0,
+    alumnosActivos: 0
+  });
+
+  // State for check-in scanner
+  const [qrCode, setQrCode] = useState("");
+  const [manualSearch, setManualSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [flashState, setFlashState] = useState<'success' | 'error' | null>(null);
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const qrInputRef = useRef<HTMLInputElement>(null);
+
+  // Today's day name in Spanish
+  const days = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
+  const todayStr = days[new Date().getDay()];
+
+  // Fetch today's classes and metrics
+  const fetchData = async () => {
+    setIsLoading(true);
+
+    // 1. Fetch Today's Classes
+    let queryClases = supabase.from("clases_cuadrante").select("*").eq("dia_semana", todayStr);
+    if (activeSede !== "consolidado") {
+      if (activeSede === "tejar") {
+        queryClases = queryClases.in("sede", ["tejar", "studio", "mostoles"]);
+      } else {
+        queryClases = queryClases.in("sede", ["castilla", "alcorcon"]);
+      }
+    }
+    queryClases = queryClases.order("hora_inicio", { ascending: true });
+    const { data: clasesData } = await queryClases;
+    
+    setClasesHoy(clasesData || []);
+    if (clasesData && clasesData.length > 0 && !selectedClaseId) {
+      setSelectedClaseId(clasesData[0].id);
+    }
+
+    // 2. Fetch Today's Check-ins (Asistencias)
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const { count: realCheckinsCount } = await supabase
+      .from("asistencias")
+      .select("id", { count: "exact" })
+      .gte("fecha_hora", startOfDay.toISOString());
+
+    const { data: asistenciasData } = await supabase
+      .from("asistencias")
+      .select(`
+        id,
+        fecha_hora,
+        alumnos (nombre_completo, plan_activo, dni),
+        clases_cuadrante (nombre_clase, profesor)
+      `)
+      .gte("fecha_hora", startOfDay.toISOString())
+      .order("fecha_hora", { ascending: false })
+      .limit(10);
+
+    setTodayCheckins(asistenciasData || []);
+
+    // 3. Fetch Active Students Count
+    let queryAlumnos = supabase.from("alumnos").select("id", { count: "exact" }).eq("estado", "Activo");
+    if (activeSede !== "consolidado") {
+      if (activeSede === "tejar") {
+        queryAlumnos = queryAlumnos.in("sede", ["tejar", "studio", "mostoles"]);
+      } else {
+        queryAlumnos = queryAlumnos.in("sede", ["castilla", "alcorcon"]);
+      }
+    }
+    const { count: alumnosCount } = await queryAlumnos;
+
+    const checkinsCount = realCheckinsCount !== null && realCheckinsCount !== undefined ? realCheckinsCount : (asistenciasData || []).length;
+    const totalCapacidad = (clasesData || []).reduce((acc: number, c: any) => acc + (c.aforo_maximo || 15), 0);
+    const ocupacionPorcentaje = totalCapacidad > 0 ? Math.min(100, Math.round((checkinsCount / totalCapacidad) * 100)) : 0;
+
+    setMetrics({
+      checkinsCount,
+      ocupacionPorcentaje,
+      alumnosActivos: alumnosCount || 0
+    });
+
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    fetchData();
+    if (qrInputRef.current) {
+      qrInputRef.current.focus();
+    }
+  }, [activeSede]);
+
+  // Handle manual student search
+  useEffect(() => {
+    const searchStudents = async () => {
+      if (manualSearch.length < 2) {
+        setSearchResults([]);
+        return;
+      }
+      
+      let query = supabase
+        .from("alumnos")
+        .select("*")
+        .or(`nombre_completo.ilike.%${manualSearch}%,dni.ilike.%${manualSearch}%`)
+        .limit(5);
+        
+      if (activeSede !== "consolidado") {
+        if (activeSede === "tejar") {
+          query = query.in("sede", ["tejar", "studio", "mostoles"]);
+        } else {
+          query = query.in("sede", ["castilla", "alcorcon"]);
+        }
+      }
+        
+      const { data } = await query;
+      setSearchResults(data || []);
+    };
+    
+    const timeoutId = setTimeout(() => {
+      searchStudents();
+    }, 300);
+    
+    return () => clearTimeout(timeoutId);
+  }, [manualSearch, activeSede]);
+
+  const triggerError = (msg: string) => {
+    playErrorSound();
+    setFlashState('error');
+    setStatusMessage({ type: 'error', text: msg });
+    setTimeout(() => setFlashState(null), 1500);
+  };
+
+  const processCheckIn = async (student: any) => {
+    if (!selectedClaseId) {
+      triggerError('Por favor, selecciona una clase primero.');
+      return;
+    }
+
+    if (student.estado !== 'Activo') {
+      triggerError(`El alumno ${student.nombre_completo} está Inactivo.`);
+      return;
+    }
+
+    const planLower = (student.plan_activo || "").toLowerCase();
+    const isRegularOrUnlimited = 
+      planLower.includes("regular") || 
+      planLower.includes("mensual") || 
+      planLower.includes("ilimitad") || 
+      planLower.includes("cuota") ||
+      student.clases_restantes === null;
+    
+    if (!isRegularOrUnlimited && (student.clases_restantes === null || student.clases_restantes <= 0)) {
+      triggerError(`El alumno ${student.nombre_completo} NO tiene clases restantes en su bono.`);
+      return;
+    }
+
+    // 1. Deduct class if it's a Bono (not regular monthly membership)
+    if (!isRegularOrUnlimited && typeof student.clases_restantes === "number") {
+      const { error: updateError } = await supabase
+        .from("alumnos")
+        .update({ clases_restantes: student.clases_restantes - 1 })
+        .eq("id", student.id);
+        
+      if (updateError) {
+        triggerError('Error al actualizar el saldo del bono.');
+        return;
+      }
+    }
+
+    // 2. Register asistencia
+    const { error: assistError } = await supabase
+      .from("asistencias")
+      .insert([{
+        alumno_id: student.id,
+        clase_id: selectedClaseId
+      }]);
+
+    if (assistError) {
+      triggerError('Error al registrar la asistencia.');
+      return;
+    }
+
+    playSuccessSound();
+    setFlashState('success');
+    setTimeout(() => setFlashState(null), 1500);
+
+    const remainingTextStr = isRegularOrUnlimited 
+      ? 'Mensualidad Regular' 
+      : `Bono (${student.clases_restantes - 1} clases restantes)`;
+
+    // Audit log
+    logActivity({
+      origen: "recepcion",
+      tipo_evento: "checkin",
+      descripcion: `Validación de entrada QR/NFC en la clase seleccionada (${remainingTextStr})`,
+      usuario_afectado: student.nombre_completo,
+      sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+    });
+
+    setStatusMessage({ 
+      type: 'success', 
+      text: `✅ Entrada validada para ${student.nombre_completo}. Plan: ${remainingTextStr}` 
+    });
+
+    // Reset fields & refetch
+    setManualSearch("");
+    setSearchResults([]);
+    setQrCode("");
+    fetchData();
+    
+    if (qrInputRef.current) {
+      qrInputRef.current.focus();
+    }
+  };
+
+  const handleQRSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const rawCode = qrCode.trim();
+    if (!rawCode) return;
+
+    const cleanToken = rawCode.replace(/^DF-/i, '').trim();
+    
+    let query = supabase.from("alumnos").select("*");
+    
+    if (rawCode.includes("-") && rawCode.length === 36) {
+      query = query.eq("id", rawCode);
+    } else {
+      query = query.or(`nfc_token.eq.${cleanToken},nfc_token.eq.${rawCode},dni.ilike.${rawCode}`);
+    }
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error || !data) {
+      triggerError('Código QR/NFC no válido o alumno no encontrado.');
+      setQrCode("");
+      return;
+    }
+
+    processCheckIn(data);
+  };
+
+  const handleCobrarBonoEnRecepcion = async (req: any) => {
+    let clasesToAdd = 4;
+    if (req.bono_nombre.includes("8")) clasesToAdd = 8;
+    else if (req.bono_nombre.includes("10")) clasesToAdd = 10;
+    else if (req.bono_nombre.toLowerCase().includes("ilimitad")) clasesToAdd = 999;
+    else if (req.bono_nombre.toLowerCase().includes("suelta")) clasesToAdd = 1;
+    else if (req.bono_nombre.toLowerCase().includes("formaci") || req.bono_nombre.toLowerCase().includes("especial")) clasesToAdd = 1;
+
+    // 1. Fetch student DB record
+    let studentDB = null;
+    if (req.student_id) {
+      const { data } = await supabase.from("alumnos").select("*").eq("id", req.student_id).single();
+      studentDB = data;
+    }
+    if (!studentDB && req.student_email) {
+      const { data } = await supabase.from("alumnos").select("*").eq("email", req.student_email).single();
+      studentDB = data;
+    }
+
+    // 2. Clear pending status & add remaining classes in Supabase
+    if (studentDB) {
+      const currentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
+      await supabase.from("alumnos").update({
+        plan_activo: req.bono_nombre,
+        clases_restantes: currentClasses + clasesToAdd
+      }).eq("id", studentDB.id);
+    }
+
+    // 3. Remove from local storage & pending list
+    setPendingBonoRequests(prev => {
+      const updated = prev.filter(r => r.id !== req.id && r.student_id !== req.student_id);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("pending_bono_requests", JSON.stringify(updated));
+      }
+      return updated;
+    });
+
+    // 4. Register payment in central financial book (reconcile existing pending transaction or create new)
+    let importeNum = 45;
+    if (req.bono_precio && typeof req.bono_precio === "string") {
+      const cleaned = req.bono_precio.replace(/[^\d.,]/g, '').replace(',', '.');
+      if (cleaned && !isNaN(parseFloat(cleaned))) {
+        importeNum = parseFloat(cleaned);
+      } else {
+        const nameLower = (req.bono_nombre || "").toLowerCase();
+        const isTeacher = nameLower.includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
+        if (nameLower.includes("suelta") || nameLower.includes("1 clase")) importeNum = isTeacher ? 13.50 : 15.00;
+        else if (nameLower.includes("formaci") || nameLower.includes("especial")) importeNum = isTeacher ? 31.50 : 35.00;
+        else if (nameLower.includes("4")) importeNum = isTeacher ? 40.50 : 45.00;
+        else if (nameLower.includes("8")) importeNum = isTeacher ? 51.30 : 57.00;
+        else if (nameLower.includes("10")) importeNum = isTeacher ? 71.10 : 79.00;
+        else if (nameLower.includes("ilimitad")) importeNum = isTeacher ? 90.00 : 100.00;
+        else importeNum = isTeacher ? 40.50 : 45.00;
+      }
+    }
+
+    const studentId = studentDB?.id || req.student_id;
+    const reconciled = studentId ? cobrarPagoPendiente(studentId, {
+      metodo_pago: "Efectivo",
+      sede: activeSede === "castilla" ? "castilla" : "tejar",
+      atendido_por: activeSede === "castilla" ? "Recepción Studio 2" : "Recepción Studio 1",
+      importe: importeNum,
+      notas: "Activación inmediata en recepción"
+    }) : null;
+
+    if (!reconciled) {
+      registrarNuevoPago({
+        alumno_id: studentId,
+        alumno_nombre: req.student_name || "Alumno",
+        alumno_dni: studentDB?.dni,
+        alumno_telefono: studentDB?.telefono,
+        concepto: `Bono: ${req.bono_nombre} (Adquisición Mostrador)`,
+        categoria: "bono",
+        importe: importeNum,
+        metodo_pago: "Efectivo",
+        sede: activeSede === "castilla" ? "castilla" : "tejar",
+        atendido_por: activeSede === "castilla" ? "Recepción Studio 2" : "Recepción Studio 1",
+        notas: "Activación inmediata en recepción"
+      });
+    }
+
+    // 5. Audit log
+    logActivity({
+      origen: "recepcion",
+      tipo_evento: "cobro_bono",
+      descripcion: `Cobro en recepción y activación de ${req.bono_nombre} (${req.bono_precio})`,
+      usuario_afectado: req.student_name,
+      sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+    });
+
+    setAppModal({
+      isOpen: true,
+      title: "Cobro Registrado y Bono Activado",
+      message: `✓ Pago en Recepción Confirmado:\n\nSe ha cobrado el ${req.bono_nombre} (${req.bono_precio}) a ${req.student_name}.\n\nSe han cargado ${clasesToAdd} clases de forma inmediata en su Carnet Digital.`,
+      type: "success",
+      confirmText: "¡Excelente!"
+    });
+
+    fetchData();
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* TopHeader */}
+      <TopHeader 
+        title="Dashboard & Recepción" 
+        subtitle="Control de accesos en tiempo real, validación QR/NFC y estado de ocupación" 
+      />
+
+      {/* Tarjetas KPI Superiores (Resumen Dashboard) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6">
+        
+        <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-4 shadow-lg flex items-center justify-between">
+          <div>
+            <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Check-ins de Hoy</span>
+            <h3 className="text-2xl font-bold font-mono text-[var(--color-text-title)] mt-1">{metrics.checkinsCount}</h3>
+            <span className="text-[10px] text-[var(--color-success)] font-semibold mt-0.5 inline-block">Validaciones en tiempo real</span>
+          </div>
+          <div className="p-2.5 bg-[var(--color-primary)]/10 text-[var(--color-primary)] rounded-xl border border-[var(--color-primary)]/20">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+        </div>
+
+        <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-4 shadow-lg flex items-center justify-between">
+          <div>
+            <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Ocupación Media</span>
+            <h3 className="text-2xl font-bold font-mono text-cyan-400 mt-1">{metrics.ocupacionPorcentaje}%</h3>
+            <span className="text-[10px] text-[var(--color-secondary)] font-semibold mt-0.5 inline-block">Ratios del cuadrante de hoy</span>
+          </div>
+          <div className="p-2.5 bg-[var(--color-secondary)]/10 text-[var(--color-secondary)] rounded-xl border border-[var(--color-secondary)]/20">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+            </svg>
+          </div>
+        </div>
+
+        <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-4 shadow-lg flex items-center justify-between">
+          <div>
+            <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Alumnos Activos</span>
+            <h3 className="text-2xl font-bold font-mono text-amber-400 mt-1">{metrics.alumnosActivos}</h3>
+            <span className="text-[10px] text-[var(--color-text-secondary)] mt-0.5 inline-block">Matriculados en la sede activa</span>
+          </div>
+          <div className="p-2.5 bg-[var(--color-accent)]/10 text-[var(--color-accent)] rounded-xl border border-[var(--color-accent)]/20">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+            </svg>
+          </div>
+        </div>
+
+      </div>
+
+      {/* Grid Principal: Clases de Hoy (Izq) vs. Escáner + Check-ins (Der) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        {/* Columna Izquierda: Clases de Hoy */}
+        <div className="lg:col-span-1 space-y-6">
+          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-xl p-6 shadow-lg">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-[family-name:var(--font-heading)] text-[var(--color-text-title)] flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-[var(--color-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Clases de Hoy ({todayStr})
+              </h3>
+              <span className="text-xs font-semibold text-[var(--color-primary)] bg-[var(--color-primary)]/10 px-2.5 py-1 rounded-full border border-[var(--color-primary)]/20">
+                {clasesHoy.length} clases
+              </span>
+            </div>
+            
+            {clasesHoy.length === 0 ? (
+              <p className="text-sm text-[var(--color-text-secondary)] py-4 text-center">No hay clases programadas para hoy en esta sede.</p>
+            ) : (
+              <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
+                {clasesHoy.map((clase) => (
+                  <div 
+                    key={clase.id}
+                    onClick={() => setSelectedClaseId(clase.id)}
+                    className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all ${
+                      selectedClaseId === clase.id 
+                        ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/10 shadow-md' 
+                        : 'border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-primary)]/50'
+                    }`}
+                  >
+                    <div className="flex justify-between items-start mb-1">
+                      <span className="font-semibold text-[var(--color-text-title)]">{clase.nombre_clase}</span>
+                      <span className="text-xs font-mono font-bold text-[var(--color-secondary)]">
+                        {clase.hora_inicio}
+                      </span>
+                    </div>
+                    <div className="text-xs text-[var(--color-text-secondary)] flex justify-between mt-1">
+                      <span>Prof: {clase.profesor}</span>
+                      <span>Aforo: {clase.aforo_maximo} alumnos</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Columna Derecha: Escáner QR/NFC, Búsqueda Manual & Fichajes Recientes */}
+        <div className="lg:col-span-2 space-y-6">
+          
+          {/* Mensajes de Estado */}
+          {statusMessage && (
+            <div className={`p-4 rounded-xl border transition-all ${
+              statusMessage.type === 'success' 
+                ? 'bg-[var(--color-success)]/15 border-[var(--color-success)] text-[var(--color-success)] shadow-lg shadow-[var(--color-success)]/10' 
+                : 'bg-[var(--color-danger)]/15 border-[var(--color-danger)] text-[var(--color-danger)] shadow-lg shadow-[var(--color-danger)]/10'
+            }`}>
+              <p className="font-semibold text-center text-lg">{statusMessage.text}</p>
+            </div>
+          )}
+
+          {/* Lector QR/NFC con Animación de Destello y Sonido */}
+          <div className={`bg-gradient-to-br from-[var(--color-bg-card)] to-[var(--color-bg)] border-2 rounded-xl p-6 shadow-xl text-center relative overflow-hidden transition-all duration-300 ${
+            flashState === 'success' ? 'border-[var(--color-success)] ring-4 ring-[var(--color-success)]/30' :
+            flashState === 'error' ? 'border-[var(--color-danger)] ring-4 ring-[var(--color-danger)]/30' :
+            'border-[var(--color-border)]'
+          }`}>
+            <div className="absolute -top-10 -right-10 w-32 h-32 bg-[var(--color-primary)]/10 rounded-full blur-2xl"></div>
+            
+            <h2 className="text-xl font-[family-name:var(--font-heading)] text-[var(--color-text-title)] mb-1">Escáner de Recepción</h2>
+            <p className="text-[var(--color-text-secondary)] text-xs mb-4">Pasa el código QR o llavero NFC del alumno por el lector</p>
+            
+            <form onSubmit={handleQRSubmit} className="max-w-sm mx-auto">
+              <input 
+                ref={qrInputRef}
+                type="text"
+                value={qrCode}
+                onChange={(e) => setQrCode(e.target.value)}
+                placeholder="Esperando lectura QR/NFC..."
+                className="w-full text-center text-lg font-mono tracking-widest bg-[var(--color-bg)] border-2 border-[var(--color-primary)]/50 text-[var(--color-text-title)] rounded-xl px-4 py-3 outline-none focus:border-[var(--color-primary)] focus:shadow-[0_0_20px_rgba(29,78,216,0.3)] transition-all"
+                autoFocus
+              />
+              <button type="submit" className="hidden">Procesar</button>
+            </form>
+            
+            <div className="mt-4 flex items-center justify-center gap-2 text-xs text-[var(--color-success)] font-semibold">
+              <span className="w-2 h-2 rounded-full bg-[var(--color-success)] animate-ping"></span>
+              Lector & Audio Activos
+            </div>
+          </div>
+
+          {/* Búsqueda Manual */}
+          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-xl p-5 shadow-lg">
+            <h3 className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-3">Búsqueda rápida por nombre o DNI</h3>
+            
+            <div className="relative">
+              <input 
+                type="text"
+                value={manualSearch}
+                onChange={(e) => setManualSearch(e.target.value)}
+                placeholder="Escribe el nombre o DNI del alumno..."
+                className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] rounded-lg pl-10 pr-4 py-2.5 text-sm outline-none focus:border-[var(--color-primary)] transition-colors"
+              />
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 absolute left-3 top-2.5 text-[var(--color-text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+
+            {searchResults.length > 0 && (
+              <div className="mt-3 border border-[var(--color-border)] rounded-lg overflow-hidden divide-y divide-[var(--color-border)] bg-[var(--color-bg)]">
+                {searchResults.map((student) => {
+                  const planLower = (student.plan_activo || "").toLowerCase();
+                  const isRegular = planLower.includes("regular") || planLower.includes("mensual") || planLower.includes("ilimitad") || student.clases_restantes === null;
+
+                  return (
+                    <div key={student.id} className="flex items-center justify-between p-3 hover:bg-[var(--color-bg-hover)] transition-colors">
+                      <div>
+                        <p className="font-semibold text-sm text-[var(--color-text-title)]">{student.nombre_completo}</p>
+                        <p className="text-xs text-[var(--color-text-secondary)]">
+                          {student.plan_activo} • DNI: {student.dni || 'S/N'} • {isRegular ? 'Mensualidad Activa' : `Saldo: ${student.clases_restantes} clases`}
+                        </p>
+                      </div>
+                      <button 
+                        onClick={() => processCheckIn(student)}
+                        className="px-3 py-1.5 bg-[var(--color-primary)] text-white text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity"
+                      >
+                        Check-in
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Módulo: Solicitudes de Bonos Pendientes de Pago en Recepción */}
+          <div className="bg-gradient-to-r from-amber-500/10 via-[var(--color-bg-card)] to-[var(--color-bg-card)] border-2 border-amber-500/30 rounded-xl p-5 shadow-xl">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-sm font-bold text-[var(--color-text-title)] flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30">🎟️</span>
+                <span>Solicitudes de Bonos (Pendientes de Cobro en Recepción)</span>
+              </h3>
+              <span className="text-xs font-mono font-bold text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/20">
+                {pendingBonoRequests.length} pendientes
+              </span>
+            </div>
+
+            {pendingBonoRequests.length === 0 ? (
+              <p className="text-xs text-[var(--color-text-secondary)] py-2 text-center">No hay solicitudes de cobro de bonos pendientes en Recepción.</p>
+            ) : (
+              <div className="space-y-2.5 max-h-48 overflow-y-auto pr-1">
+                {pendingBonoRequests.map((req) => (
+                  <div key={req.id} className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 hover:border-amber-500/40 transition-all">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <strong className="text-sm text-[var(--color-text-title)] font-semibold">{req.student_name}</strong>
+                        <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 font-bold">
+                          {req.bono_nombre} ({req.bono_precio})
+                        </span>
+                      </div>
+                      <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                        Email: {req.student_email} • Solicitado: {req.fecha}
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => handleCobrarBonoEnRecepcion(req)}
+                      className="px-4 py-2 rounded-xl text-xs font-bold text-slate-950 bg-[var(--color-secondary)] hover:bg-[var(--color-secondary)]/90 transition-all shadow-md active:scale-95 shrink-0"
+                    >
+                      ✓ Cobrar y Activar Bono
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Fichajes Recientes de Hoy (Consolidado Dashboard) */}
+          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-xl p-5 shadow-lg">
+            <h3 className="text-sm font-semibold text-[var(--color-text-title)] mb-3 flex items-center justify-between">
+              <span>Últimas Entradas Registradas Hoy</span>
+              <span className="text-xs font-normal text-[var(--color-text-secondary)]">Tiempo Real</span>
+            </h3>
+
+            {todayCheckins.length === 0 ? (
+              <p className="text-xs text-[var(--color-text-secondary)] py-4 text-center">Aún no se han registrado entradas hoy.</p>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {todayCheckins.map((item, idx) => (
+                  <div key={idx} className="flex justify-between items-center p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-xs">
+                    <div>
+                      <span className="font-semibold text-[var(--color-text-title)] block">
+                        {item.alumnos?.nombre_completo || "Alumno"}
+                      </span>
+                      <span className="text-[11px] text-[var(--color-text-secondary)]">
+                        {item.clases_cuadrante?.nombre_clase || "Clase"} • {item.alumnos?.plan_activo || "Bono"}
+                      </span>
+                    </div>
+                    <span className="font-mono text-[10px] bg-[var(--color-success)]/10 text-[var(--color-success)] px-2 py-1 rounded-md border border-[var(--color-success)]/20 font-semibold">
+                      {new Date(item.fecha_hora).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+      </div>
+
+      {/* Pop-up Modal In-App Component */}
+      <AppModal modal={appModal} onClose={() => setAppModal({ ...appModal, isOpen: false })} />
+    </div>
+  );
+}
