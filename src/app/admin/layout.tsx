@@ -4,23 +4,72 @@ import React, { useState, useEffect } from "react";
 import Sidebar from "@/components/layout/Sidebar";
 import { SedeProvider, useSede } from "@/context/SedeContext";
 import GlobalCobroModal from "@/components/GlobalCobroModal";
-import { Menu, Lock, ShieldCheck, Sun, Moon, Building2, KeyRound } from "lucide-react";
+import { 
+  Menu, 
+  Lock, 
+  ShieldCheck, 
+  Sun, 
+  Moon, 
+  User, 
+  Eye, 
+  EyeOff, 
+  ArrowRight, 
+  ShieldAlert, 
+  Timer, 
+  AlertTriangle,
+  Building2 
+} from "lucide-react";
 import { logActivity } from "@/lib/activityLogger";
 
-const DEFAULT_ADMIN_PINS: Record<string, { name: string; role: string }> = {
-  "9999": { name: "Enrique Zamorano", role: "Director & Master Admin" },
-  "1234": { name: "Recepción Studio 1", role: "Recepción El Tejar" },
-  "5678": { name: "Recepción Studio 2", role: "Recepción Castilla" }
-};
+interface StaffUser {
+  name: string;
+  role: string;
+  username: string;
+  password?: string;
+}
+
+const DEFAULT_ADMIN_USERS: StaffUser[] = [
+  {
+    name: "Enrique Zamorano",
+    role: "Director & Master Admin",
+    username: "Enrique Admin",
+    password: "DF.26!!factory"
+  },
+  {
+    name: "Recepción Studio 1",
+    role: "Recepción El Tejar",
+    username: "recepcion1",
+    password: "DF.26!!factory"
+  },
+  {
+    name: "Recepción Studio 2",
+    role: "Recepción Castilla",
+    username: "recepcion2",
+    password: "DF.26!!factory"
+  }
+];
+
+const STORAGE_SESSION_KEY = "df_admin_auth_user_v2";
+const MAX_ATTEMPTS = 3;
+const LOCKOUT_SECONDS = 60;
 
 function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   const { activeSede, setActiveSede } = useSede();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState("");
-  const [rememberDevice, setRememberDevice] = useState(false);
-  const [authenticatedUser, setAuthenticatedUser] = useState<{ name: string; role: string } | null>(null);
+  
+  // Login Form States
+  const [usernameInput, setUsernameInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(true);
+  const [authenticatedUser, setAuthenticatedUser] = useState<StaffUser | null>(null);
+
+  // Security Lockout State
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutRemaining, setLockoutRemaining] = useState(0);
 
   // Mobile drawer state
   const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
@@ -35,13 +84,25 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
         setIsLightMode(true);
       }
 
+      // Check lockout in storage
+      const rawLockout = localStorage.getItem("df_admin_lockout_until");
+      if (rawLockout) {
+        const lockoutUntil = parseInt(rawLockout, 10);
+        const now = Date.now();
+        if (now < lockoutUntil) {
+          setLockoutRemaining(Math.ceil((lockoutUntil - now) / 1000));
+        } else {
+          localStorage.removeItem("df_admin_lockout_until");
+        }
+      }
+
       // Check session
-      const sessionPin = sessionStorage.getItem("df_admin_session") || localStorage.getItem("df_admin_session");
-      if (sessionPin) {
-        const user = validatePinValue(sessionPin);
-        if (user) {
+      const sessionRaw = sessionStorage.getItem(STORAGE_SESSION_KEY) || localStorage.getItem(STORAGE_SESSION_KEY);
+      if (sessionRaw) {
+        const parsed = JSON.parse(sessionRaw);
+        if (parsed && parsed.name) {
           setIsAuthenticated(true);
-          setAuthenticatedUser(user);
+          setAuthenticatedUser(parsed);
         }
       }
     } catch (e) {
@@ -51,94 +112,131 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const getKnownStaff = (): Record<string, { name: string; role: string }> => {
-    try {
-      if (typeof window !== "undefined") {
-        const raw = localStorage.getItem("df_staff_users");
-        if (raw) {
-          const list = JSON.parse(raw);
-          const map: Record<string, { name: string; role: string }> = { ...DEFAULT_ADMIN_PINS };
-          list.forEach((u: any) => {
-            if (u.pin && u.estado !== "inactivo") {
-              map[u.pin] = {
-                name: u.nombre_completo || u.nombre,
-                role: u.rol === "director" ? "Director & Admin" : u.rol === "recepcion" ? "Recepción" : "Profesor"
-              };
-            }
-          });
-          return map;
+  // Lockout countdown timer
+  useEffect(() => {
+    if (lockoutRemaining <= 0) return;
+
+    const interval = setInterval(() => {
+      setLockoutRemaining(prev => {
+        if (prev <= 1) {
+          localStorage.removeItem("df_admin_lockout_until");
+          setAuthError("");
+          return 0;
         }
-      }
-    } catch (e) {}
-    return DEFAULT_ADMIN_PINS;
-  };
+        return prev - 1;
+      });
+    }, 1000);
 
-  const validatePinValue = (pin: string): { name: string; role: string } | null => {
-    const known = getKnownStaff();
-    return known[pin] || null;
-  };
+    return () => clearInterval(interval);
+  }, [lockoutRemaining]);
 
-  const handleKeyClick = (digit: string) => {
-    if (pinInput.length >= 4) return;
-    setPinError("");
-    const next = pinInput + digit;
-    setPinInput(next);
+  const normalizeStr = (s: string) => s.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-    if (next.length === 4) {
-      submitPin(next);
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (lockoutRemaining > 0 || isSubmitting) return;
+
+    setAuthError("");
+    setIsSubmitting(true);
+
+    const userClean = usernameInput.trim();
+    const passClean = passwordInput.trim();
+
+    // Check credentials for Enrique Admin
+    const isEnriqueMatch = (
+      normalizeStr(userClean) === normalizeStr("Enrique Admin") ||
+      normalizeStr(userClean) === "enrique" ||
+      normalizeStr(userClean) === "enrique admin" ||
+      normalizeStr(userClean) === "admin" ||
+      normalizeStr(userClean) === "admin@dancefactory.es" ||
+      normalizeStr(userClean) === "director"
+    ) && passClean === "DF.26!!factory";
+
+    const isReception1Match = (
+      normalizeStr(userClean) === "recepcion1" ||
+      normalizeStr(userClean) === "recepcion tejar"
+    ) && passClean === "DF.26!!factory";
+
+    const isReception2Match = (
+      normalizeStr(userClean) === "recepcion2" ||
+      normalizeStr(userClean) === "recepcion castilla"
+    ) && passClean === "DF.26!!factory";
+
+    let matchedUser: StaffUser | null = null;
+    if (isEnriqueMatch) {
+      matchedUser = DEFAULT_ADMIN_USERS[0];
+    } else if (isReception1Match) {
+      matchedUser = DEFAULT_ADMIN_USERS[1];
+    } else if (isReception2Match) {
+      matchedUser = DEFAULT_ADMIN_USERS[2];
     }
-  };
 
-  const handleDelete = () => {
-    setPinError("");
-    setPinInput(prev => prev.slice(0, -1));
-  };
-
-  const handleClear = () => {
-    setPinError("");
-    setPinInput("");
-  };
-
-  const submitPin = (pin: string) => {
-    const user = validatePinValue(pin);
-    if (user) {
+    if (matchedUser) {
+      // Success
       setIsAuthenticated(true);
-      setAuthenticatedUser(user);
-      setPinError("");
-      setPinInput("");
+      setAuthenticatedUser(matchedUser);
+      setFailedAttempts(0);
+      localStorage.removeItem("df_admin_lockout_until");
+
+      const sessionData = {
+        name: matchedUser.name,
+        role: matchedUser.role,
+        username: matchedUser.username,
+        loginAt: new Date().toISOString()
+      };
 
       try {
         if (rememberDevice) {
-          localStorage.setItem("df_admin_session", pin);
+          localStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(sessionData));
         } else {
-          sessionStorage.setItem("df_admin_session", pin);
+          sessionStorage.setItem(STORAGE_SESSION_KEY, JSON.stringify(sessionData));
         }
       } catch (e) {}
 
       logActivity({
         origen: "recepcion",
         tipo_evento: "acceso_admin",
-        descripcion: `Acceso autorizado al portal de administración por ${user.name} (${user.role})`,
-        usuario_afectado: user.name,
+        descripcion: `Acceso autorizado al CRM de administración por ${matchedUser.name} (${matchedUser.role})`,
+        usuario_afectado: matchedUser.name,
         sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : activeSede === "castilla" ? "Studio 2 Paseo Castilla" : "Consolidado"
       });
     } else {
-      setPinError("Código PIN no autorizado. Revisa tus credenciales.");
-      setTimeout(() => {
-        setPinInput("");
-      }, 700);
+      // Failure
+      const newFails = failedAttempts + 1;
+      setFailedAttempts(newFails);
+
+      if (newFails >= MAX_ATTEMPTS) {
+        const lockoutUntil = Date.now() + LOCKOUT_SECONDS * 1000;
+        localStorage.setItem("df_admin_lockout_until", lockoutUntil.toString());
+        setLockoutRemaining(LOCKOUT_SECONDS);
+        setAuthError(`Límite de ${MAX_ATTEMPTS} intentos fallidos alcanzado. Acceso bloqueado temporalmente por seguridad.`);
+
+        logActivity({
+          origen: "recepcion",
+          tipo_evento: "seguridad_bloqueo",
+          descripcion: `🚨 BLOQUEO CRM: Demasiados intentos fallidos de acceso al panel de administración (usuario: ${userClean}). Bloqueado 60s.`,
+          usuario_afectado: userClean || "Admin Desconocido",
+          sede: "Consolidado"
+        });
+      } else {
+        const remaining = MAX_ATTEMPTS - newFails;
+        setAuthError(`Usuario o contraseña incorrectos. Te quedan ${remaining} intento(s) antes del bloqueo.`);
+      }
     }
+
+    setIsSubmitting(false);
   };
 
   const handleLockSession = () => {
     try {
-      sessionStorage.removeItem("df_admin_session");
-      localStorage.removeItem("df_admin_session");
+      sessionStorage.removeItem(STORAGE_SESSION_KEY);
+      localStorage.removeItem(STORAGE_SESSION_KEY);
     } catch (e) {}
     setIsAuthenticated(false);
     setAuthenticatedUser(null);
-    setPinInput("");
-    setPinError("");
+    setUsernameInput("");
+    setPasswordInput("");
+    setAuthError("");
     setIsMobileDrawerOpen(false);
   };
 
@@ -169,112 +267,139 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   }
 
   // ----------------------------------------------------
-  // ADMIN PIN AUTH GUARD (PANTALLA DE ACCESO PROTEGIDO)
+  // ADMIN USER + PASSWORD AUTH GUARD
   // ----------------------------------------------------
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-body)] flex items-center justify-center p-4">
-        <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-3xl p-6 sm:p-8 w-full max-w-sm shadow-2xl relative overflow-hidden text-center">
-          <div className="absolute -top-12 -right-12 w-36 h-36 bg-[var(--color-primary)]/15 rounded-full blur-3xl pointer-events-none"></div>
+      <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-body)] flex items-center justify-center p-4 relative overflow-hidden font-sans">
+        {/* Glow Effects */}
+        <div className="absolute -top-24 -right-24 w-80 h-80 bg-[var(--color-primary)]/20 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute -bottom-24 -left-24 w-80 h-80 bg-[var(--color-accent)]/15 rounded-full blur-3xl pointer-events-none"></div>
+
+        <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-3xl p-7 sm:p-9 w-full max-w-md shadow-2xl relative z-10 space-y-6">
           
-          <div className="mb-6">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-accent)] text-white flex items-center justify-center font-[family-name:var(--font-heading)] text-2xl mx-auto shadow-lg mb-3">
+          {/* Header */}
+          <div className="text-center space-y-2">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-accent)] text-white flex items-center justify-center font-[family-name:var(--font-heading)] text-2xl mx-auto shadow-xl shadow-[var(--color-primary)]/25 mb-3 font-bold border border-white/10">
               DF
             </div>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[var(--color-primary)]/10 border border-[var(--color-primary)]/20 text-[var(--color-primary)] text-xs font-bold mb-2">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[var(--color-primary)]/10 border border-[var(--color-primary)]/25 text-[var(--color-primary)] text-xs font-bold uppercase tracking-wider">
               <ShieldCheck size={14} />
-              Área de Administración
+              <span>Panel de Dirección & Administración</span>
             </div>
-            <h1 className="font-[family-name:var(--font-heading)] text-2xl text-[var(--color-text-title)] tracking-wide">
+            <h1 className="font-[family-name:var(--font-heading)] text-2xl sm:text-3xl text-[var(--color-text-title)] tracking-wide pt-1">
               Acceso Restringido
             </h1>
-            <p className="text-xs text-[var(--color-text-secondary)] mt-1">
-              Introduce tu código PIN de 4 dígitos para acceder al sistema
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              Introduce tus credenciales de administrador para acceder a la gestión de Dance Factory
             </p>
           </div>
 
-          {/* 4 Digit Indicators */}
-          <div className="flex justify-center gap-4 mb-5">
-            {[0, 1, 2, 3].map((idx) => {
-              const isFilled = pinInput.length > idx;
-              return (
-                <div
-                  key={idx}
-                  className={`w-4 h-4 rounded-full border-2 transition-all duration-200 ${
-                    pinError
-                      ? "border-[var(--color-danger)] bg-[var(--color-danger)]/20 animate-shake"
-                      : isFilled
-                      ? "bg-[var(--color-primary)] border-[var(--color-primary)] scale-110 shadow-lg shadow-[var(--color-primary)]/50"
-                      : "border-[var(--color-border)] bg-transparent"
-                  }`}
-                />
-              );
-            })}
-          </div>
-
-          {pinError && (
-            <div className="mb-4 text-xs font-semibold text-[var(--color-danger)] animate-pulse">
-              {pinError}
+          {/* LOCKOUT ALERT */}
+          {lockoutRemaining > 0 ? (
+            <div className="p-4 rounded-2xl bg-red-950/60 border-2 border-red-500/50 text-red-200 text-xs space-y-3 shadow-xl animate-in fade-in">
+              <div className="flex items-center gap-2 text-red-400 font-bold uppercase tracking-wider text-[11px]">
+                <ShieldAlert size={18} className="animate-bounce" />
+                <span>Bloqueo de Seguridad Activo</span>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Has alcanzado el límite de 3 intentos fallidos. El panel de administración ha sido bloqueado temporalmente.
+              </p>
+              <div className="bg-black/60 border border-red-500/30 rounded-xl p-3 flex items-center justify-between">
+                <span className="text-[11px] text-slate-400 flex items-center gap-1 font-medium">
+                  <Timer size={14} className="text-red-400" />
+                  Tiempo de espera restante:
+                </span>
+                <span className="text-base font-mono font-black text-red-400 animate-pulse">
+                  00:{lockoutRemaining.toString().padStart(2, '0')} s
+                </span>
+              </div>
             </div>
+          ) : (
+            <>
+              {authError && (
+                <div className="p-3.5 rounded-xl bg-[var(--color-danger)]/15 border border-[var(--color-danger)]/30 text-[var(--color-danger)] text-xs font-semibold flex items-start gap-2.5 animate-in fade-in">
+                  <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+                  <span>{authError}</span>
+                </div>
+              )}
+            </>
           )}
 
-          {/* Keypad */}
-          <div className="grid grid-cols-3 gap-2.5 max-w-[240px] mx-auto mb-4">
-            {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((num) => (
-              <button
-                key={num}
-                type="button"
-                onClick={() => handleKeyClick(num)}
-                className="w-16 h-16 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-title)] text-2xl font-bold font-mono flex items-center justify-center hover:bg-[var(--color-primary)] hover:text-white hover:border-[var(--color-primary)] active:scale-95 transition-all shadow-md mx-auto touch-manipulation select-none"
-              >
-                {num}
-              </button>
-            ))}
+          {/* LOGIN FORM */}
+          <form onSubmit={handleLoginSubmit} className="space-y-4">
+            <div className="space-y-1.5 text-left">
+              <label className="text-[11px] font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider block">
+                Usuario Administrador
+              </label>
+              <div className="relative flex items-center">
+                <User className="absolute left-3.5 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  required
+                  disabled={lockoutRemaining > 0 || isSubmitting}
+                  value={usernameInput}
+                  onChange={(e) => setUsernameInput(e.target.value)}
+                  placeholder="ej. Enrique Admin"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs focus:outline-none focus:border-[var(--color-primary)] transition-colors placeholder:text-slate-500 disabled:opacity-50"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5 text-left">
+              <label className="text-[11px] font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider block">
+                Contraseña
+              </label>
+              <div className="relative flex items-center">
+                <Lock className="absolute left-3.5 w-4 h-4 text-slate-400" />
+                <input
+                  type={showPassword ? "text" : "password"}
+                  required
+                  disabled={lockoutRemaining > 0 || isSubmitting}
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full pl-10 pr-11 py-3 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs focus:outline-none focus:border-[var(--color-primary)] transition-colors placeholder:text-slate-500 disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3.5 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
+              <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberDevice}
+                  onChange={(e) => setRememberDevice(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-[var(--color-bg)] border-[var(--color-border)] text-[var(--color-primary)] focus:ring-0 cursor-pointer"
+                />
+                <span>Recordar sesión en este equipo</span>
+              </label>
+            </div>
 
             <button
-              type="button"
-              onClick={handleClear}
-              className="w-16 h-16 rounded-2xl bg-transparent text-[var(--color-text-secondary)] text-[11px] font-bold uppercase tracking-wider flex items-center justify-center hover:text-[var(--color-text-title)] active:scale-95 transition-all mx-auto select-none"
+              type="submit"
+              disabled={lockoutRemaining > 0 || isSubmitting}
+              className="w-full bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-bold py-3.5 rounded-xl text-xs transition-all shadow-lg shadow-[var(--color-primary)]/25 flex items-center justify-center gap-2 group cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
             >
-              Borrar
+              <span>{isSubmitting ? "Verificando..." : "Acceder al Panel de Control"}</span>
+              <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
             </button>
+          </form>
 
-            <button
-              type="button"
-              onClick={() => handleKeyClick("0")}
-              className="w-16 h-16 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-title)] text-2xl font-bold font-mono flex items-center justify-center hover:bg-[var(--color-primary)] hover:text-white hover:border-[var(--color-primary)] active:scale-95 transition-all shadow-md mx-auto touch-manipulation select-none"
-            >
-              0
-            </button>
-
-            <button
-              type="button"
-              onClick={handleDelete}
-              className="w-16 h-16 rounded-2xl bg-transparent text-[var(--color-text-secondary)] flex items-center justify-center hover:text-[var(--color-text-title)] active:scale-95 transition-all mx-auto select-none"
-              title="Borrar último número"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9.75 14.25 12m0 0 2.25 2.25M14.25 12l2.25-2.25M14.25 12 12 14.25m-2.58-4.92-2.674 2.87a1.5 1.5 0 0 0 0 2.1l2.674 2.87A1.5 1.5 0 0 0 10.605 18h7.645a1.5 1.5 0 0 0 1.5-1.5V7.5a1.5 1.5 0 0 0-1.5-1.5h-7.645a1.5 1.5 0 0 0-1.07.45Z" />
-              </svg>
-            </button>
+          {/* Footer Note */}
+          <div className="pt-3 border-t border-[var(--color-border)] text-center text-[10px] text-[var(--color-text-secondary)] flex items-center justify-center gap-1.5">
+            <Building2 size={13} className="text-[var(--color-primary)]" />
+            <span>Dance Factory Alcorcón & Móstoles • Portal de Dirección</span>
           </div>
 
-          {/* Remember option */}
-          <div className="flex items-center justify-center gap-2 mb-4 pt-2">
-            <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)] cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={rememberDevice}
-                onChange={(e) => setRememberDevice(e.target.checked)}
-                className="w-3.5 h-3.5 rounded bg-[var(--color-bg)] border-[var(--color-border)] text-[var(--color-primary)] focus:ring-0 cursor-pointer"
-              />
-              <span>Recordar sesión en este equipo</span>
-            </label>
-          </div>
-
-          <div className="pt-3 border-t border-[var(--color-border)] text-center text-[10px] text-[var(--color-text-secondary)]">
-            <span>Dance Factory Móstoles & Alcorcón • Sistema de Gestión</span>
-          </div>
         </div>
       </div>
     );
