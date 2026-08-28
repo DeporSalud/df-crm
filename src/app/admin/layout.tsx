@@ -340,8 +340,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
                   disabled={lockoutRemaining > 0 || isSubmitting}
                   value={usernameInput}
                   onChange={(e) => setUsernameInput(e.target.value)}
-                  placeholder="ej. Enrique Admin"
-                  className="w-full pl-10 pr-4 py-3 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs focus:outline-none focus:border-[var(--color-primary)] transition-colors placeholder:text-slate-500 disabled:opacity-50"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs focus:outline-none focus:border-[var(--color-primary)] transition-colors disabled:opacity-50"
                 />
               </div>
             </div>
@@ -358,8 +357,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
                   disabled={lockoutRemaining > 0 || isSubmitting}
                   value={passwordInput}
                   onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full pl-10 pr-11 py-3 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs focus:outline-none focus:border-[var(--color-primary)] transition-colors placeholder:text-slate-500 disabled:opacity-50"
+                  className="w-full pl-10 pr-11 py-3 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs focus:outline-none focus:border-[var(--color-primary)] transition-colors disabled:opacity-50"
                 />
                 <button
                   type="button"
