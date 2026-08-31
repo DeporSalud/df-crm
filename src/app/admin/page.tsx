@@ -94,7 +94,22 @@ export default function AdminDashboardRecepcion() {
           }
         });
 
-        setPendingBonoRequests(combined);
+        const cleanCombined = combined.filter(c => 
+          !(c.student_name || "").toLowerCase().includes("fran sarciat") && 
+          !(c.student_email || "").toLowerCase().includes("fransarciat") &&
+          !(c.student_email || "").toLowerCase().includes("fran.sarciat")
+        );
+
+        if (cleanCombined.length !== combined.length) {
+          const cleanLocal = storedLocal.filter((c: any) => 
+            !(c.student_name || "").toLowerCase().includes("fran sarciat") && 
+            !(c.student_email || "").toLowerCase().includes("fransarciat") &&
+            !(c.student_email || "").toLowerCase().includes("fran.sarciat")
+          );
+          localStorage.setItem("pending_bono_requests", JSON.stringify(cleanLocal));
+        }
+
+        setPendingBonoRequests(cleanCombined);
       } catch (e) {
         setPendingBonoRequests([]);
       }

@@ -194,9 +194,36 @@ export function getHistorialPagos(): PagoTransaccion[] {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
       return initial;
     }
-    return JSON.parse(raw);
+    const parsed: PagoTransaccion[] = JSON.parse(raw);
+    // Purge test transactions for Fran Sarciat
+    const clean = parsed.filter(p => 
+      !p.alumno_nombre.toLowerCase().includes("fran sarciat") &&
+      !p.concepto.toLowerCase().includes("fran sarciat")
+    );
+    if (clean.length !== parsed.length) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
+    }
+    return clean;
   } catch (e) {
     return generateSeedTransactions();
+  }
+}
+
+export function eliminarPagosDeAlumno(nombreOrEmail: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const all: PagoTransaccion[] = JSON.parse(raw);
+    const search = nombreOrEmail.toLowerCase().trim();
+    const filtered = all.filter(p => 
+      !p.alumno_nombre.toLowerCase().includes(search) &&
+      !p.concepto.toLowerCase().includes(search)
+    );
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    window.dispatchEvent(new Event("df_pagos_updated"));
+  } catch (e) {
+    console.error("Error eliminando pagos de alumno:", e);
   }
 }
 
