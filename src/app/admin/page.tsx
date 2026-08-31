@@ -105,26 +105,34 @@ export default function AdminDashboardRecepcion() {
       try {
         const { data } = await supabase
           .from("alumnos")
-          .select("id, nombre_completo, email, estado")
+          .select("id, nombre_completo, email, estado, sede, plan_activo")
           .ilike("estado", "%Bloqueado%");
 
         const dbLocked = [...(data || [])];
 
-        const localLocked = typeof window !== "undefined" && localStorage.getItem("df_sec_lockout_profesor");
-        if (localLocked) {
-          try {
-            const parsed = JSON.parse(localLocked);
-            if (parsed.failedCount >= 3 || parsed.isPermanentLock) {
-              if (!dbLocked.some(d => d.id === "local_teacher")) {
-                dbLocked.push({
-                  id: "local_teacher",
-                  nombre_completo: "Profesor / Terminal Docente",
-                  email: "profesor@dancefactory.es",
-                  estado: "Bloqueado por 3 intentos fallidos de PIN"
-                });
-              }
+        // Also check localStorage for local teacher locks
+        if (typeof window !== "undefined") {
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith("df_sec_lockout_teacher_")) {
+              const teacherId = key.replace("df_sec_lockout_teacher_", "");
+              try {
+                const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+                if (parsed.failedCount >= 3 || parsed.isPermanentLock) {
+                  if (!dbLocked.some(d => d.id === `docente_${teacherId}` || d.id === teacherId)) {
+                    dbLocked.push({
+                      id: `docente_${teacherId}`,
+                      nombre_completo: `Profesor (${teacherId})`,
+                      email: `${teacherId}@dancefactory.es`,
+                      estado: "Bloqueado por 3 fallos de PIN",
+                      sede: "castilla",
+                      plan_activo: "Docente Dance Factory"
+                    });
+                  }
+                }
+              } catch (e) {}
             }
-          } catch (e) {}
+          }
         }
 
         setLockedTeachers(dbLocked);
@@ -526,6 +534,16 @@ export default function AdminDashboardRecepcion() {
       // 2. Reset in localStorage for student-app sync
       if (typeof window !== "undefined") {
         localStorage.removeItem("df_sec_lockout_profesor");
+        const teacherIdRaw = (teacher?.id || "").replace("docente_", "");
+        if (teacherIdRaw) {
+          localStorage.removeItem(`df_sec_lockout_teacher_${teacherIdRaw}`);
+        }
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith("df_sec_lockout_teacher_")) {
+            localStorage.removeItem(key);
+          }
+        }
         window.dispatchEvent(new Event("df_security_lock_updated"));
       }
 
