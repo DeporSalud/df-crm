@@ -152,6 +152,9 @@ export default function AdminDashboardRecepcion() {
 
   // State for locked teachers requiring Reception unlock
   const [lockedTeachers, setLockedTeachers] = useState<any[]>([]);
+  const [tareaFiltro, setTareaFiltro] = useState<"todas" | "seguridad" | "pagos">("todas");
+
+  const totalTareasPendientes = lockedTeachers.length + pendingBonoRequests.length;
 
   // State for today's classes & check-ins
   const [clasesHoy, setClasesHoy] = useState<any[]>([]);
@@ -556,42 +559,225 @@ export default function AdminDashboardRecepcion() {
         subtitle="Control de accesos en tiempo real, validación QR/NFC y estado de ocupación" 
       />
 
-      {/* ALERTA DE SEGURIDAD: PROFESOR BLOQUEADO TRAS 3 INTENTOS */}
-      {lockedTeachers.length > 0 && (
-        <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-red-950/90 via-red-900/70 to-[var(--color-bg-card)] border-2 border-red-500/70 shadow-2xl shadow-red-950/50 space-y-3 animate-in zoom-in-95">
-          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <div className="flex items-center gap-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 border border-red-500/40 flex items-center justify-center shrink-0 shadow-lg shadow-red-500/20">
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 animate-pulse text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      {/* ========================================================================= */}
+      {/* CENTRO DE TAREAS PENDIENTES DE RECEPCIÓN & ADMINISTRACIÓN (PROMINENTE)   */}
+      {/* ========================================================================= */}
+      <div className={`p-5 sm:p-6 rounded-2xl border-2 transition-all shadow-2xl ${
+        totalTareasPendientes > 0
+          ? "bg-gradient-to-br from-amber-950/40 via-[var(--color-bg-card)] to-[var(--color-bg-card)] border-amber-500/50 shadow-amber-950/20"
+          : "bg-[var(--color-bg-card)] border-[var(--color-border)]"
+      }`}>
+        
+        {/* Cabecera del Centro de Tareas */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[var(--color-border)]">
+          <div className="flex items-center gap-3.5">
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 border ${
+              totalTareasPendientes > 0
+                ? "bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-lg shadow-amber-500/20 animate-pulse"
+                : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+            }`}>
+              {totalTareasPendientes > 0 ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
-              </div>
-              <div>
-                <h4 className="text-sm font-extrabold text-white flex items-center gap-2.5 flex-wrap">
-                  <span>🚨 Acceso Docente Bloqueado por Seguridad</span>
-                  <span className="text-[10px] font-mono bg-red-500/30 text-red-200 px-2.5 py-0.5 rounded-full font-bold border border-red-500/40">
-                    3 Intentos de PIN Fallidos
-                  </span>
-                </h4>
-                <p className="text-xs text-slate-300 mt-1">
-                  <strong>{lockedTeachers.map(t => t.nombre_completo).join(", ")}</strong> no puede acceder a su pase de lista por haber fallado 3 veces el PIN.
-                </p>
-              </div>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
             </div>
-
-            <button
-              type="button"
-              onClick={() => handleUnlockTeacher(lockedTeachers[0])}
-              className="w-full md:w-auto px-6 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/30 active:scale-95 transition-all cursor-pointer shrink-0 flex items-center justify-center gap-2"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
-              </svg>
-              <span>🔓 Desbloquear Acceso Docente</span>
-            </button>
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="text-lg font-extrabold font-[family-name:var(--font-heading)] text-[var(--color-text-title)] tracking-tight">
+                  Centro de Tareas Pendientes
+                </h2>
+                <span className={`text-xs font-mono font-bold px-2.5 py-0.5 rounded-full border ${
+                  totalTareasPendientes > 0
+                    ? "bg-amber-500/20 text-amber-300 border-amber-500/40 animate-bounce"
+                    : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                }`}>
+                  {totalTareasPendientes > 0 ? `${totalTareasPendientes} ${totalTareasPendientes === 1 ? 'tarea urgente' : 'tareas urgentes'}` : "0 pendientes"}
+                </span>
+              </div>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                Acciones prioritarias: Validación de transferencias bancarias, cobros presenciales y desbloqueos de seguridad.
+              </p>
+            </div>
           </div>
+
+          {/* Filtros de Tareas */}
+          {totalTareasPendientes > 0 && (
+            <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] self-start sm:self-auto text-xs">
+              <button
+                type="button"
+                onClick={() => setTareaFiltro("todas")}
+                className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                  tareaFiltro === "todas"
+                    ? "bg-[var(--color-primary)] text-white shadow-sm"
+                    : "text-[var(--color-text-secondary)] hover:text-white"
+                }`}
+              >
+                Todas ({totalTareasPendientes})
+              </button>
+              {lockedTeachers.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setTareaFiltro("seguridad")}
+                  className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                    tareaFiltro === "seguridad"
+                      ? "bg-red-600 text-white shadow-sm"
+                      : "text-red-400 hover:text-red-300"
+                  }`}
+                >
+                  Seguridad ({lockedTeachers.length})
+                </button>
+              )}
+              {pendingBonoRequests.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setTareaFiltro("pagos")}
+                  className={`px-3 py-1.5 rounded-lg font-bold transition-all cursor-pointer ${
+                    tareaFiltro === "pagos"
+                      ? "bg-amber-500 text-slate-950 shadow-sm"
+                      : "text-amber-400 hover:text-amber-300"
+                  }`}
+                >
+                  Cobros & Transferencias ({pendingBonoRequests.length})
+                </button>
+              )}
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Lista de Tareas o Estado Vacío */}
+        <div className="pt-4">
+          {totalTareasPendientes === 0 ? (
+            <div className="py-6 flex flex-col items-center justify-center text-center space-y-2">
+              <div className="w-12 h-12 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center border border-emerald-500/20">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h4 className="text-sm font-bold text-white">¡Todo al día en Recepción y Administración!</h4>
+              <p className="text-xs text-[var(--color-text-secondary)] max-w-md">
+                No hay transferencias pendientes de conciliar, ni cobros en espera ni terminales docentes bloqueados. El sistema está 100% sincronizado.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              
+              {/* Tareas de Seguridad: Desbloqueo Docente */}
+              {(tareaFiltro === "todas" || tareaFiltro === "seguridad") && lockedTeachers.map((t) => (
+                <div 
+                  key={t.id}
+                  className="p-4 rounded-xl bg-red-950/50 border-2 border-red-500/60 flex flex-col justify-between gap-3 shadow-lg hover:border-red-400 transition-all animate-in fade-in"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-lg bg-red-500/20 text-red-400 border border-red-500/40 shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-red-400 bg-red-500/15 px-2 py-0.5 rounded border border-red-500/30">
+                          Bloqueo de Seguridad
+                        </span>
+                        <h4 className="text-sm font-extrabold text-white mt-1">
+                          {t.nombre_completo}
+                        </h4>
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-red-300 bg-red-500/20 px-2 py-0.5 rounded border border-red-500/30">
+                      3 Fallos PIN
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-300">
+                    El terminal de profesor ha sido bloqueado tras 3 intentos incorrectos. Requiere desbloqueo presencial desde Recepción.
+                  </p>
+
+                  <div className="pt-2 border-t border-red-500/30 flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleUnlockTeacher(t)}
+                      className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/25 active:scale-95 transition-all cursor-pointer flex items-center gap-1.5"
+                    >
+                      <span>🔓 Desbloquear Acceso Docente</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {/* Tareas de Pagos: Transferencias y Cobros en Recepción */}
+              {(tareaFiltro === "todas" || tareaFiltro === "pagos") && pendingBonoRequests.map((req) => {
+                const isTransfer = req.metodo_pago === "Transferencia Bancaria" || (req.bono_precio && req.bono_precio.includes("Transferencia"));
+
+                return (
+                  <div
+                    key={req.id}
+                    className={`p-4 rounded-xl border-2 flex flex-col justify-between gap-3 shadow-lg transition-all animate-in fade-in ${
+                      isTransfer 
+                        ? "bg-blue-950/40 border-blue-500/50 hover:border-blue-400" 
+                        : "bg-amber-950/40 border-amber-500/50 hover:border-amber-400"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className={`p-2 rounded-lg shrink-0 border ${
+                          isTransfer
+                            ? "bg-blue-500/20 text-blue-400 border-blue-500/40"
+                            : "bg-amber-500/20 text-amber-400 border-amber-500/40"
+                        }`}>
+                          {isTransfer ? "🏦" : "🏢"}
+                        </div>
+                        <div>
+                          <span className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
+                            isTransfer
+                              ? "text-blue-300 bg-blue-500/20 border-blue-500/30"
+                              : "text-amber-300 bg-amber-500/20 border-amber-500/30"
+                          }`}>
+                            {isTransfer ? "Transferencia Bancaria" : "Cobro en Recepción"}
+                          </span>
+                          <h4 className="text-sm font-extrabold text-white mt-1">
+                            {req.student_name}
+                          </h4>
+                        </div>
+                      </div>
+                      <span className="text-xs font-mono font-bold text-amber-400 bg-black/40 px-2.5 py-1 rounded-lg border border-amber-500/30">
+                        {req.bono_nombre} ({req.bono_precio})
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-slate-300 space-y-0.5">
+                      <p>Email: <strong className="text-white">{req.student_email}</strong></p>
+                      <p className="text-[11px] text-[var(--color-text-secondary)]">
+                        {isTransfer ? "Verifica que el abono ha llegado a la cuenta Santander/Caixa antes de validar." : "Cobrar en caja física o datáfono TPV al alumno al llegar a la escuela."}
+                      </p>
+                    </div>
+
+                    <div className="pt-2 border-t border-white/10 flex items-center justify-end">
+                      <button
+                        type="button"
+                        onClick={() => handleCobrarBonoEnRecepcion(req)}
+                        className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all shadow-md active:scale-95 cursor-pointer flex items-center gap-1.5 ${
+                          isTransfer
+                            ? "bg-blue-400 hover:bg-blue-300 text-slate-950 shadow-blue-400/20"
+                            : "bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-amber-400/20"
+                        }`}
+                      >
+                        {isTransfer ? "✓ Validar Transferencia y Activar" : "💳 Cobrar en Recepción y Activar"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+            </div>
+          )}
+        </div>
+
+      </div>
 
       {/* Tarjetas KPI Superiores (Resumen Dashboard) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6">
@@ -766,63 +952,6 @@ export default function AdminDashboardRecepcion() {
                         className="px-3 py-1.5 bg-[var(--color-primary)] text-white text-xs font-semibold rounded-lg hover:opacity-90 transition-opacity"
                       >
                         Check-in
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Módulo: Solicitudes de Bonos Pendientes de Pago en Recepción / Transferencia */}
-          <div className="bg-gradient-to-r from-amber-500/10 via-[var(--color-bg-card)] to-[var(--color-bg-card)] border-2 border-amber-500/40 rounded-xl p-5 shadow-xl">
-            <div className="flex justify-between items-center mb-3">
-              <h3 className="text-sm font-bold text-[var(--color-text-title)] flex items-center gap-2">
-                <span className="p-1.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30">🔔</span>
-                <span>Solicitudes de Bonos (Pendientes de Cobro / Validación)</span>
-              </h3>
-              <span className="text-xs font-mono font-bold text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/20">
-                {pendingBonoRequests.length} pendientes
-              </span>
-            </div>
-
-            {pendingBonoRequests.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-secondary)] py-2 text-center">No hay solicitudes de bonos pendientes de validación o cobro.</p>
-            ) : (
-              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
-                {pendingBonoRequests.map((req) => {
-                  const isTransfer = req.metodo_pago === "Transferencia Bancaria" || (req.bono_precio && req.bono_precio.includes("Transferencia"));
-
-                  return (
-                    <div key={req.id} className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 hover:border-amber-500/50 transition-all">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <strong className="text-sm text-[var(--color-text-title)] font-semibold">{req.student_name}</strong>
-                          <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 font-bold">
-                            {req.bono_nombre} ({req.bono_precio})
-                          </span>
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                            isTransfer
-                              ? "bg-blue-500/15 text-blue-300 border-blue-500/30"
-                              : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
-                          }`}>
-                            {isTransfer ? "🏦 Transferencia Bancaria" : "🏢 Abono en Recepción"}
-                          </span>
-                        </div>
-                        <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-                          Email: {req.student_email} • Solicitado: {req.fecha}
-                        </p>
-                      </div>
-
-                      <button
-                        onClick={() => handleCobrarBonoEnRecepcion(req)}
-                        className={`px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 shrink-0 cursor-pointer ${
-                          isTransfer
-                            ? "bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-amber-400/20"
-                            : "bg-[var(--color-secondary)] hover:bg-[var(--color-secondary)]/90 text-slate-950 shadow-[var(--color-secondary)]/20"
-                        }`}
-                      >
-                        {isTransfer ? "✓ Validar Transferencia y Activar" : "✓ Cobrar en Recepción y Activar"}
                       </button>
                     </div>
                   );
