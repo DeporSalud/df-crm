@@ -1,6 +1,6 @@
 import { supabase } from './supabase/client';
 
-export type ActivityOrigin = 'recepcion' | 'profesor' | 'alumno';
+export type ActivityOrigin = 'recepcion' | 'profesor' | 'alumno' | 'seguridad';
 export type ActivityType = 
   | 'checkin'
   | 'reserva_bono'

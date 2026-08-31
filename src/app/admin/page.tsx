@@ -100,15 +100,58 @@ export default function AdminDashboardRecepcion() {
       }
     };
 
+    // Teacher Security Lockouts Loader
+    const loadTeacherLockouts = async () => {
+      try {
+        const { data } = await supabase
+          .from("alumnos")
+          .select("id, nombre_completo, email, estado")
+          .ilike("estado", "%Bloqueado%");
+
+        const dbLocked = [...(data || [])];
+
+        const localLocked = typeof window !== "undefined" && localStorage.getItem("df_sec_lockout_profesor");
+        if (localLocked) {
+          try {
+            const parsed = JSON.parse(localLocked);
+            if (parsed.failedCount >= 3 || parsed.isPermanentLock) {
+              if (!dbLocked.some(d => d.id === "local_teacher")) {
+                dbLocked.push({
+                  id: "local_teacher",
+                  nombre_completo: "Profesor / Terminal Docente",
+                  email: "profesor@dancefactory.es",
+                  estado: "Bloqueado por 3 intentos fallidos de PIN"
+                });
+              }
+            }
+          } catch (e) {}
+        }
+
+        setLockedTeachers(dbLocked);
+      } catch (e) {
+        setLockedTeachers([]);
+      }
+    };
+
     loadPendingBonoRequests();
+    loadTeacherLockouts();
+
     window.addEventListener("storage", loadPendingBonoRequests);
-    const interval = setInterval(loadPendingBonoRequests, 3000);
+    window.addEventListener("df_security_lock_updated", loadTeacherLockouts);
+    const interval = setInterval(() => {
+      loadPendingBonoRequests();
+      loadTeacherLockouts();
+    }, 2500);
 
     return () => {
       window.removeEventListener("storage", loadPendingBonoRequests);
+      window.removeEventListener("df_security_lock_updated", loadTeacherLockouts);
       clearInterval(interval);
     };
   }, []);
+
+  // State for locked teachers requiring Reception unlock
+  const [lockedTeachers, setLockedTeachers] = useState<any[]>([]);
 
   // State for today's classes & check-ins
   const [clasesHoy, setClasesHoy] = useState<any[]>([]);
@@ -461,6 +504,50 @@ export default function AdminDashboardRecepcion() {
     fetchData();
   };
 
+  // Handler to unlock locked teachers
+  const handleUnlockTeacher = async (teacher?: any) => {
+    try {
+      // 1. Reset in Supabase
+      if (teacher?.id && teacher.id !== "local_teacher") {
+        await supabase
+          .from("alumnos")
+          .update({ estado: "Activo" })
+          .eq("id", teacher.id);
+      } else {
+        await supabase
+          .from("alumnos")
+          .update({ estado: "Activo" })
+          .ilike("estado", "%Bloqueado%");
+      }
+
+      // 2. Reset in localStorage for student-app sync
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("df_sec_lockout_profesor");
+        window.dispatchEvent(new Event("df_security_lock_updated"));
+      }
+
+      logActivity({
+        origen: "recepcion",
+        tipo_evento: "seguridad_desbloqueo",
+        descripcion: `🔓 DESBLOQUEO DOCENTE: Recepción ha restablecido con éxito el acceso docente (${teacher?.nombre_completo || "Claustro"}).`,
+        usuario_afectado: teacher?.nombre_completo || "Claustro Docente",
+        sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+      });
+
+      setAppModal({
+        isOpen: true,
+        title: "Acceso Docente Desbloqueado",
+        message: `✓ Acceso Reestablecido con Éxito:\n\nSe ha desbloqueado el terminal para ${teacher?.nombre_completo || "el profesor"}.\n\nYa puede introducir de nuevo su PIN de 4 dígitos en el teclado circular con 3 nuevos intentos.`,
+        type: "success",
+        confirmText: "Entendido"
+      });
+
+      setLockedTeachers([]);
+    } catch (err) {
+      console.error("Error unlocking teacher:", err);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* TopHeader */}
@@ -468,6 +555,43 @@ export default function AdminDashboardRecepcion() {
         title="Dashboard & Recepción" 
         subtitle="Control de accesos en tiempo real, validación QR/NFC y estado de ocupación" 
       />
+
+      {/* ALERTA DE SEGURIDAD: PROFESOR BLOQUEADO TRAS 3 INTENTOS */}
+      {lockedTeachers.length > 0 && (
+        <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-red-950/90 via-red-900/70 to-[var(--color-bg-card)] border-2 border-red-500/70 shadow-2xl shadow-red-950/50 space-y-3 animate-in zoom-in-95">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/20 text-red-400 border border-red-500/40 flex items-center justify-center shrink-0 shadow-lg shadow-red-500/20">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6 animate-pulse text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <div>
+                <h4 className="text-sm font-extrabold text-white flex items-center gap-2.5 flex-wrap">
+                  <span>🚨 Acceso Docente Bloqueado por Seguridad</span>
+                  <span className="text-[10px] font-mono bg-red-500/30 text-red-200 px-2.5 py-0.5 rounded-full font-bold border border-red-500/40">
+                    3 Intentos de PIN Fallidos
+                  </span>
+                </h4>
+                <p className="text-xs text-slate-300 mt-1">
+                  <strong>{lockedTeachers.map(t => t.nombre_completo).join(", ")}</strong> no puede acceder a su pase de lista por haber fallado 3 veces el PIN.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleUnlockTeacher(lockedTeachers[0])}
+              className="w-full md:w-auto px-6 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/30 active:scale-95 transition-all cursor-pointer shrink-0 flex items-center justify-center gap-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+              </svg>
+              <span>🔓 Desbloquear Acceso Docente</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Tarjetas KPI Superiores (Resumen Dashboard) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6">
