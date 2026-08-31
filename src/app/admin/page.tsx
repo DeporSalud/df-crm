@@ -65,9 +65,11 @@ export default function AdminDashboardRecepcion() {
           .ilike("plan_activo", "Pendiente:%");
 
         const dbMapped = (dbPending || []).map(student => {
-          const match = student.plan_activo?.match(/Pendiente:\s*([^(]+)(?:\(([^)]+)\))?/);
-          const bonoNombre = match ? match[1].trim() : student.plan_activo;
-          const bonoPrecio = match && match[2] ? match[2].trim() : "";
+          const raw = student.plan_activo || "";
+          const match = raw.match(/Pendiente:\s*([^(]+)(?:\(([^)]+)\))?/);
+          const bonoNombre = match ? match[1].trim() : raw.replace(/^Pendiente:\s*/i, "").trim();
+          const extraInfo = match && match[2] ? match[2].trim() : "";
+          const isTransfer = raw.toLowerCase().includes("transferencia");
 
           return {
             id: student.id,
@@ -75,9 +77,10 @@ export default function AdminDashboardRecepcion() {
             student_name: student.nombre_completo,
             student_email: student.email,
             bono_nombre: bonoNombre,
-            bono_precio: bonoPrecio || "En recepción",
+            bono_precio: extraInfo || "En recepción",
+            metodo_pago: isTransfer ? "Transferencia Bancaria" : "Recepción",
             fecha: "Hoy",
-            estado: "Pendiente de cobro en Recepción"
+            estado: isTransfer ? "Pendiente de verificación bancaria" : "Pendiente de cobro en Recepción"
           };
         });
 
@@ -647,12 +650,12 @@ export default function AdminDashboardRecepcion() {
             )}
           </div>
 
-          {/* Módulo: Solicitudes de Bonos Pendientes de Pago en Recepción */}
-          <div className="bg-gradient-to-r from-amber-500/10 via-[var(--color-bg-card)] to-[var(--color-bg-card)] border-2 border-amber-500/30 rounded-xl p-5 shadow-xl">
+          {/* Módulo: Solicitudes de Bonos Pendientes de Pago en Recepción / Transferencia */}
+          <div className="bg-gradient-to-r from-amber-500/10 via-[var(--color-bg-card)] to-[var(--color-bg-card)] border-2 border-amber-500/40 rounded-xl p-5 shadow-xl">
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-sm font-bold text-[var(--color-text-title)] flex items-center gap-2">
-                <span className="p-1.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30">🎟️</span>
-                <span>Solicitudes de Bonos (Pendientes de Cobro en Recepción)</span>
+                <span className="p-1.5 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30">🔔</span>
+                <span>Solicitudes de Bonos (Pendientes de Cobro / Validación)</span>
               </h3>
               <span className="text-xs font-mono font-bold text-amber-400 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/20">
                 {pendingBonoRequests.length} pendientes
@@ -660,31 +663,46 @@ export default function AdminDashboardRecepcion() {
             </div>
 
             {pendingBonoRequests.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-secondary)] py-2 text-center">No hay solicitudes de cobro de bonos pendientes en Recepción.</p>
+              <p className="text-xs text-[var(--color-text-secondary)] py-2 text-center">No hay solicitudes de bonos pendientes de validación o cobro.</p>
             ) : (
-              <div className="space-y-2.5 max-h-48 overflow-y-auto pr-1">
-                {pendingBonoRequests.map((req) => (
-                  <div key={req.id} className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 hover:border-amber-500/40 transition-all">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <strong className="text-sm text-[var(--color-text-title)] font-semibold">{req.student_name}</strong>
-                        <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 font-bold">
-                          {req.bono_nombre} ({req.bono_precio})
-                        </span>
-                      </div>
-                      <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-                        Email: {req.student_email} • Solicitado: {req.fecha}
-                      </p>
-                    </div>
+              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                {pendingBonoRequests.map((req) => {
+                  const isTransfer = req.metodo_pago === "Transferencia Bancaria" || (req.bono_precio && req.bono_precio.includes("Transferencia"));
 
-                    <button
-                      onClick={() => handleCobrarBonoEnRecepcion(req)}
-                      className="px-4 py-2 rounded-xl text-xs font-bold text-slate-950 bg-[var(--color-secondary)] hover:bg-[var(--color-secondary)]/90 transition-all shadow-md active:scale-95 shrink-0"
-                    >
-                      ✓ Cobrar y Activar Bono
-                    </button>
-                  </div>
-                ))}
+                  return (
+                    <div key={req.id} className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 hover:border-amber-500/50 transition-all">
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <strong className="text-sm text-[var(--color-text-title)] font-semibold">{req.student_name}</strong>
+                          <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 font-bold">
+                            {req.bono_nombre} ({req.bono_precio})
+                          </span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                            isTransfer
+                              ? "bg-blue-500/15 text-blue-300 border-blue-500/30"
+                              : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                          }`}>
+                            {isTransfer ? "🏦 Transferencia Bancaria" : "🏢 Abono en Recepción"}
+                          </span>
+                        </div>
+                        <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                          Email: {req.student_email} • Solicitado: {req.fecha}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => handleCobrarBonoEnRecepcion(req)}
+                        className={`px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 shrink-0 cursor-pointer ${
+                          isTransfer
+                            ? "bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-amber-400/20"
+                            : "bg-[var(--color-secondary)] hover:bg-[var(--color-secondary)]/90 text-slate-950 shadow-[var(--color-secondary)]/20"
+                        }`}
+                      >
+                        {isTransfer ? "✓ Validar Transferencia y Activar" : "✓ Cobrar en Recepción y Activar"}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
