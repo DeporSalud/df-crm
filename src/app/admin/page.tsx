@@ -94,22 +94,7 @@ export default function AdminDashboardRecepcion() {
           }
         });
 
-        const cleanCombined = combined.filter(c => 
-          !(c.student_name || "").toLowerCase().includes("fran sarciat") && 
-          !(c.student_email || "").toLowerCase().includes("fransarciat") &&
-          !(c.student_email || "").toLowerCase().includes("fran.sarciat")
-        );
-
-        if (cleanCombined.length !== combined.length) {
-          const cleanLocal = storedLocal.filter((c: any) => 
-            !(c.student_name || "").toLowerCase().includes("fran sarciat") && 
-            !(c.student_email || "").toLowerCase().includes("fransarciat") &&
-            !(c.student_email || "").toLowerCase().includes("fran.sarciat")
-          );
-          localStorage.setItem("pending_bono_requests", JSON.stringify(cleanLocal));
-        }
-
-        setPendingBonoRequests(cleanCombined);
+        setPendingBonoRequests(combined);
       } catch (e) {
         setPendingBonoRequests([]);
       }
@@ -160,6 +145,7 @@ export default function AdminDashboardRecepcion() {
     loadTeacherLockouts();
 
     window.addEventListener("storage", loadPendingBonoRequests);
+    window.addEventListener("df_pending_bonos_updated", loadPendingBonoRequests);
     window.addEventListener("df_security_lock_updated", loadTeacherLockouts);
     const interval = setInterval(() => {
       loadPendingBonoRequests();
@@ -168,6 +154,7 @@ export default function AdminDashboardRecepcion() {
 
     return () => {
       window.removeEventListener("storage", loadPendingBonoRequests);
+      window.removeEventListener("df_pending_bonos_updated", loadPendingBonoRequests);
       window.removeEventListener("df_security_lock_updated", loadTeacherLockouts);
       clearInterval(interval);
     };

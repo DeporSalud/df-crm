@@ -206,6 +206,7 @@ export default function PagosYFacturacionPage() {
 
   // Transactions State
   const [pagos, setPagos] = useState<PagoTransaccion[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<any[]>([]);
   const [students, setStudents] = useState<any[]>([]);
   const [assignedClassesMap, setAssignedClassesMap] = useState<Record<string, string[]>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -249,11 +250,53 @@ export default function PagosYFacturacionPage() {
     });
   };
 
-  // Load Payments & Students
+  // Load Payments, Pending Requests & Students
   const loadData = async () => {
     setIsLoading(true);
     const storedPagos = getHistorialPagos();
     setPagos(storedPagos);
+
+    // Fetch Pending Requests (Transfer & Reception) from Supabase
+    try {
+      const { data: dbPending } = await supabase
+        .from("alumnos")
+        .select("*")
+        .ilike("plan_activo", "Pendiente:%");
+
+      const dbMapped = (dbPending || []).map(student => {
+        const raw = student.plan_activo || "";
+        const match = raw.match(/Pendiente:\s*([^(]+)(?:\(([^)]+)\))?/);
+        const bonoNombre = match ? match[1].trim() : raw.replace(/^Pendiente:\s*/i, "").trim();
+        const extraInfo = match && match[2] ? match[2].trim() : "";
+        const isTransfer = raw.toLowerCase().includes("transferencia");
+
+        return {
+          id: student.id,
+          student_id: student.id,
+          student_name: student.nombre_completo,
+          student_email: student.email,
+          student_phone: student.telefono,
+          bono_nombre: bonoNombre,
+          bono_precio: extraInfo || "En recepción",
+          metodo_pago: isTransfer ? "Transferencia Bancaria" : "Recepción",
+          fecha: "Hoy",
+          estado: isTransfer ? "Pendiente de verificación bancaria" : "Pendiente de cobro en Recepción",
+          sede: student.sede || "tejar"
+        };
+      });
+
+      const storedLocal = typeof window !== "undefined" ? JSON.parse(localStorage.getItem("pending_bono_requests") || "[]") : [];
+      const combined = [...dbMapped];
+      storedLocal.forEach((lReq: any) => {
+        if (!combined.some(c => c.id === lReq.id || (c.student_email && c.student_email === lReq.student_email))) {
+          combined.push(lReq);
+        }
+      });
+
+      setPendingRequests(combined);
+    } catch (e) {
+      setPendingRequests([]);
+    }
 
     // Fetch Students
     let queryStudents = supabase.from("alumnos").select("*");
@@ -291,19 +334,86 @@ export default function PagosYFacturacionPage() {
     setIsLoading(false);
   };
 
+  const handleValidarSolicitud = async (req: any) => {
+    let clasesToAdd = 4;
+    if (req.bono_nombre.includes("8")) clasesToAdd = 8;
+    else if (req.bono_nombre.includes("10")) clasesToAdd = 10;
+    else if (req.bono_nombre.toLowerCase().includes("ilimitad")) clasesToAdd = 999;
+    else if (req.bono_nombre.toLowerCase().includes("suelta")) clasesToAdd = 1;
+    else if (req.bono_nombre.toLowerCase().includes("formaci") || req.bono_nombre.toLowerCase().includes("especial")) clasesToAdd = 1;
+
+    let studentDB = null;
+    if (req.student_id) {
+      const { data } = await supabase.from("alumnos").select("*").eq("id", req.student_id).single();
+      studentDB = data;
+    }
+    if (!studentDB && req.student_email) {
+      const { data } = await supabase.from("alumnos").select("*").eq("email", req.student_email).single();
+      studentDB = data;
+    }
+
+    if (studentDB) {
+      const currentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
+      await supabase.from("alumnos").update({
+        plan_activo: req.bono_nombre,
+        clases_restantes: currentClasses + clasesToAdd
+      }).eq("id", studentDB.id);
+    }
+
+    let importeNum = 45;
+    if (req.bono_precio && typeof req.bono_precio === "string") {
+      const cleaned = req.bono_precio.replace(/[^\d.,]/g, '').replace(',', '.');
+      if (cleaned && !isNaN(parseFloat(cleaned))) {
+        importeNum = parseFloat(cleaned);
+      }
+    }
+
+    const isTransfer = (req.metodo_pago || "").toLowerCase().includes("transf");
+
+    registrarNuevoPago({
+      alumno_id: studentDB?.id || req.student_id,
+      alumno_nombre: req.student_name || "Alumno",
+      alumno_dni: studentDB?.dni,
+      alumno_telefono: studentDB?.telefono,
+      concepto: `Bono: ${req.bono_nombre} (${isTransfer ? "Transferencia Bancaria Confirmada" : "Cobrado Mostrador"})`,
+      categoria: "bono",
+      importe: importeNum,
+      metodo_pago: isTransfer ? "Transferencia" : "Efectivo",
+      sede: (studentDB?.sede as SedePago) || "tejar",
+      atendido_por: isTransfer ? "Administración / Conciliación Bancaria" : "Recepción Dance Factory",
+      notas: "Solicitud validada y clases activadas en el sistema"
+    });
+
+    setPendingRequests(prev => {
+      const updated = prev.filter(r => r.id !== req.id && r.student_id !== req.student_id);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("pending_bono_requests", JSON.stringify(updated));
+        window.dispatchEvent(new Event("df_pending_bonos_updated"));
+      }
+      return updated;
+    });
+
+    loadData();
+  };
+
   useEffect(() => {
     loadData();
 
-    // Listen to real-time payment updates
+    // Listen to real-time payment & pending updates
     const handleUpdate = () => {
-      setPagos(getHistorialPagos());
+      loadData();
     };
     window.addEventListener("df_pagos_updated", handleUpdate);
+    window.addEventListener("df_pending_bonos_updated", handleUpdate);
     window.addEventListener("storage", handleUpdate);
+
+    const interval = setInterval(loadData, 3000);
 
     return () => {
       window.removeEventListener("df_pagos_updated", handleUpdate);
+      window.removeEventListener("df_pending_bonos_updated", handleUpdate);
       window.removeEventListener("storage", handleUpdate);
+      clearInterval(interval);
     };
   }, [activeSede]);
 
@@ -584,6 +694,50 @@ export default function PagosYFacturacionPage() {
       {activeTab === "historial" && (
         <div className="space-y-4 animate-in fade-in duration-200">
           
+          {/* Pending Requests & Transfer Reconciliations Alert Banner */}
+          {pendingRequests.length > 0 && (
+            <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-3 shadow-lg shadow-amber-500/5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
+                  <span className="text-xs font-bold text-amber-300 uppercase tracking-wider">
+                    {pendingRequests.length} Solicitud(es) de Bono / Transferencia Pendientes de Validación
+                  </span>
+                </div>
+                <span className="text-[11px] text-slate-400 font-medium">Requiere confirmación contable</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {pendingRequests.map((req, idx) => (
+                  <div
+                    key={req.id || idx}
+                    className="p-3 rounded-xl bg-[var(--color-bg)]/80 border border-amber-500/20 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-extrabold text-white truncate">{req.student_name}</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wider bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                          {req.metodo_pago}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                        {req.bono_nombre} • <span className="text-emerald-400 font-bold">{req.bono_precio}</span>
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => handleValidarSolicitud(req)}
+                      className="shrink-0 px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md shadow-emerald-500/20 cursor-pointer"
+                    >
+                      <CheckCircle2 size={13} />
+                      <span>Validar e Ingresar</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Filters Bar */}
           <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] p-3.5 rounded-2xl shadow-sm flex flex-col md:flex-row gap-3 items-center justify-between">
             

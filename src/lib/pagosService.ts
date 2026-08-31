@@ -194,16 +194,7 @@ export function getHistorialPagos(): PagoTransaccion[] {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
       return initial;
     }
-    const parsed: PagoTransaccion[] = JSON.parse(raw);
-    // Purge test transactions for Fran Sarciat
-    const clean = parsed.filter(p => 
-      !p.alumno_nombre.toLowerCase().includes("fran sarciat") &&
-      !p.concepto.toLowerCase().includes("fran sarciat")
-    );
-    if (clean.length !== parsed.length) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
-    }
-    return clean;
+    return JSON.parse(raw);
   } catch (e) {
     return generateSeedTransactions();
   }
