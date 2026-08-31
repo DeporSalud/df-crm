@@ -682,46 +682,45 @@ export default function AdminDashboardRecepcion() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
               
               {/* Tareas de Seguridad: Desbloqueo Docente */}
               {(tareaFiltro === "todas" || tareaFiltro === "seguridad") && lockedTeachers.map((t) => (
                 <div 
                   key={t.id}
-                  className="p-4 rounded-xl bg-red-950/50 border-2 border-red-500/60 flex flex-col justify-between gap-3 shadow-lg hover:border-red-400 transition-all animate-in fade-in"
+                  className="p-3 rounded-xl bg-red-950/40 border border-red-500/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 hover:border-red-400 transition-all animate-in fade-in group"
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-lg bg-red-500/20 text-red-400 border border-red-500/40 shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
-                        </svg>
-                      </div>
-                      <div>
-                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-red-400 bg-red-500/15 px-2 py-0.5 rounded border border-red-500/30">
-                          Bloqueo de Seguridad
-                        </span>
-                        <h4 className="text-sm font-extrabold text-white mt-1">
-                          {t.nombre_completo}
-                        </h4>
-                      </div>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-red-500/20 text-red-400 border border-red-500/40 flex items-center justify-center shrink-0">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+                      </svg>
                     </div>
-                    <span className="text-[10px] font-mono font-bold text-red-300 bg-red-500/20 px-2 py-0.5 rounded border border-red-500/30">
-                      3 Fallos PIN
-                    </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <strong className="text-xs font-bold text-white group-hover:text-red-300 transition-colors truncate">
+                          {t.nombre_completo}
+                        </strong>
+                        <span className="text-[9.5px] font-mono font-bold text-red-300 bg-red-500/20 px-2 py-0.5 rounded border border-red-500/30">
+                          Bloqueo PIN (3 Fallos)
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {t.sede === "tejar" ? "Studio 1 El Tejar" : "Studio 2 Paseo Castilla"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 truncate">
+                        Email: {t.email} • Requiere desbloqueo presencial
+                      </p>
+                    </div>
                   </div>
 
-                  <p className="text-xs text-slate-300">
-                    El terminal de profesor ha sido bloqueado tras 3 intentos incorrectos. Requiere desbloqueo presencial desde Recepción.
-                  </p>
-
-                  <div className="pt-2 border-t border-red-500/30 flex items-center justify-end">
+                  <div className="flex items-center justify-end shrink-0 pt-1 sm:pt-0">
                     <button
                       type="button"
                       onClick={() => handleUnlockTeacher(t)}
-                      className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs shadow-lg shadow-emerald-500/25 active:scale-95 transition-all cursor-pointer flex items-center gap-1.5"
+                      className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-md active:scale-95 transition-all cursor-pointer flex items-center gap-1.5"
                     >
-                      <span>🔓 Desbloquear Acceso Docente</span>
+                      <span>🔓 Desbloquear</span>
                     </button>
                   </div>
                 </div>
@@ -734,57 +733,54 @@ export default function AdminDashboardRecepcion() {
                 return (
                   <div
                     key={req.id}
-                    className={`p-4 rounded-xl border-2 flex flex-col justify-between gap-3 shadow-lg transition-all animate-in fade-in ${
+                    className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all animate-in fade-in group ${
                       isTransfer 
-                        ? "bg-blue-950/40 border-blue-500/50 hover:border-blue-400" 
-                        : "bg-amber-950/40 border-amber-500/50 hover:border-amber-400"
+                        ? "bg-blue-950/30 border-blue-500/40 hover:border-blue-400" 
+                        : "bg-amber-950/30 border-amber-500/40 hover:border-amber-400"
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2.5">
-                        <div className={`p-2 rounded-lg shrink-0 border ${
-                          isTransfer
-                            ? "bg-blue-500/20 text-blue-400 border-blue-500/40"
-                            : "bg-amber-500/20 text-amber-400 border-amber-500/40"
-                        }`}>
-                          {isTransfer ? "🏦" : "🏢"}
-                        </div>
-                        <div>
-                          <span className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold border ${
+                        isTransfer
+                          ? "bg-blue-500/20 text-blue-300 border-blue-500/40"
+                          : "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                      }`}>
+                        {isTransfer ? "🏦" : "🏢"}
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <strong className="text-xs font-bold text-white group-hover:text-amber-200 transition-colors truncate">
+                            {req.student_name}
+                          </strong>
+                          <span className={`text-[9.5px] font-mono font-bold px-2 py-0.5 rounded border ${
                             isTransfer
                               ? "text-blue-300 bg-blue-500/20 border-blue-500/30"
                               : "text-amber-300 bg-amber-500/20 border-amber-500/30"
                           }`}>
-                            {isTransfer ? "Transferencia Bancaria" : "Cobro en Recepción"}
+                            {req.bono_nombre} ({req.bono_precio})
                           </span>
-                          <h4 className="text-sm font-extrabold text-white mt-1">
-                            {req.student_name}
-                          </h4>
+                          <span className="text-[10px] text-slate-400">
+                            {isTransfer ? "Santander / Caixa" : "Caja / TPV"}
+                          </span>
                         </div>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          Email: {req.student_email} • Solicitado: {req.fecha}
+                        </p>
                       </div>
-                      <span className="text-xs font-mono font-bold text-amber-400 bg-black/40 px-2.5 py-1 rounded-lg border border-amber-500/30">
-                        {req.bono_nombre} ({req.bono_precio})
-                      </span>
                     </div>
 
-                    <div className="text-xs text-slate-300 space-y-0.5">
-                      <p>Email: <strong className="text-white">{req.student_email}</strong></p>
-                      <p className="text-[11px] text-[var(--color-text-secondary)]">
-                        {isTransfer ? "Verifica que el abono ha llegado a la cuenta Santander/Caixa antes de validar." : "Cobrar en caja física o datáfono TPV al alumno al llegar a la escuela."}
-                      </p>
-                    </div>
-
-                    <div className="pt-2 border-t border-white/10 flex items-center justify-end">
+                    <div className="flex items-center justify-end shrink-0 pt-1 sm:pt-0">
                       <button
                         type="button"
                         onClick={() => handleCobrarBonoEnRecepcion(req)}
-                        className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all shadow-md active:scale-95 cursor-pointer flex items-center gap-1.5 ${
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md active:scale-95 cursor-pointer flex items-center gap-1.5 ${
                           isTransfer
                             ? "bg-blue-400 hover:bg-blue-300 text-slate-950 shadow-blue-400/20"
                             : "bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-amber-400/20"
                         }`}
                       >
-                        {isTransfer ? "✓ Validar Transferencia y Activar" : "💳 Cobrar en Recepción y Activar"}
+                        {isTransfer ? "✓ Validar y Activar" : "💳 Cobrar y Activar"}
                       </button>
                     </div>
                   </div>
