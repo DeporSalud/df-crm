@@ -568,7 +568,9 @@ export default function AlumnosPage() {
     .filter(student => 
       student.nombre_completo?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      student.telefono?.includes(searchTerm)
+      student.telefono?.includes(searchTerm) ||
+      student.nfc_token?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      student.dni?.toLowerCase().includes(searchTerm.toLowerCase())
     )
     .sort((a, b) => {
       const nameA = a.nombre_completo || "";
@@ -588,12 +590,12 @@ export default function AlumnosPage() {
 
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div className="flex items-center gap-3 w-full sm:w-auto">
-          <div className="relative w-full sm:w-72">
+          <div className="relative w-full sm:w-80">
             <input 
               type="text" 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Buscar por nombre, email o teléfono..." 
+              placeholder="Buscar por nombre, tarjeta NFC, teléfono..." 
               className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-lg pl-10 pr-4 py-2.5 outline-none focus:border-[var(--color-primary)] transition-colors"
             />
             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 absolute left-3 top-2.5 text-[var(--color-text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -682,7 +684,10 @@ export default function AlumnosPage() {
                           </div>
                           <div>
                              <span className="font-bold text-[var(--color-text-title)] text-xs block">{student.nombre_completo}</span>
-                             <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">{student.dni || 'Sin DNI'}</span>
+                             <span className="text-[10px] text-amber-400 font-mono font-medium flex items-center gap-1">
+                               <span>🏷️</span>
+                               <span>{student.nfc_token ? (student.nfc_token.startsWith('DF-') ? student.nfc_token : 'DF-' + student.nfc_token) : 'Sin Llavero NFC'}</span>
+                             </span>
                           </div>
                         </div>
                       </td>
