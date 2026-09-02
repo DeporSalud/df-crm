@@ -325,26 +325,8 @@ export default function AdminDashboardRecepcion() {
       planLower.includes("ilimitad") || 
       planLower.includes("cuota") ||
       student.clases_restantes === null;
-    
-    if (!isRegularOrUnlimited && (student.clases_restantes === null || student.clases_restantes <= 0)) {
-      triggerError(`El alumno ${student.nombre_completo} NO tiene clases restantes en su bono.`);
-      return;
-    }
 
-    // 1. Deduct class if it's a Bono (not regular monthly membership)
-    if (!isRegularOrUnlimited && typeof student.clases_restantes === "number") {
-      const { error: updateError } = await supabase
-        .from("alumnos")
-        .update({ clases_restantes: student.clases_restantes - 1 })
-        .eq("id", student.id);
-        
-      if (updateError) {
-        triggerError('Error al actualizar el saldo del bono.');
-        return;
-      }
-    }
-
-    // 2. Register asistencia
+    // 1. Register asistencia (No restamos clases aquí: ya se descontaron al apuntarse en la app)
     const { error: assistError } = await supabase
       .from("asistencias")
       .insert([{
@@ -363,20 +345,20 @@ export default function AdminDashboardRecepcion() {
 
     const remainingTextStr = isRegularOrUnlimited 
       ? 'Mensualidad Regular' 
-      : `Bono (${student.clases_restantes - 1} clases restantes)`;
+      : `Bono (${student.clases_restantes ?? 0} clases de saldo)`;
 
     // Audit log
     logActivity({
       origen: "recepcion",
       tipo_evento: "checkin",
-      descripcion: `Validación de entrada QR/NFC en la clase seleccionada (${remainingTextStr})`,
+      descripcion: `Validación de acceso QR/NFC en la clase seleccionada (${remainingTextStr})`,
       usuario_afectado: student.nombre_completo,
       sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
     });
 
     setStatusMessage({ 
       type: 'success', 
-      text: `✅ Entrada validada para ${student.nombre_completo}. Plan: ${remainingTextStr}` 
+      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr})` 
     });
 
     // Reset fields & refetch
