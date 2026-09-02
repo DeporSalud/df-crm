@@ -28,6 +28,7 @@ import {
 
 const TEACHER_PINS: Record<string, { name: string; isAdmin?: boolean }> = {
   "9999": { name: "ADMINISTRADOR MASTER", isAdmin: true },
+  "2026": { name: "RUTH DOMÍNGUEZ", isAdmin: true },
   "1001": { name: "LUCÍA MUÑOZ" },
   "1002": { name: "LUCÍA ZAMORANO" },
   "1003": { name: "ANDREA SOTO" },
@@ -186,7 +187,8 @@ export default function ProfesorPortal() {
     "DARÍO HUMBERTO",
     "NEREA OLIVARES",
     "ALEJANDRO ROVINA",
-    "NIL BARBERÁ"
+    "NIL BARBERÁ",
+    "RUTH DOMÍNGUEZ"
   ];
 
   const systemDays = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
@@ -463,11 +465,13 @@ export default function ProfesorPortal() {
 
     if (data) {
       const normalizedSelected = normalizeText(selectedProfesor);
-      const openAndFormaciones = data.filter(c => 
-        (c.nombre_clase.toUpperCase().includes("OPEN CLASS") ||
-         c.nombre_clase.toUpperCase().includes("FORMACI")) &&
-        !normalizeText(c.profesor).includes(normalizedSelected)
-      ).sort((a, b) => {
+      const openAndFormaciones = data.filter(c => {
+        const nameUpper = (c.nombre_clase || "").toUpperCase();
+        const dayUpper = (c.dia_semana || "").toUpperCase();
+        if (dayUpper.includes("JUEVES") && (nameUpper.includes("ROTAT") || nameUpper.includes("OPEN"))) return false;
+        return (nameUpper.includes("OPEN CLASS") || nameUpper.includes("FORMACI")) &&
+          !normalizeText(c.profesor).includes(normalizedSelected);
+      }).sort((a, b) => {
         if (getDayOrder(a.dia_semana) !== getDayOrder(b.dia_semana)) {
           return getDayOrder(a.dia_semana) - getDayOrder(b.dia_semana);
         }

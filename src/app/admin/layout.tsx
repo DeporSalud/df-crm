@@ -36,6 +36,12 @@ const DEFAULT_ADMIN_USERS: StaffUser[] = [
     password: "DF.26!!factory"
   },
   {
+    name: "Ruth Domínguez",
+    role: "Administración & Dirección",
+    username: "Ruth Admin",
+    password: "DF.26!!factory"
+  },
+  {
     name: "Recepción Studio 1",
     role: "Recepción El Tejar",
     username: "recepcion1",
@@ -150,7 +156,16 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
       normalizeStr(userClean) === "admin" ||
       normalizeStr(userClean) === "admin@dancefactory.es" ||
       normalizeStr(userClean) === "director"
-    ) && passClean === "DF.26!!factory";
+    ) && (passClean === "DF.26!!factory" || passClean === "DanceFactory2026!");
+
+    const isRuthMatch = (
+      normalizeStr(userClean) === normalizeStr("Ruth Admin") ||
+      normalizeStr(userClean) === "ruth" ||
+      normalizeStr(userClean) === "ruth dominguez" ||
+      normalizeStr(userClean) === "ruth admin" ||
+      normalizeStr(userClean) === "ruth.dominguez@dancefactory.es" ||
+      normalizeStr(userClean) === "ruth@dancefactory.es"
+    ) && (passClean === "DF.26!!factory" || passClean === "DanceFactory2026!" || passClean === "Ruth.DF26!!");
 
     const isReception1Match = (
       normalizeStr(userClean) === "recepcion1" ||
@@ -165,10 +180,12 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
     let matchedUser: StaffUser | null = null;
     if (isEnriqueMatch) {
       matchedUser = DEFAULT_ADMIN_USERS[0];
-    } else if (isReception1Match) {
+    } else if (isRuthMatch) {
       matchedUser = DEFAULT_ADMIN_USERS[1];
-    } else if (isReception2Match) {
+    } else if (isReception1Match) {
       matchedUser = DEFAULT_ADMIN_USERS[2];
+    } else if (isReception2Match) {
+      matchedUser = DEFAULT_ADMIN_USERS[3];
     }
 
     if (matchedUser) {

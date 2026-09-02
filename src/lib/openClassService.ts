@@ -35,7 +35,11 @@ const STORAGE_KEY = "df_openclass_reservas_v2";
  */
 export function getUpcomingCalendarDates(daysCount = 28): CalendarDayItem[] {
   const list: CalendarDayItem[] = [];
-  const start = new Date(); // Current date or Sep 1st
+  const now = new Date();
+  
+  // Open Classes start on September 9th, 2026
+  const seasonOpenClassStart = new Date(2026, 8, 9, 0, 0, 0); // Sep 9, 2026
+  const start = now.getTime() < seasonOpenClassStart.getTime() ? new Date(seasonOpenClassStart) : new Date(now);
   
   const dayNamesEs = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
   const dayShortEs = ["DOM", "LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB"];
@@ -48,8 +52,6 @@ export function getUpcomingCalendarDates(daysCount = 28): CalendarDayItem[] {
     "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"
   ];
 
-  const now = new Date();
-
   for (let i = 0; i < daysCount; i++) {
     const d = new Date(start);
     d.setDate(start.getDate() + i);
@@ -58,7 +60,10 @@ export function getUpcomingCalendarDates(daysCount = 28): CalendarDayItem[] {
     const dayOfWeek = d.getDay();
     if (dayOfWeek === 0) continue;
 
-    const dateISO = d.toISOString().split("T")[0];
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const dateISO = `${year}-${month}-${day}`;
     const dayName = dayNamesEs[dayOfWeek];
     const dayShort = dayShortEs[dayOfWeek];
     const dayNumber = d.getDate();
