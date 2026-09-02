@@ -1578,7 +1578,19 @@ export default function ProfesorPortal() {
                   </h3>
                 </div>
 
-                {allOpenClasses.filter(c => normalizeDay(c.dia_semana) === normalizeDay(selectedCalendarDay.dayName)).length === 0 ? (
+                {allOpenClasses.filter(c => {
+                  if (normalizeDay(c.dia_semana) !== normalizeDay(selectedCalendarDay.dayName)) return false;
+                  const isRotativa = 
+                    c.nombre_clase?.toUpperCase().includes("ROTAT") || 
+                    c.profesor?.toUpperCase().includes("ROTAT") ||
+                    (c.tipo_clase || "").toUpperCase().includes("ROTAT");
+                  if (isRotativa) {
+                    const selectedDate = new Date(selectedCalendarDay.dateISO + "T00:00:00");
+                    const octoberStart = new Date("2026-10-01T00:00:00");
+                    if (selectedDate < octoberStart) return false;
+                  }
+                  return true;
+                }).length === 0 ? (
                   <div className="p-8 text-center space-y-2 bg-[var(--color-bg-card)] rounded-2xl border border-[var(--color-border)] shadow-md">
                     <Calendar size={28} className="mx-auto text-slate-500" />
                     <p className="text-xs font-bold text-white">No hay sesiones de Open Class este {selectedCalendarDay.dayName.toLowerCase()}.</p>
@@ -1587,7 +1599,19 @@ export default function ProfesorPortal() {
                 ) : (
                   <div className="space-y-2.5">
                     {allOpenClasses
-                      .filter(c => normalizeDay(c.dia_semana) === normalizeDay(selectedCalendarDay.dayName))
+                      .filter(c => {
+                        if (normalizeDay(c.dia_semana) !== normalizeDay(selectedCalendarDay.dayName)) return false;
+                        const isRotativa = 
+                          c.nombre_clase?.toUpperCase().includes("ROTAT") || 
+                          c.profesor?.toUpperCase().includes("ROTAT") ||
+                          (c.tipo_clase || "").toUpperCase().includes("ROTAT");
+                        if (isRotativa) {
+                          const selectedDate = new Date(selectedCalendarDay.dateISO + "T00:00:00");
+                          const octoberStart = new Date("2026-10-01T00:00:00");
+                          if (selectedDate < octoberStart) return false;
+                        }
+                        return true;
+                      })
                       .map((clase) => {
                         const isBooked = isAlumnoReservadoEnSesion(
                           teacherStudent?.id || "",
