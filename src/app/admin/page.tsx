@@ -390,30 +390,98 @@ export default function AdminDashboardRecepcion() {
     }
   };
 
-  const handleQRSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const findStudentByScannedCode = async (rawCode: string) => {
+    const trimmed = rawCode.trim();
+    if (!trimmed) return null;
+
+    // 1. Direct UUID match
+    if (trimmed.length === 36 && (trimmed.match(/-/g) || []).length === 4) {
+      const { data } = await supabase.from("alumnos").select("*").eq("id", trimmed).maybeSingle();
+      if (data) return data;
+    }
+
+    // 2. Normalize Spanish keyboard scan anomalies (where '-' becomes '\'') and separators
+    const normalized = trimmed.replace(/[':_]/g, '-').trim();
+
+    // Extract core token without any DF / STUDENT / ALUMNO prefix
+    const cleanToken = normalized
+      .replace(/^DF-STUDENT-/i, '')
+      .replace(/^DF-ALUMNO-/i, '')
+      .replace(/^STUDENT-/i, '')
+      .replace(/^ALUMNO-/i, '')
+      .replace(/^DF-/i, '')
+      .trim();
+
+    // Extract pure alphanumeric token (e.g. "133878")
+    const pureToken = trimmed.replace(/[^a-zA-Z0-9]/g, '').replace(/^(DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, '').trim();
+
+    // Candidate tokens to test against DB
+    const candidates = Array.from(new Set([
+      cleanToken,
+      pureToken,
+      normalized,
+      trimmed,
+      `DF-${cleanToken}`,
+      `DF-${pureToken}`
+    ])).filter(Boolean);
+
+    for (const token of candidates) {
+      // Exact nfc_token match
+      const { data: byNfc } = await supabase
+        .from("alumnos")
+        .select("*")
+        .eq("nfc_token", token)
+        .limit(1)
+        .maybeSingle();
+      if (byNfc) return byNfc;
+
+      // Exact DNI match
+      const { data: byDni } = await supabase
+        .from("alumnos")
+        .select("*")
+        .ilike("dni", token)
+        .limit(1)
+        .maybeSingle();
+      if (byDni) return byDni;
+
+      // Exact ID match
+      const { data: byId } = await supabase
+        .from("alumnos")
+        .select("*")
+        .eq("id", token)
+        .limit(1)
+        .maybeSingle();
+      if (byId) return byId;
+    }
+
+    // 3. Fallback: ILIKE search on nfc_token, dni, or id containing cleanToken
+    if (cleanToken && cleanToken.length >= 3) {
+      const { data: byIlike } = await supabase
+        .from("alumnos")
+        .select("*")
+        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,id.ilike.%${cleanToken}%`)
+        .limit(1)
+        .maybeSingle();
+      if (byIlike) return byIlike;
+    }
+
+    return null;
+  };
+
+  const handleQRSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     const rawCode = qrCode.trim();
     if (!rawCode) return;
 
-    const cleanToken = rawCode.replace(/^DF-/i, '').trim();
-    
-    let query = supabase.from("alumnos").select("*");
-    
-    if (rawCode.includes("-") && rawCode.length === 36) {
-      query = query.eq("id", rawCode);
-    } else {
-      query = query.or(`nfc_token.eq.${cleanToken},nfc_token.eq.${rawCode},dni.ilike.${rawCode}`);
-    }
+    const student = await findStudentByScannedCode(rawCode);
 
-    const { data, error } = await query.maybeSingle();
-
-    if (error || !data) {
-      triggerError('Código QR/NFC no válido o alumno no encontrado.');
+    if (!student) {
+      triggerError(`Código QR/NFC no reconocido ("${rawCode}"). Alumno no encontrado.`);
       setQrCode("");
       return;
     }
 
-    processCheckIn(data);
+    processCheckIn(student);
   };
 
   const handleCobrarBonoEnRecepcion = async (req: any) => {
@@ -918,7 +986,24 @@ export default function AdminDashboardRecepcion() {
                 ref={qrInputRef}
                 type="text"
                 value={qrCode}
-                onChange={(e) => setQrCode(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setQrCode(val);
+                  if (val.includes('\n') || val.includes('\r')) {
+                    const cleanVal = val.replace(/[\r\n]/g, '').trim();
+                    setQrCode(cleanVal);
+                    if (cleanVal) {
+                      findStudentByScannedCode(cleanVal).then(student => {
+                        if (student) {
+                          processCheckIn(student);
+                        } else {
+                          triggerError(`Código QR/NFC no reconocido ("${cleanVal}"). Alumno no encontrado.`);
+                          setQrCode("");
+                        }
+                      });
+                    }
+                  }
+                }}
                 placeholder="Esperando lectura QR/NFC..."
                 className="w-full text-center text-lg font-mono tracking-widest bg-[var(--color-bg)] border-2 border-[var(--color-primary)]/50 text-[var(--color-text-title)] rounded-xl px-4 py-3 outline-none focus:border-[var(--color-primary)] focus:shadow-[0_0_20px_rgba(29,78,216,0.3)] transition-all"
                 autoFocus
