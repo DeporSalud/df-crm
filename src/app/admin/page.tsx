@@ -383,8 +383,8 @@ export default function AdminDashboardRecepcion() {
       if (data) return data;
     }
 
-    // 2. Normalize Spanish keyboard scan anomalies (where '-' becomes '\'') and separators
-    const normalized = trimmed.replace(/[':_]/g, '-').trim();
+    // 2. Normalize Spanish keyboard scan anomalies (where '-' becomes '/' or '\'') and separators
+    const normalized = trimmed.replace(/[/\\':_.]/g, '-').trim();
 
     // Extract core token without any DF / STUDENT / ALUMNO prefix
     const cleanToken = normalized
@@ -395,7 +395,7 @@ export default function AdminDashboardRecepcion() {
       .replace(/^DF-/i, '')
       .trim();
 
-    // Extract pure alphanumeric token (e.g. "133878")
+    // Extract pure alphanumeric token (e.g. "790856")
     const pureToken = trimmed.replace(/[^a-zA-Z0-9]/g, '').replace(/^(DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, '').trim();
 
     // Candidate tokens to test against DB
@@ -427,25 +427,37 @@ export default function AdminDashboardRecepcion() {
         .maybeSingle();
       if (byDni) return byDni;
 
-      // Exact ID match
-      const { data: byId } = await supabase
-        .from("alumnos")
-        .select("*")
-        .eq("id", token)
-        .limit(1)
-        .maybeSingle();
-      if (byId) return byId;
+      // Exact ID match (only if valid UUID to avoid PostgreSQL operator errors)
+      if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
+        const { data: byId } = await supabase
+          .from("alumnos")
+          .select("*")
+          .eq("id", token)
+          .limit(1)
+          .maybeSingle();
+        if (byId) return byId;
+      }
     }
 
-    // 3. Fallback: ILIKE search on nfc_token, dni, or id containing cleanToken
+    // 3. Fallback: ILIKE search on text columns (nfc_token, dni, email, telefono, nombre_completo)
     if (cleanToken && cleanToken.length >= 3) {
       const { data: byIlike } = await supabase
         .from("alumnos")
         .select("*")
-        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,id.ilike.%${cleanToken}%`)
+        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%`)
         .limit(1)
         .maybeSingle();
       if (byIlike) return byIlike;
+    }
+
+    if (pureToken && pureToken.length >= 3 && pureToken !== cleanToken) {
+      const { data: byPure } = await supabase
+        .from("alumnos")
+        .select("*")
+        .or(`nfc_token.ilike.%${pureToken}%,dni.ilike.%${pureToken}%,email.ilike.%${pureToken}%,telefono.ilike.%${pureToken}%`)
+        .limit(1)
+        .maybeSingle();
+      if (byPure) return byPure;
     }
 
     return null;

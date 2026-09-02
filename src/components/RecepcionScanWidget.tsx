@@ -43,7 +43,7 @@ export default function RecepcionScanWidget({
     });
 
     // 1. Limpieza y extracción del token (DF-STUDENT-XXXX, UUID, DNI o Token NFC)
-    const normalized = trimmed.replace(/[':_]/g, '-').trim();
+    const normalized = trimmed.replace(/[/\\':_.]/g, '-').trim();
     const cleanToken = normalized
       .replace(/^DF-STUDENT-/i, '')
       .replace(/^DF-ALUMNO-/i, '')
@@ -89,28 +89,40 @@ export default function RecepcionScanWidget({
         break;
       }
 
-      // Búsqueda por UUID id
-      const { data: byId } = await supabase
-        .from('alumnos')
-        .select('*')
-        .eq('id', token)
-        .limit(1)
-        .maybeSingle();
-      if (byId) {
-        alumno = byId;
-        break;
+      // Búsqueda por UUID id (solo si es un UUID válido)
+      if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
+        const { data: byId } = await supabase
+          .from('alumnos')
+          .select('*')
+          .eq('id', token)
+          .limit(1)
+          .maybeSingle();
+        if (byId) {
+          alumno = byId;
+          break;
+        }
       }
     }
 
-    // Fallback con LIKE si no se encontró exacto
+    // Fallback con LIKE si no se encontró exacto (en columnas de texto)
     if (!alumno && cleanToken && cleanToken.length >= 3) {
       const { data: byLike } = await supabase
         .from('alumnos')
         .select('*')
-        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,id.ilike.%${cleanToken}%`)
+        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%`)
         .limit(1)
         .maybeSingle();
       if (byLike) alumno = byLike;
+    }
+
+    if (!alumno && pureToken && pureToken.length >= 3 && pureToken !== cleanToken) {
+      const { data: byPure } = await supabase
+        .from('alumnos')
+        .select('*')
+        .or(`nfc_token.ilike.%${pureToken}%,dni.ilike.%${pureToken}%,email.ilike.%${pureToken}%,telefono.ilike.%${pureToken}%`)
+        .limit(1)
+        .maybeSingle();
+      if (byPure) alumno = byPure;
     }
 
     // Si no existe el alumno
