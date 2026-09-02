@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase/client";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
 import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
+import { useScannerBridge } from "@/hooks/useScannerBridge";
 
 const playSuccessSound = () => {
   try {
@@ -465,6 +466,27 @@ export default function AdminDashboardRecepcion() {
 
     processCheckIn(student);
   };
+
+  // WebSocket Hardware Scanner Bridge (e.g. OBZ RF-70 on ws://localhost:8080)
+  const handleBridgeScan = async (scannedCode: string) => {
+    const rawCode = scannedCode.trim();
+    if (!rawCode) return;
+    setQrCode(rawCode);
+
+    const student = await findStudentByScannedCode(rawCode);
+
+    if (!student) {
+      triggerError(`Código QR/NFC no reconocido ("${rawCode}"). Alumno no encontrado.`);
+      setQrCode("");
+      return;
+    }
+
+    processCheckIn(student);
+  };
+
+  const { isConnected: isBridgeConnected } = useScannerBridge({
+    onScan: handleBridgeScan
+  });
 
   const handleCobrarBonoEnRecepcion = async (req: any) => {
     let clasesToAdd = 4;
@@ -993,9 +1015,18 @@ export default function AdminDashboardRecepcion() {
               <button type="submit" className="hidden">Procesar</button>
             </form>
             
-            <div className="mt-4 flex items-center justify-center gap-2 text-xs text-[var(--color-success)] font-semibold">
-              <span className="w-2 h-2 rounded-full bg-[var(--color-success)] animate-ping"></span>
-              Lector & Audio Activos
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-xs font-semibold">
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2.5 h-2.5 rounded-full ${isBridgeConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                <span className={isBridgeConnected ? 'text-emerald-400 font-bold' : 'text-slate-400'}>
+                  {isBridgeConnected ? 'Lector OBZ RF-70 Conectado (ws://localhost:8080)' : 'Modo Teclado USB / Buscando Lector'}
+                </span>
+              </div>
+              <span className="text-slate-600 hidden sm:inline">•</span>
+              <div className="flex items-center gap-1.5 text-[var(--color-success)]">
+                <span className="w-2 h-2 rounded-full bg-[var(--color-success)] animate-ping"></span>
+                Audio & Pantalla Activos
+              </div>
             </div>
           </div>
 
