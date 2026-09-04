@@ -7,7 +7,6 @@ import { supabase } from "@/lib/supabase/client";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
 import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
-import { useScannerBridge } from "@/hooks/useScannerBridge";
 
 const playSuccessSound = () => {
   try {
@@ -479,26 +478,63 @@ export default function AdminDashboardRecepcion() {
     processCheckIn(student);
   };
 
-  // WebSocket Hardware Scanner Bridge (e.g. OBZ RF-70 on ws://localhost:8080)
-  const handleBridgeScan = async (scannedCode: string) => {
-    const rawCode = scannedCode.trim();
-    if (!rawCode) return;
-    setQrCode(rawCode);
-
-    const student = await findStudentByScannedCode(rawCode);
-
-    if (!student) {
-      triggerError(`Código QR/NFC no reconocido ("${rawCode}"). Alumno no encontrado.`);
-      setQrCode("");
-      return;
+  // Estado del puente sincronizado con el escáner global
+  const [isBridgeConnected, setIsBridgeConnected] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("df_bridge_connected") === "true";
     }
-
-    processCheckIn(student);
-  };
-
-  const { isConnected: isBridgeConnected } = useScannerBridge({
-    onScan: handleBridgeScan
+    return false;
   });
+
+  // Escuchar eventos globales de validación de acceso y estado del lector
+  useEffect(() => {
+    const handleBridgeStatus = (e: any) => {
+      if (e.detail && typeof e.detail.isConnected === "boolean") {
+        setIsBridgeConnected(e.detail.isConnected);
+      }
+    };
+
+    const handleCheckinEvent = (e: any) => {
+      const student = e.detail;
+      if (student) {
+        setFlashState('success');
+        setTimeout(() => setFlashState(null), 1500);
+        const planLower = (student.plan_activo || "").toLowerCase();
+        const isRegularOrUnlimited = 
+          planLower.includes("regular") || 
+          planLower.includes("mensual") || 
+          planLower.includes("ilimitad") || 
+          student.clases_restantes === null;
+        const remainingTextStr = isRegularOrUnlimited 
+          ? 'Mensualidad Regular' 
+          : `Bono (${student.clases_restantes ?? 0} clases de saldo)`;
+        setStatusMessage({ 
+          type: 'success', 
+          text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr})` 
+        });
+        fetchData();
+      }
+    };
+
+    window.addEventListener("df_bridge_status" as any, handleBridgeStatus);
+    window.addEventListener("df_checkin_success" as any, handleCheckinEvent);
+
+    return () => {
+      window.removeEventListener("df_bridge_status" as any, handleBridgeStatus);
+      window.removeEventListener("df_checkin_success" as any, handleCheckinEvent);
+    };
+  }, []);
+
+  // Sincronizar clase seleccionada en recepción con el escáner global
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if (selectedClaseId) {
+        sessionStorage.setItem("df_active_reception_clase_id", selectedClaseId);
+      } else {
+        sessionStorage.removeItem("df_active_reception_clase_id");
+      }
+    }
+  }, [selectedClaseId]);
 
   const handleCobrarBonoEnRecepcion = async (req: any) => {
     let clasesToAdd = 4;

@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import Sidebar from "@/components/layout/Sidebar";
 import { SedeProvider, useSede } from "@/context/SedeContext";
 import GlobalCobroModal from "@/components/GlobalCobroModal";
+import GlobalScannerWidget from "@/components/GlobalScannerWidget";
 import { 
   Menu, 
   Lock, 
@@ -498,6 +499,7 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
         </main>
       </div>
 
+      <GlobalScannerWidget />
       <GlobalCobroModal />
     </div>
   );
