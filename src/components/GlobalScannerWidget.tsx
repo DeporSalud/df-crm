@@ -20,6 +20,7 @@ import { useScannerBridge } from "@/hooks/useScannerBridge";
 import { supabase } from "@/lib/supabase/client";
 import { logActivity } from "@/lib/activityLogger";
 import { useSede } from "@/context/SedeContext";
+import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
 
 export interface ScanEntranceEvent {
   id: string;
@@ -38,6 +39,7 @@ export interface ScanEntranceEvent {
 export default function GlobalScannerWidget() {
   const { activeSede } = useSede();
   const [isOpenModal, setIsOpenModal] = useState(false);
+  const [isHistoricoModalOpen, setIsHistoricoModalOpen] = useState(false);
   const [manualInput, setManualInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   
@@ -636,7 +638,18 @@ export default function GlobalScannerWidget() {
               </div>
             </div>
 
-            <div className="pt-2 border-t border-white/10 flex justify-end">
+            <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+              <button
+                onClick={() => {
+                  setIsOpenModal(false);
+                  setIsHistoricoModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 text-emerald-400 hover:text-emerald-300 text-xs font-bold transition-colors cursor-pointer"
+                title="Abrir histórico diario y control de accesos"
+              >
+                <span>📅 Ver Histórico Completo →</span>
+              </button>
+
               <button
                 onClick={() => setIsOpenModal(false)}
                 className="px-4 py-2 rounded-xl bg-[var(--color-bg)] hover:bg-white/10 text-slate-300 text-xs font-bold border border-white/10 transition-colors cursor-pointer"
@@ -648,6 +661,12 @@ export default function GlobalScannerWidget() {
           </div>
         </div>
       )}
+
+      {/* Modal de Histórico Diario y Control de Accesos */}
+      <HistoricoEntradasModal
+        isOpen={isHistoricoModalOpen}
+        onClose={() => setIsHistoricoModalOpen(false)}
+      />
     </>
   );
 }

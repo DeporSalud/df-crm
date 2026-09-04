@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase/client";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
 import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
+import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
 
 const playSuccessSound = () => {
   try {
@@ -51,6 +52,7 @@ export default function AdminDashboardRecepcion() {
 
   // State for modal
   const [appModal, setAppModal] = useState<ModalState>({ isOpen: false, message: "" });
+  const [isHistoricoModalOpen, setIsHistoricoModalOpen] = useState(false);
 
   // State for pending bono requests in reception
   const [pendingBonoRequests, setPendingBonoRequests] = useState<any[]>([]);
@@ -1124,13 +1126,37 @@ export default function AdminDashboardRecepcion() {
 
           {/* Fichajes Recientes de Hoy (Consolidado Dashboard) */}
           <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-xl p-5 shadow-lg">
-            <h3 className="text-sm font-semibold text-[var(--color-text-title)] mb-3 flex items-center justify-between">
-              <span>Últimas Entradas Registradas Hoy</span>
-              <span className="text-xs font-normal text-[var(--color-text-secondary)]">Tiempo Real</span>
-            </h3>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--color-text-title)] flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span>Últimas Entradas Registradas Hoy</span>
+                </h3>
+                <span className="text-[11px] font-normal text-[var(--color-text-secondary)]">
+                  Registro en tiempo real ({todayCheckins.length} accesos hoy)
+                </span>
+              </div>
+              <button
+                onClick={() => setIsHistoricoModalOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--color-primary)]/10 hover:bg-[var(--color-primary)]/20 text-[var(--color-secondary)] border border-[var(--color-secondary)]/30 text-xs font-bold transition-all self-start sm:self-auto cursor-pointer shadow-sm active:scale-95"
+                title="Abrir histórico detallado y control de accesos diarios"
+              >
+                <span>📅</span>
+                <span>Ver Histórico de Entradas</span>
+                <span>→</span>
+              </button>
+            </div>
 
             {todayCheckins.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-secondary)] py-4 text-center">Aún no se han registrado entradas hoy.</p>
+              <div className="py-6 text-center space-y-2">
+                <p className="text-xs text-[var(--color-text-secondary)]">Aún no se han registrado entradas hoy.</p>
+                <button
+                  onClick={() => setIsHistoricoModalOpen(true)}
+                  className="text-xs font-bold text-emerald-400 hover:text-emerald-300 hover:underline transition-colors cursor-pointer"
+                >
+                  Consultar histórico de días anteriores →
+                </button>
+              </div>
             ) : (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {todayCheckins.map((item, idx) => (
@@ -1157,6 +1183,12 @@ export default function AdminDashboardRecepcion() {
 
       {/* Pop-up Modal In-App Component */}
       <AppModal modal={appModal} onClose={() => setAppModal({ ...appModal, isOpen: false })} />
+
+      {/* Modal Histórico Completo de Entradas y Control Diario */}
+      <HistoricoEntradasModal
+        isOpen={isHistoricoModalOpen}
+        onClose={() => setIsHistoricoModalOpen(false)}
+      />
     </div>
   );
 }
