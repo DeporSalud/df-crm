@@ -98,8 +98,27 @@ export default function AlumnosPage() {
   const [historyTab, setHistoryTab] = useState<"pagos" | "reservas" | "asistencias" | "ficha">("pagos");
   const [historyPayments, setHistoryPayments] = useState<any[]>([]);
   const [historyReservas, setHistoryReservas] = useState<any[]>([]);
-  
   const { activeSede } = useSede();
+
+  // Expiration check state
+  const [isCheckingExpirations, setIsCheckingExpirations] = useState(false);
+
+  const handleCheckExpirations = async () => {
+    setIsCheckingExpirations(true);
+    try {
+      const res = await fetch("https://app.dancefactoryalcorcon.es/api/cron/check-expirations");
+      const data = await res.json();
+      if (data.success) {
+        alert(`✅ Verificación de caducidades completada:\n\n• Alumnos con bonos revisados: ${data.processedCount}\n• Emails de aviso enviados (≤ 7 días restantes): ${data.emailsSent}`);
+      } else {
+        alert("Aviso: " + (data.error || "No se pudo completar la verificación."));
+      }
+    } catch (e: any) {
+      alert("No se pudo conectar con el servicio de alertas: " + e.message);
+    } finally {
+      setIsCheckingExpirations(false);
+    }
+  };
 
   // State for students from DB
   const [students, setStudents] = useState<any[]>([]);
@@ -365,13 +384,25 @@ export default function AlumnosPage() {
     }
     
     let clases_restantes = 0;
-    if (formData.plan_activo === "Bono 4 clases") clases_restantes = 4;
-    else if (formData.plan_activo === "Bono 8 clases") clases_restantes = 8;
-    else if (formData.plan_activo === "Bono 10 clases") clases_restantes = 10;
-    else if (formData.plan_activo === "Mensualidad Ilimitada") clases_restantes = 999;
-    else if (formData.plan_activo === "Clase Suelta") clases_restantes = 1;
+    let bono_caducidad: string | null = null;
+    if (formData.plan_activo === "Bono 4 clases") {
+      clases_restantes = 4;
+      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
+    } else if (formData.plan_activo === "Bono 8 clases") {
+      clases_restantes = 8;
+      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
+    } else if (formData.plan_activo === "Bono 10 clases") {
+      clases_restantes = 10;
+      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
+    } else if (formData.plan_activo === "Mensualidad Ilimitada") {
+      clases_restantes = 999;
+      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
+    } else if (formData.plan_activo === "Clase Suelta") {
+      clases_restantes = 1;
+      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
+    }
 
-    const payload = {
+    const payload: any = {
       sede: formData.sede || (activeSede !== "consolidado" ? activeSede : "tejar"),
       nombre_completo: formData.nombre_completo.trim(),
       telefono: formData.telefono.trim(),
@@ -382,21 +413,30 @@ export default function AlumnosPage() {
       fecha_nacimiento: formData.fecha_nacimiento || null,
       plan_activo: formData.plan_activo,
       nfc_token: formData.nfc_token.trim() || null,
-      estado: formData.estado
+      estado: formData.estado,
+      ...(bono_caducidad ? { bono_caducidad } : {})
     };
 
     let error;
     let studentId = editingId;
 
     if (isEditing && editingId) {
-      const { error: updateError } = await supabase.from("alumnos").update(payload).eq("id", editingId);
+      let { error: updateError } = await supabase.from("alumnos").update(payload).eq("id", editingId);
+      if (updateError && payload.bono_caducidad) {
+        delete payload.bono_caducidad;
+        const res = await supabase.from("alumnos").update(payload).eq("id", editingId);
+        updateError = res.error;
+      }
       error = updateError;
     } else {
-      const { data, error: insertError } = await supabase.from("alumnos").insert([{
-        ...payload,
-        clases_restantes
-      }]).select("id").single();
-      
+      let insertPayload: any = { ...payload, clases_restantes };
+      let { data, error: insertError } = await supabase.from("alumnos").insert([insertPayload]).select("id").single();
+      if (insertError && insertPayload.bono_caducidad) {
+        delete insertPayload.bono_caducidad;
+        const res = await supabase.from("alumnos").insert([insertPayload]).select("id").single();
+        data = res.data;
+        insertError = res.error;
+      }
       error = insertError;
       if (data) studentId = data.id;
     }
@@ -618,6 +658,15 @@ export default function AlumnosPage() {
 
         <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
           <button 
+            onClick={handleCheckExpirations}
+            disabled={isCheckingExpirations}
+            className="bg-[var(--color-bg-card)] hover:bg-amber-500/10 text-amber-400 border border-amber-500/30 px-3.5 py-2.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 cursor-pointer shadow-sm"
+            title="Comprobar bonos que caducan en 7 días y enviar emails de aviso"
+          >
+            <span>⏰</span>
+            <span>{isCheckingExpirations ? "Comprobando..." : "Avisar Caducidades"}</span>
+          </button>
+          <button 
             onClick={() => setIsCsvModalOpen(true)}
             className="bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-title)] border border-[var(--color-border)] px-3.5 py-2.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2"
           >
@@ -720,9 +769,16 @@ export default function AlumnosPage() {
                             Mensualidad
                           </span>
                         ) : (
-                          <span className={`font-semibold text-xs ${student.clases_restantes === 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-title)]'}`}>
-                            {student.clases_restantes} clases
-                          </span>
+                          <div>
+                            <span className={`font-semibold text-xs ${student.clases_restantes === 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-title)]'}`}>
+                              {student.clases_restantes} clases
+                            </span>
+                            {student.bono_caducidad && (
+                              <span className="text-[10px] text-slate-400 font-mono block mt-0.5" title={`Caducidad: ${student.bono_caducidad}`}>
+                                Exp: {new Date(student.bono_caducidad).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" })}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td className="py-3 px-4">
