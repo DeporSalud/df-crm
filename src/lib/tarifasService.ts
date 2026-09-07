@@ -98,6 +98,16 @@ export const TARIFAS_DEFAULT: TarifaItem[] = [
 
   // CLASES REGULARES INFANTIL (HASTA 14 AÑOS)
   {
+    id: "reg_inf_antiguos_25",
+    tipo: "regular_infantil",
+    nombre: "1 hora / semana (Alumnos Antiguos)",
+    descripcion: "Tarifa reducida especial de 25€/mes para alumnos antiguos de Comercial Baby (Martes Lucía Zamorano y Jueves Paula)",
+    precio: 25.00,
+    horas_semana: 1,
+    periodicidad: "mensual",
+    activo: true
+  },
+  {
     id: "reg_inf_1h",
     tipo: "regular_infantil",
     nombre: "1 hora / semana (Infantil)",
@@ -213,11 +223,21 @@ export function getTarifas(): TarifaItem[] {
     }
     const parsed: TarifaItem[] = JSON.parse(raw);
     // Ensure all items have proper fields
-    return parsed.map(item => ({
+    const formatted = parsed.map(item => ({
       ...item,
       precio: typeof item.precio === "number" && !isNaN(item.precio) ? item.precio : 0,
       periodicidad: item.periodicidad || (item.tipo === "matricula" ? "anual" : item.tipo === "bono" ? "puntual" : "mensual")
     }));
+
+    // Sincronizar automáticamente cualquier tarifa oficial nueva de TARIFAS_DEFAULT que no esté en localStorage
+    const missingDefaults = TARIFAS_DEFAULT.filter(def => !formatted.some(p => p.id === def.id));
+    if (missingDefaults.length > 0) {
+      const merged = [...formatted, ...missingDefaults];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+      return merged;
+    }
+
+    return formatted;
   } catch (e) {
     return TARIFAS_DEFAULT;
   }

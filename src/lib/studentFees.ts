@@ -67,8 +67,25 @@ export function calculateFeeFromClasses(
     return tipoAlumno === "infantil" ? 27 : 30;
   }
 
+  // Comprobar si corresponde a la tarifa especial de 25€ para alumnos antiguos:
+  // Martes 17:00 de Lucía Zamorano o Jueves 17:00 de Paula Jiménez
+  const isSpecialAntiguosBaby = classes.some(c => {
+    const prof = (c.profesor || "").toLowerCase();
+    const dia = (c.dia_semana || "").toUpperCase();
+    const hora = c.hora_inicio || "";
+    return (
+      (dia === "MARTES" && hora.startsWith("17") && (prof.includes("lucia") || prof.includes("zamorano"))) ||
+      (dia === "JUEVES" && hora.startsWith("17") && prof.includes("paula"))
+    );
+  });
+
   // Calculate total weekly hours across all enrolled classes
   const totalHours = classes.reduce((sum, c) => sum + getClassDurationHours(c), 0);
+
+  // Si solo asiste a esta clase (1 hora semanal), se aplica la tarifa especial de 25€
+  if (isSpecialAntiguosBaby && totalHours <= 1.0) {
+    return 25.00;
+  }
 
   return calcularCuotaPorHoras(totalHours, tipoAlumno, tarifasCustom);
 }
