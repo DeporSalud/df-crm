@@ -21,6 +21,7 @@ import { supabase } from "@/lib/supabase/client";
 import { logActivity } from "@/lib/activityLogger";
 import { useSede } from "@/context/SedeContext";
 import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
+import { marcarAsistenciaPorAlumnoYSesion, marcarAsistenciaPorAlumnoEnFecha } from "@/lib/openClassService";
 
 export interface ScanEntranceEvent {
   id: string;
@@ -251,6 +252,25 @@ export default function GlobalScannerWidget() {
       if (assistError) {
         console.warn("[GlobalScanner] Nota de inserción asistencia:", assistError.message);
       }
+
+      // Sincronizar asistencia en Open Class si el alumno tiene reserva para hoy o para la clase activa
+      try {
+        const todayNow = new Date();
+        const y = todayNow.getFullYear();
+        const m = String(todayNow.getMonth() + 1).padStart(2, "0");
+        const d = String(todayNow.getDate()).padStart(2, "0");
+        const todayISO = `${y}-${m}-${d}`;
+        let markedOpenClass = false;
+        if (targetClaseId) {
+          markedOpenClass = marcarAsistenciaPorAlumnoYSesion(student.id, targetClaseId, todayISO);
+        }
+        if (!markedOpenClass) {
+          markedOpenClass = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
+        }
+        if (markedOpenClass && typeof window !== "undefined") {
+          window.dispatchEvent(new Event("df_reservas_updated"));
+        }
+      } catch (e) {}
 
       // 4. Feedback Sonoro y Notificación Visual
       playFeedbackSound("success");

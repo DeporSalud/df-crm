@@ -560,6 +560,465 @@ runTest("4.6 Session storage vs Local storage remember device logic", () => {
 
 
 // =============================================================================
+// MODULE 5: OPEN CLASS CALENDAR RESERVATIONS & RECEPTION CAPACITY ISOLATION
+// =============================================================================
+console.log("\n--- 5. OPEN CLASS CALENDAR RESERVATIONS & RECEPTION CAPACITY ISOLATION ---");
+
+const STORAGE_KEY_RESERVAS = "df_openclass_reservas_v2";
+
+function testGetReservas(storage) {
+  const raw = storage.getItem(STORAGE_KEY_RESERVAS);
+  return raw ? JSON.parse(raw) : [];
+}
+
+function testSaveReservas(storage, list) {
+  storage.setItem(STORAGE_KEY_RESERVAS, JSON.stringify(list));
+}
+
+function testGetSesionReservasCount(storage, claseId, fechaISO) {
+  const all = testGetReservas(storage);
+  return all.filter(r => r.clase_id === claseId && r.fecha_iso === fechaISO && (r.estado === "Confirmada" || r.estado === "Asistida")).length;
+}
+
+function testGetReservasPorClaseYSesion(storage, claseId, fechaISO) {
+  const all = testGetReservas(storage);
+  return all.filter(r => r.clase_id === claseId && r.fecha_iso === fechaISO && (r.estado === "Confirmada" || r.estado === "Asistida"));
+}
+
+function testIsSesionCompleta(storage, clase, fechaISO) {
+  const count = testGetSesionReservasCount(storage, clase.id, fechaISO);
+  return count >= (clase.aforo_maximo || 20);
+}
+
+function testCrearReserva(storage, data) {
+  const maxCapacity = data.clase.aforo_maximo || 20;
+  if (testIsSesionCompleta(storage, data.clase, data.fecha_iso)) {
+    throw new Error(`Aforo completo para la clase ${data.clase.nombre_clase} en fecha ${data.fecha_iso}`);
+  }
+
+  const current = testGetReservas(storage);
+  const existing = current.find(r => 
+    r.alumno_id === data.alumno_id && 
+    r.clase_id === data.clase.id && 
+    r.fecha_iso === data.fecha_iso && 
+    (r.estado === "Confirmada" || r.estado === "Asistida")
+  );
+  if (existing) return existing;
+
+  const nueva = {
+    id: "res_" + Date.now() + "_" + Math.floor(Math.random() * 10000),
+    alumno_id: data.alumno_id,
+    alumno_nombre: data.alumno_nombre,
+    alumno_email: data.alumno_email,
+    alumno_telefono: data.alumno_telefono,
+    alumno_dni: data.alumno_dni,
+    alumno_plan: data.alumno_plan,
+    clase_id: data.clase.id,
+    nombre_clase: data.clase.nombre_clase,
+    profesor: data.clase.profesor,
+    sede: data.clase.sede || "castilla",
+    fecha_iso: data.fecha_iso,
+    fecha_formateada: data.fecha_formateada || data.fecha_iso,
+    dia_semana: data.dia_semana || "LUNES",
+    hora_inicio: data.clase.hora_inicio,
+    hora_fin: data.clase.hora_fin,
+    creado_en: new Date().toISOString(),
+    estado: "Confirmada",
+    asistido: false
+  };
+
+  testSaveReservas(storage, [nueva, ...current]);
+  return nueva;
+}
+
+function testCancelarReserva(storage, reservaId) {
+  const current = testGetReservas(storage);
+  const target = current.find(r => r.id === reservaId);
+  if (!target || target.estado === "Cancelada") {
+    return false;
+  }
+  const updated = current.map(r => r.id === reservaId ? { ...r, estado: "Cancelada" } : r);
+  testSaveReservas(storage, updated);
+  return true;
+}
+
+function testConfirmarAsistencia(storage, reservaId) {
+  const current = testGetReservas(storage);
+  const updated = current.map(r => r.id === reservaId ? { ...r, asistido: true } : r);
+  testSaveReservas(storage, updated);
+  return true;
+}
+
+function testFormatFullCalendarDate(dateISO) {
+  const cleanISO = (dateISO || "").split("T")[0].split(" ")[0].trim();
+  const [y, m, d] = cleanISO.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const dayNames = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+  const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+  return `${dayNames[date.getDay()]} ${date.getDate()} de ${monthNames[date.getMonth()]}`;
+}
+
+const mockReservasStorage = createMockStorage();
+
+const openClassAndreaSoto = {
+  id: "oc_lunes_1",
+  nombre_clase: "OPEN CLASS: Comercial & Performance",
+  profesor: "Andrea Soto",
+  dia_semana: "LUNES",
+  hora_inicio: "19:00",
+  hora_fin: "20:30",
+  sede: "castilla",
+  aforo_maximo: 20
+};
+
+const FECHA_LUNES_21 = "2026-09-21";
+const FECHA_LUNES_28 = "2026-09-28";
+const FECHA_LUNES_05 = "2026-10-05";
+
+runTest("5.1 Format date provides clear Spanish day, number and month ('Lunes 21 de Septiembre')", () => {
+  const label21 = testFormatFullCalendarDate(FECHA_LUNES_21);
+  const label28 = testFormatFullCalendarDate(FECHA_LUNES_28);
+  assert.strictEqual(label21, "Lunes 21 de Septiembre");
+  assert.strictEqual(label28, "Lunes 28 de Septiembre");
+});
+
+runTest("5.2 Initial state returns 0 reservations for fresh dates ('0 reservas para este día')", () => {
+  mockReservasStorage.clear();
+  const count21 = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const count28 = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+  const list21 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+
+  assert.strictEqual(count21, 0);
+  assert.strictEqual(count28, 0);
+  assert.strictEqual(list21.length, 0);
+});
+
+runTest("5.3 Seed 5 reservations for Lunes 21 Sep vs 2 reservations for Lunes 28 Sep", () => {
+  mockReservasStorage.clear();
+
+  // 5 students on Lunes 21
+  for (let i = 1; i <= 5; i++) {
+    testCrearReserva(mockReservasStorage, {
+      alumno_id: `al_21_${i}`,
+      alumno_nombre: `Alumno 21-${i}`,
+      alumno_email: `alumno21_${i}@dancefactory.es`,
+      alumno_telefono: `+34 600 000 02${i}`,
+      alumno_plan: "Bono 10 clases",
+      clase: openClassAndreaSoto,
+      fecha_iso: FECHA_LUNES_21,
+      fecha_formateada: "Lunes 21 de Septiembre",
+      dia_semana: "LUNES"
+    });
+  }
+
+  // 2 students on Lunes 28
+  for (let i = 1; i <= 2; i++) {
+    testCrearReserva(mockReservasStorage, {
+      alumno_id: `al_28_${i}`,
+      alumno_nombre: `Alumno 28-${i}`,
+      alumno_email: `alumno28_${i}@dancefactory.es`,
+      alumno_telefono: `+34 600 000 08${i}`,
+      alumno_plan: "Bono 8 clases",
+      clase: openClassAndreaSoto,
+      fecha_iso: FECHA_LUNES_28,
+      fecha_formateada: "Lunes 28 de Septiembre",
+      dia_semana: "LUNES"
+    });
+  }
+
+  const count21 = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const count28 = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+
+  assert.strictEqual(count21, 5, "Lunes 21 must have exactly 5 reservations");
+  assert.strictEqual(count28, 2, "Lunes 28 must have exactly 2 reservations");
+});
+
+runTest("5.4 Adding a 6th reservation to Lunes 21 Sep does NOT alter Lunes 28 Sep count", () => {
+  const count28Before = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+  assert.strictEqual(count28Before, 2);
+
+  // Add 6th student to Lunes 21
+  testCrearReserva(mockReservasStorage, {
+    alumno_id: "al_21_6",
+    alumno_nombre: "Alumno 21-6 (Nuevo)",
+    alumno_email: "nuevo21@dancefactory.es",
+    clase: openClassAndreaSoto,
+    fecha_iso: FECHA_LUNES_21,
+    fecha_formateada: "Lunes 21 de Septiembre",
+    dia_semana: "LUNES"
+  });
+
+  const count21After = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const count28After = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+
+  assert.strictEqual(count21After, 6, "Lunes 21 must increment to 6");
+  assert.strictEqual(count28After, 2, "Lunes 28 count must remain strictly 2 without alteration");
+});
+
+runTest("5.5 Adding a 3rd reservation to Lunes 28 Sep does NOT alter Lunes 21 Sep count", () => {
+  const count21Before = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  assert.strictEqual(count21Before, 6);
+
+  // Add 3rd student to Lunes 28
+  testCrearReserva(mockReservasStorage, {
+    alumno_id: "al_28_3",
+    alumno_nombre: "Alumno 28-3 (Nuevo)",
+    alumno_email: "nuevo28@dancefactory.es",
+    clase: openClassAndreaSoto,
+    fecha_iso: FECHA_LUNES_28,
+    fecha_formateada: "Lunes 28 de Septiembre",
+    dia_semana: "LUNES"
+  });
+
+  const count21After = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const count28After = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+
+  assert.strictEqual(count28After, 3, "Lunes 28 must increment to 3");
+  assert.strictEqual(count21After, 6, "Lunes 21 must remain strictly 6 without alteration");
+});
+
+runTest("5.6 Attendee roster breakdown isolation (names on Lunes 21 vs Lunes 28 are mutually exclusive)", () => {
+  const roster21 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const roster28 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+
+  assert.strictEqual(roster21.length, 6);
+  assert.strictEqual(roster28.length, 3);
+
+  const names21 = new Set(roster21.map(r => r.alumno_nombre));
+  const names28 = new Set(roster28.map(r => r.alumno_nombre));
+
+  // Verify none of the Lunes 28 students appear in Lunes 21
+  names28.forEach(name => {
+    assert.strictEqual(names21.has(name), false, `Student ${name} from Lunes 28 must not appear on Lunes 21`);
+  });
+
+  // Verify unbooked date returns 0 items
+  const roster05 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_05);
+  assert.strictEqual(roster05.length, 0, "Unbooked date must return 0 attendees");
+});
+
+runTest("5.7 Cancelling a reservation on Lunes 21 decrements Lunes 21 and does NOT alter Lunes 28", () => {
+  const roster21 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const targetToCancel = roster21[0];
+
+  testCancelarReserva(mockReservasStorage, targetToCancel.id);
+
+  const count21AfterCancel = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const count28AfterCancel = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+
+  assert.strictEqual(count21AfterCancel, 5, "Lunes 21 must decrement to 5 after cancellation");
+  assert.strictEqual(count28AfterCancel, 3, "Lunes 28 must remain untouched at 3");
+});
+
+runTest("5.8 Confirming attendance on Lunes 21 marks asistido: true and maintains slot occupancy", () => {
+  const roster21 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const targetToAttend = roster21[0];
+
+  testConfirmarAsistencia(mockReservasStorage, targetToAttend.id);
+
+  const updatedRoster21 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  const attendedStudent = updatedRoster21.find(r => r.id === targetToAttend.id);
+
+  assert.strictEqual(attendedStudent.asistido, true);
+  // Attendance confirmation still counts toward occupied capacity
+  const count21 = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  assert.strictEqual(count21, 5);
+});
+
+runTest("5.9 Duplicate booking prevention: Same student booking same date returns existing without duplicate slot", () => {
+  const student = {
+    alumno_id: "al_21_2",
+    alumno_nombre: "Alumno 21-2",
+    clase: openClassAndreaSoto,
+    fecha_iso: FECHA_LUNES_21,
+    fecha_formateada: "Lunes 21 de Septiembre",
+    dia_semana: "LUNES"
+  };
+
+  const countBefore = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+  testCrearReserva(mockReservasStorage, student);
+  const countAfter = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21);
+
+  assert.strictEqual(countAfter, countBefore, "Duplicate booking must not increase count");
+});
+
+runTest("5.10 Capacity limit is strictly per-date (reaching 20 capacity on Lunes 21 leaves Lunes 28 open)", () => {
+  // Fill Lunes 21 to full capacity (20)
+  for (let i = 6; i <= 20; i++) {
+    testCrearReserva(mockReservasStorage, {
+      alumno_id: `filler_21_${i}`,
+      alumno_nombre: `Filler ${i}`,
+      clase: openClassAndreaSoto,
+      fecha_iso: FECHA_LUNES_21,
+      fecha_formateada: "Lunes 21 de Septiembre",
+      dia_semana: "LUNES"
+    });
+  }
+
+  assert.strictEqual(testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_21), 20);
+  assert.strictEqual(testIsSesionCompleta(mockReservasStorage, openClassAndreaSoto, FECHA_LUNES_21), true);
+
+  // Attempting to exceed 20 on Lunes 21 must throw
+  assert.throws(() => {
+    testCrearReserva(mockReservasStorage, {
+      alumno_id: "overflow_student",
+      alumno_nombre: "Overflow Student",
+      clase: openClassAndreaSoto,
+      fecha_iso: FECHA_LUNES_21,
+      fecha_formateada: "Lunes 21 de Septiembre",
+      dia_semana: "LUNES"
+    });
+  }, /Aforo completo/);
+
+  // But Lunes 28 is still open (only 3 booked out of 20)
+  assert.strictEqual(testIsSesionCompleta(mockReservasStorage, openClassAndreaSoto, FECHA_LUNES_28), false);
+  const newLunes28Booking = testCrearReserva(mockReservasStorage, {
+    alumno_id: "open_slot_student",
+    alumno_nombre: "Open Slot Student",
+    clase: openClassAndreaSoto,
+    fecha_iso: FECHA_LUNES_28,
+    fecha_formateada: "Lunes 28 de Septiembre",
+    dia_semana: "LUNES"
+  });
+  assert.strictEqual(newLunes28Booking.estado, "Confirmada");
+  assert.strictEqual(testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28), 4);
+});
+
+runTest("5.11 Cancellation idempotency (cancelling twice returns false on 2nd attempt, preventing double refund)", () => {
+  const roster28 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+  const target = roster28[0];
+
+  const firstCancel = testCancelarReserva(mockReservasStorage, target.id);
+  assert.strictEqual(firstCancel, true, "First cancellation must succeed");
+
+  const secondCancel = testCancelarReserva(mockReservasStorage, target.id);
+  assert.strictEqual(secondCancel, false, "Second cancellation on same reservation must return false to prevent double refund");
+});
+
+runTest("5.12 ISO-8601 timestamp parsing handles time component without defaulting to day 1", () => {
+  const labelWithTime = testFormatFullCalendarDate("2026-10-25T18:30:00.000Z");
+  assert.strictEqual(labelWithTime, "Domingo 25 de Octubre", "Must parse day 25, NOT day 1");
+
+  const labelSep = testFormatFullCalendarDate("2026-09-21 19:00:00");
+  assert.strictEqual(labelSep, "Lunes 21 de Septiembre");
+});
+
+runTest("5.13 Multi-date bookings for same student: cancelling one date preserves the other date", () => {
+  const studentId = "student_weekly_recurring";
+
+  // Book on Lunes 28 and Lunes 05 (both have free slots)
+  const res28 = testCrearReserva(mockReservasStorage, {
+    alumno_id: studentId,
+    alumno_nombre: "Weekly Student",
+    clase: openClassAndreaSoto,
+    fecha_iso: FECHA_LUNES_28,
+    fecha_formateada: "Lunes 28 de Septiembre",
+    dia_semana: "LUNES"
+  });
+
+  const res05 = testCrearReserva(mockReservasStorage, {
+    alumno_id: studentId,
+    alumno_nombre: "Weekly Student",
+    clase: openClassAndreaSoto,
+    fecha_iso: FECHA_LUNES_05,
+    fecha_formateada: "Lunes 5 de Octubre",
+    dia_semana: "LUNES"
+  });
+
+  assert.ok(res28.id !== res05.id);
+
+  // Cancel Lunes 28 reservation
+  testCancelarReserva(mockReservasStorage, res28.id);
+
+  const roster28 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_28);
+  const roster05 = testGetReservasPorClaseYSesion(mockReservasStorage, openClassAndreaSoto.id, FECHA_LUNES_05);
+
+  assert.strictEqual(roster28.some(r => r.alumno_id === studentId), false, "Must be removed from Lunes 28");
+  assert.strictEqual(roster05.some(r => r.alumno_id === studentId), true, "Must remain active on Lunes 05");
+});
+
+runTest("5.14 Year-end transition (Dec 31, 2026 -> Jan 1, 2027) booking and date formatting isolation", () => {
+  const dec31 = testFormatFullCalendarDate("2026-12-31");
+  const jan01 = testFormatFullCalendarDate("2027-01-01");
+
+  assert.strictEqual(dec31, "Jueves 31 de Diciembre");
+  assert.strictEqual(jan01, "Viernes 1 de Enero");
+
+  // Verify bookings on 2027-01-01 do not bleed into 2026
+  testCrearReserva(mockReservasStorage, {
+    alumno_id: "al_ny_2027",
+    alumno_nombre: "New Year Student",
+    clase: openClassAndreaSoto,
+    fecha_iso: "2027-01-04",
+    fecha_formateada: "Lunes 4 de Enero",
+    dia_semana: "LUNES"
+  });
+
+  assert.strictEqual(testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, "2027-01-04"), 1);
+  assert.strictEqual(testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, "2026-01-04"), 0);
+});
+
+runTest("5.15 Day name normalization handles accents, casing and whitespace", () => {
+  const normalizeDay = (day) => (day || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
+
+  assert.strictEqual(normalizeDay("Miércoles"), "MIERCOLES");
+  assert.strictEqual(normalizeDay("miércoles"), "MIERCOLES");
+  assert.strictEqual(normalizeDay("Miercoles"), "MIERCOLES");
+  assert.strictEqual(normalizeDay("Sábado"), "SABADO");
+  assert.strictEqual(normalizeDay("sabado"), "SABADO");
+  assert.strictEqual(normalizeDay("  Lunes  "), "LUNES");
+});
+
+runTest("5.16 Accent-insensitive and case-insensitive search in attendee roster", () => {
+  const normalizeStr = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+
+  const attendees = [
+    { alumno_nombre: "Lucía Zamorano", alumno_dni: "12345678A" },
+    { alumno_nombre: "Álvaro García", alumno_dni: "87654321B" }
+  ];
+
+  const query1 = normalizeStr("lucia");
+  const filtered1 = attendees.filter(a => normalizeStr(a.alumno_nombre).includes(query1));
+  assert.strictEqual(filtered1.length, 1);
+  assert.strictEqual(filtered1[0].alumno_nombre, "Lucía Zamorano");
+
+  const query2 = normalizeStr("garcia");
+  const filtered2 = attendees.filter(a => normalizeStr(a.alumno_nombre).includes(query2));
+  assert.strictEqual(filtered2.length, 1);
+  assert.strictEqual(filtered2[0].alumno_nombre, "Álvaro García");
+});
+
+runTest("5.17 Zero-reservations state representation ('0 reservas para este día')", () => {
+  const count = testGetSesionReservasCount(mockReservasStorage, openClassAndreaSoto.id, "2026-11-23");
+  assert.strictEqual(count, 0);
+
+  const cardBadge = count === 0 ? "0 reservas para este día" : `${20 - count} libres`;
+  assert.strictEqual(cardBadge, "0 reservas para este día");
+});
+
+runTest("5.18 Sede scoping: Only Studio 2 Paseo Castilla Open Classes are targeted", () => {
+  const normalizeSede = (sede) => {
+    const s = (sede || "").toLowerCase();
+    if (s.includes("tejar") || s.includes("mostoles") || s.includes("móstoles") || s.includes("studio 1") || s.includes("el tejar")) {
+      return "tejar";
+    }
+    return "castilla";
+  };
+
+  const dbClasses = [
+    { id: "c1", nombre_clase: "OPEN CLASS COMERCIAL", sede: "castilla" },
+    { id: "c2", nombre_clase: "OPEN CLASS HEELS", sede: "alcorcon" },
+    { id: "c3", nombre_clase: "OPEN CLASS TEJAR", sede: "mostoles" },
+    { id: "c4", nombre_clase: "OPEN CLASS STUDIO 1", sede: "tejar" }
+  ];
+
+  const studio2Classes = dbClasses.filter(c => normalizeSede(c.sede) === "castilla");
+  assert.strictEqual(studio2Classes.length, 2);
+  assert.strictEqual(studio2Classes.every(c => c.sede === "castilla" || c.sede === "alcorcon"), true);
+});
+
+
+// =============================================================================
 // SUMMARY
 // =============================================================================
 console.log("\n================================================================================");

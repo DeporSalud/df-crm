@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import TopHeader from "@/components/layout/TopHeader";
 import { useSede } from "@/context/SedeContext";
 import { supabase } from "@/lib/supabase/client";
@@ -8,7 +8,26 @@ import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
 import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
 import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
+import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
 import { isRegularClassStudent, isTeacherProfile } from "@/lib/matriculaService";
+import { 
+  Calendar, Users, Clock, Sparkles, CheckCircle2, ChevronRight, 
+  CalendarDays, Flame, Building2 
+} from "lucide-react";
+import {
+  getUpcomingCalendarDates,
+  createCalendarDayFromISO,
+  formatFullCalendarDate,
+  CalendarDayItem,
+  getSesionReservasCount,
+  isSesionCompleta,
+  getOpenClassReservas,
+  DEFAULT_STUDIO2_OPEN_CLASSES,
+  normalizeDay,
+  normalizeSede,
+  marcarAsistenciaPorAlumnoYSesion,
+  marcarAsistenciaPorAlumnoEnFecha
+} from "@/lib/openClassService";
 
 const playSuccessSound = () => {
   try {
@@ -174,6 +193,35 @@ export default function AdminDashboardRecepcion() {
   const [selectedClaseId, setSelectedClaseId] = useState<string | null>(null);
   const [todayCheckins, setTodayCheckins] = useState<any[]>([]);
 
+  // View mode for left column: regular classes of today vs Open Classes by calendar date
+  const [clasesTab, setClasesTab] = useState<"regulares" | "openclass">("regulares");
+
+  // Open Classes & Calendar State
+  const calendarDays = useMemo(() => getUpcomingCalendarDates(35), []);
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState<CalendarDayItem>(() => calendarDays[0]);
+  const [allOpenClasses, setAllOpenClasses] = useState<any[]>(DEFAULT_STUDIO2_OPEN_CLASSES);
+
+  // Modal state for viewing attendees of an Open Class session
+  const [asistentesModalState, setAsistentesModalState] = useState<{
+    isOpen: boolean;
+    clase: any | null;
+    calendarDay: CalendarDayItem | null;
+  }>({
+    isOpen: false,
+    clase: null,
+    calendarDay: null
+  });
+
+  // Revision / tick counter to re-render counts on df_reservas_updated
+  const [reservasTick, setReservasTick] = useState(0);
+
+  // Filtered Open Classes for the selected calendar date
+  const openClassesForSelectedDay = useMemo(() => {
+    if (!selectedCalendarDay) return [];
+    const normDay = normalizeDay(selectedCalendarDay.dayName);
+    return allOpenClasses.filter(c => normalizeDay(c.dia_semana) === normDay);
+  }, [allOpenClasses, selectedCalendarDay, reservasTick]);
+
   // State for metrics
   const [metrics, setMetrics] = useState({
     checkinsCount: 0,
@@ -190,6 +238,19 @@ export default function AdminDashboardRecepcion() {
   const [isLoading, setIsLoading] = useState(true);
 
   const qrInputRef = useRef<HTMLInputElement>(null);
+
+  // Listen to reservation updates across portals
+  useEffect(() => {
+    const handleReservasUpdated = () => {
+      setReservasTick(prev => prev + 1);
+    };
+    window.addEventListener("df_reservas_updated", handleReservasUpdated);
+    window.addEventListener("storage", handleReservasUpdated);
+    return () => {
+      window.removeEventListener("df_reservas_updated", handleReservasUpdated);
+      window.removeEventListener("storage", handleReservasUpdated);
+    };
+  }, []);
 
   // Today's day name in Spanish
   const days = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
@@ -259,6 +320,35 @@ export default function AdminDashboardRecepcion() {
       ocupacionPorcentaje,
       alumnosActivos: alumnosCount || 0
     });
+
+    // 4. Fetch Open Classes (Studio 2 Paseo Castilla exclusively)
+    try {
+      const { data: dbOpenClasses } = await supabase
+        .from("clases_cuadrante")
+        .select("*")
+        .in("sede", ["castilla", "alcorcon"]);
+
+      let openList: any[] = [];
+      if (dbOpenClasses && dbOpenClasses.length > 0) {
+        openList = dbOpenClasses.filter((c: any) => {
+          if (normalizeSede(c.sede) !== "castilla") return false;
+          const nameUpper = (c.nombre_clase || "").toUpperCase();
+          return c.tipo_clase === "Open Class" || nameUpper.includes("OPEN CLASS") || nameUpper.includes("FORMACI");
+        });
+      }
+
+      // Merge with DEFAULT_STUDIO2_OPEN_CLASSES if any default class is missing from db
+      const existingIds = new Set(openList.map(c => c.id));
+      DEFAULT_STUDIO2_OPEN_CLASSES.forEach(defClass => {
+        if (!existingIds.has(defClass.id)) {
+          openList.push(defClass);
+        }
+      });
+
+      setAllOpenClasses(openList);
+    } catch (err) {
+      setAllOpenClasses(DEFAULT_STUDIO2_OPEN_CLASSES);
+    }
 
     setIsLoading(false);
   };
@@ -340,6 +430,20 @@ export default function AdminDashboardRecepcion() {
     if (assistError) {
       triggerError('Error al registrar la asistencia.');
       return;
+    }
+
+    // 2. Si la clase seleccionada es una Open Class, sincronizar asistencia en la reserva
+    let openClassMarked = false;
+    if (selectedClaseId && selectedCalendarDay) {
+      openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, selectedCalendarDay.dateISO);
+    }
+    if (!openClassMarked) {
+      const todayNow = new Date();
+      const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
+      openClassMarked = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
+    }
+    if (openClassMarked) {
+      window.dispatchEvent(new Event("df_reservas_updated"));
     }
 
     playSuccessSound();
@@ -502,6 +606,21 @@ export default function AdminDashboardRecepcion() {
       if (student) {
         setFlashState('success');
         setTimeout(() => setFlashState(null), 1500);
+
+        // Sincronizar asistencia en Open Class si procede
+        let openClassMarked = false;
+        if (selectedClaseId && selectedCalendarDay) {
+          openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, selectedCalendarDay.dateISO);
+        }
+        if (!openClassMarked) {
+          const todayNow = new Date();
+          const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
+          openClassMarked = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
+        }
+        if (openClassMarked) {
+          window.dispatchEvent(new Event("df_reservas_updated"));
+        }
+
         const planLower = (student.plan_activo || "").toLowerCase();
         const isRegularOrUnlimited = 
           planLower.includes("regular") || 
@@ -979,49 +1098,306 @@ export default function AdminDashboardRecepcion() {
       {/* Grid Principal: Clases de Hoy (Izq) vs. Escáner + Check-ins (Der) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
-        {/* Columna Izquierda: Clases de Hoy */}
+        {/* Columna Izquierda: Clases de Hoy vs Open Classes por Fecha */}
         <div className="lg:col-span-1 space-y-6">
-          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-xl p-6 shadow-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-[family-name:var(--font-heading)] text-[var(--color-text-title)] flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-[var(--color-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Clases de Hoy ({todayStr})
-              </h3>
-              <span className="text-xs font-semibold text-[var(--color-primary)] bg-[var(--color-primary)]/10 px-2.5 py-1 rounded-full border border-[var(--color-primary)]/20">
-                {clasesHoy.length} clases
-              </span>
-            </div>
+          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-xl p-5 sm:p-6 shadow-lg">
             
-            {clasesHoy.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-secondary)] py-4 text-center">No hay clases programadas para hoy en esta sede.</p>
-            ) : (
-              <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
-                {clasesHoy.map((clase) => (
-                  <div 
-                    key={clase.id}
-                    onClick={() => setSelectedClaseId(clase.id)}
-                    className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all ${
-                      selectedClaseId === clase.id 
-                        ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/10 shadow-md' 
-                        : 'border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-primary)]/50'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="font-semibold text-[var(--color-text-title)]">{clase.nombre_clase}</span>
-                      <span className="text-xs font-mono font-bold text-[var(--color-secondary)]">
-                        {clase.hora_inicio}
-                      </span>
-                    </div>
-                    <div className="text-xs text-[var(--color-text-secondary)] flex justify-between mt-1">
-                      <span>Prof: {clase.profesor}</span>
-                      <span>Aforo: {clase.aforo_maximo} alumnos</span>
-                    </div>
+            {/* Pestañas de Navegación: Cuadrante Hoy vs Open Classes Calendario */}
+            <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] mb-4 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => {
+                  setClasesTab("regulares");
+                  if (clasesHoy.length > 0) setSelectedClaseId(clasesHoy[0].id);
+                }}
+                className={`flex-1 py-1.5 px-3 rounded-lg transition-all cursor-pointer text-center ${
+                  clasesTab === "regulares"
+                    ? "bg-[var(--color-primary)] text-white shadow-sm font-bold"
+                    : "text-[var(--color-text-secondary)] hover:text-white"
+                }`}
+              >
+                Cuadrante Hoy ({todayStr})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setClasesTab("openclass");
+                  if (openClassesForSelectedDay.length > 0) {
+                    setSelectedClaseId(openClassesForSelectedDay[0].id);
+                  }
+                }}
+                className={`flex-1 py-1.5 px-3 rounded-lg transition-all cursor-pointer text-center flex items-center justify-center gap-1.5 ${
+                  clasesTab === "openclass"
+                    ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-sm font-bold"
+                    : "text-cyan-400 hover:text-cyan-300"
+                }`}
+              >
+                <span>🌟 Open Classes</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-cyan-950/80 border border-cyan-500/40 text-cyan-300">
+                  Calendario
+                </span>
+              </button>
+            </div>
+
+            {/* ============================================================= */}
+            {/* VISTA 1: CLASES REGULARES DE HOY                             */}
+            {/* ============================================================= */}
+            {clasesTab === "regulares" && (
+              <>
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-base font-bold font-[family-name:var(--font-heading)] text-[var(--color-text-title)] flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-[var(--color-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Clases de Hoy ({todayStr})
+                  </h3>
+                  <span className="text-xs font-semibold text-[var(--color-primary)] bg-[var(--color-primary)]/10 px-2.5 py-0.5 rounded-full border border-[var(--color-primary)]/20">
+                    {clasesHoy.length} clases
+                  </span>
+                </div>
+                
+                {clasesHoy.length === 0 ? (
+                  <p className="text-sm text-[var(--color-text-secondary)] py-4 text-center">No hay clases programadas para hoy en esta sede.</p>
+                ) : (
+                  <div className="space-y-2.5 max-h-[65vh] overflow-y-auto pr-1">
+                    {clasesHoy.map((clase) => (
+                      <div 
+                        key={clase.id}
+                        onClick={() => setSelectedClaseId(clase.id)}
+                        className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all ${
+                          selectedClaseId === clase.id 
+                            ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/10 shadow-md' 
+                            : 'border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-primary)]/50'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="font-semibold text-sm text-[var(--color-text-title)]">{clase.nombre_clase}</span>
+                          <span className="text-xs font-mono font-bold text-[var(--color-secondary)]">
+                            {clase.hora_inicio}
+                          </span>
+                        </div>
+                        <div className="text-xs text-[var(--color-text-secondary)] flex justify-between mt-1">
+                          <span>Prof: {clase.profesor}</span>
+                          <span>Aforo: {clase.aforo_maximo} alumnos</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
+              </>
+            )}
+
+            {/* ============================================================= */}
+            {/* VISTA 2: OPEN CLASSES POR FECHA DE CALENDARIO (REQUERIMIENTO R1) */}
+            {/* ============================================================= */}
+            {clasesTab === "openclass" && (
+              <div className="space-y-4">
+                {/* Cabecera de Open Classes */}
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h3 className="text-base font-extrabold font-[family-name:var(--font-heading)] text-white flex items-center gap-1.5">
+                      <Sparkles size={16} className="text-cyan-400" />
+                      Open Classes por Fecha
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Studio 2 Paseo Castilla • Aforo y reservas nominales
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded-full border border-cyan-500/20">
+                    {openClassesForSelectedDay.length} sesiones
+                  </span>
+                </div>
+
+                {/* Selector Dinámico de Fechas de Calendario (R1) */}
+                <div className="space-y-2 p-3 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)]">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-slate-300 font-semibold flex items-center gap-1">
+                      <Calendar size={13} className="text-cyan-400" />
+                      Fecha de Calendario:
+                    </span>
+                    <input
+                      type="date"
+                      value={selectedCalendarDay.dateISO}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          setSelectedCalendarDay(createCalendarDayFromISO(e.target.value));
+                        }
+                      }}
+                      className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-lg px-2 py-1 text-[11px] text-cyan-300 font-mono outline-none focus:border-cyan-400 cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Carrusel de fechas de calendario próximas */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 pt-1 scrollbar-thin">
+                    {calendarDays.map((day) => {
+                      const isSelected = selectedCalendarDay.dateISO === day.dateISO;
+                      return (
+                        <button
+                          key={day.dateISO}
+                          type="button"
+                          onClick={() => setSelectedCalendarDay(day)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer flex flex-col items-center min-w-[58px] border ${
+                            isSelected
+                              ? "bg-gradient-to-b from-cyan-500 to-blue-600 text-white border-cyan-300 shadow-md shadow-cyan-500/25 scale-105"
+                              : "bg-[var(--color-bg-card)] text-slate-300 border-[var(--color-border)] hover:border-cyan-500/50 hover:text-white"
+                          }`}
+                        >
+                          <span className="text-[9px] uppercase font-mono opacity-80">
+                            {day.isToday ? "Hoy" : day.isTomorrow ? "Mañana" : day.dayShort}
+                          </span>
+                          <span className="text-sm font-black">{day.dayNumber}</span>
+                          <span className="text-[9px] uppercase font-mono opacity-80">{day.monthShort}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Resumen de la fecha seleccionada */}
+                  <div className="text-center pt-1 border-t border-[var(--color-border)]/60">
+                    <span className="text-xs font-extrabold text-cyan-300">
+                      📅 {formatFullCalendarDate(selectedCalendarDay)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Lista de Open Classes de la fecha seleccionada */}
+                <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-1">
+                  {openClassesForSelectedDay.length === 0 ? (
+                    <div className="py-8 px-4 text-center bg-[var(--color-bg)]/60 rounded-xl border border-dashed border-[var(--color-border)] space-y-2">
+                      <p className="text-xs font-semibold text-slate-300">
+                        No hay Open Classes programadas para los {selectedCalendarDay.dayName.toLowerCase()}s en Studio 2.
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        Selecciona un Lunes, Martes, Miércoles, Jueves, Viernes o Sábado para ver las sesiones disponibles.
+                      </p>
+                    </div>
+                  ) : (
+                    openClassesForSelectedDay.map((clase) => {
+                      const reservasCount = getSesionReservasCount(clase.id, selectedCalendarDay.dateISO);
+                      const maxCapacity = clase.aforo_maximo || 20;
+                      const formattedDate = formatFullCalendarDate(selectedCalendarDay);
+                      const isFull = reservasCount >= maxCapacity;
+                      const isSelected = selectedClaseId === clase.id;
+                      const pct = Math.min(100, Math.round((reservasCount / maxCapacity) * 100));
+
+                      return (
+                        <div
+                          key={clase.id}
+                          onClick={() => {
+                            setAsistentesModalState({
+                              isOpen: true,
+                              clase,
+                              calendarDay: selectedCalendarDay
+                            });
+                          }}
+                          className={`p-3.5 rounded-xl border-2 transition-all cursor-pointer ${
+                            isSelected
+                              ? "border-cyan-400 bg-cyan-950/25 shadow-lg shadow-cyan-950/30"
+                              : "border-[var(--color-border)] bg-[var(--color-bg)] hover:border-cyan-500/50"
+                          }`}
+                        >
+                          {/* Cabecera de la Clase */}
+                          <div className="flex justify-between items-start gap-2 mb-1">
+                            <div className="min-w-0">
+                              <span className="text-[9.5px] font-mono font-bold text-cyan-400 uppercase tracking-wider block truncate">
+                                Studio 2 Paseo Castilla • {clase.sala || "Sala 1"}
+                              </span>
+                              <h4 className="font-bold text-xs sm:text-sm text-white mt-0.5 truncate">
+                                {clase.nombre_clase}
+                              </h4>
+                            </div>
+                            <span className="text-xs font-mono font-bold text-cyan-300 px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 shrink-0">
+                              {clase.hora_inicio} - {clase.hora_fin}
+                            </span>
+                          </div>
+
+                          {/* Docente */}
+                          <div className="text-xs text-slate-400 flex items-center justify-between mb-2">
+                            <span>Prof: <strong className="text-slate-200">{clase.profesor}</strong></span>
+                            <span className="text-[10.5px] text-slate-400">{clase.tipo_clase || "Open Class"}</span>
+                          </div>
+
+                          {/* Tarjeta de Fecha Específica Consultada (Acceptance Criteria R1) */}
+                          <div className="p-2 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] mb-2.5 flex items-center justify-between">
+                            <span className="text-[11px] text-slate-400">Fecha consultada:</span>
+                            <span className="text-xs font-bold text-cyan-300 flex items-center gap-1">
+                              <Calendar size={12} className="text-cyan-400" />
+                              {formattedDate}
+                            </span>
+                          </div>
+
+                          {/* Contador Exacto de Plazas y Aforo (Acceptance Criteria R1) */}
+                          <div className="space-y-1 mb-3">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="font-bold text-slate-200 text-[11px]">
+                                {reservasCount} / {maxCapacity} Reservas para el {formattedDate}
+                              </span>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                isFull 
+                                  ? "bg-red-500/20 text-red-300 border border-red-500/30" 
+                                  : reservasCount === 0
+                                  ? "bg-cyan-950/60 text-cyan-300 border border-cyan-500/30"
+                                  : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                              }`}>
+                                {isFull ? "Aforo Completo" : reservasCount === 0 ? "0 reservas para este día" : `${maxCapacity - reservasCount} libres`}
+                              </span>
+                            </div>
+                            {/* Barra de Ocupación */}
+                            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                              <div 
+                                className={`h-full rounded-full transition-all duration-300 ${
+                                  isFull ? "bg-red-500" : pct >= 75 ? "bg-amber-400" : "bg-cyan-400"
+                                }`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Botones de Acción (Acceptance Criteria R2) */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-[var(--color-border)]/60">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAsistentesModalState({
+                                  isOpen: true,
+                                  clase,
+                                  calendarDay: selectedCalendarDay
+                                });
+                              }}
+                              className="py-1.5 px-2.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-bold text-xs transition-all flex items-center justify-center gap-1 cursor-pointer"
+                            >
+                              <Users size={13} />
+                              <span>{reservasCount === 0 ? "0 reservas para este día" : `Ver Alumnos Apuntados (${reservasCount})`}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedClaseId(clase.id);
+                                setStatusMessage({
+                                  type: "success",
+                                  text: `Clase "${clase.nombre_clase}" seleccionada para el lector de accesos QR/NFC.`
+                                });
+                              }}
+                              className={`py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                                isSelected
+                                  ? "bg-emerald-500 text-slate-950 font-black shadow-md shadow-emerald-500/20"
+                                  : "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                              }`}
+                            >
+                              {isSelected ? "✓ Activa para Escáner" : "Seleccionar para Escáner"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
             )}
+
           </div>
         </div>
 
@@ -1203,6 +1579,18 @@ export default function AdminDashboardRecepcion() {
       <HistoricoEntradasModal
         isOpen={isHistoricoModalOpen}
         onClose={() => setIsHistoricoModalOpen(false)}
+      />
+
+      {/* Modal Desglose Nominal de Alumnos y Asistencia por Sesión Open Class (R2) */}
+      <OpenClassAsistentesModal
+        isOpen={asistentesModalState.isOpen}
+        onClose={() => setAsistentesModalState({ ...asistentesModalState, isOpen: false })}
+        clase={asistentesModalState.clase}
+        calendarDay={asistentesModalState.calendarDay}
+        onReservationChanged={() => {
+          setReservasTick(prev => prev + 1);
+          fetchData();
+        }}
       />
     </div>
   );

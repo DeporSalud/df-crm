@@ -7,40 +7,124 @@ export interface OpenClassReserva {
   profesor: string;
   sede: string;
   sala?: string;
-  fecha_iso: string; // e.g. "2026-09-01"
-  fecha_formateada: string; // e.g. "Lunes 1 de Septiembre"
+  fecha_iso: string; // e.g. "2026-09-21"
+  fecha_formateada: string; // e.g. "Lunes 21 de Septiembre"
   dia_semana: string; // e.g. "LUNES"
   hora_inicio: string; // e.g. "19:00"
-  hora_fin: string; // e.g. "20:00"
+  hora_fin: string; // e.g. "20:30"
   creado_en: string;
-  estado: "Confirmada" | "Cancelada";
+  estado: "Confirmada" | "Cancelada" | "Asistida";
+  alumno_email?: string;
+  alumno_telefono?: string;
+  alumno_dni?: string;
+  alumno_plan?: string;
+  asistido?: boolean;
 }
 
 export interface CalendarDayItem {
-  dateISO: string; // "2026-09-01"
+  dateISO: string; // "2026-09-21"
   dayName: string; // "LUNES"
   dayShort: string; // "LUN"
-  dayNumber: number; // 1
+  dayNumber: number; // 21
   monthName: string; // "Septiembre"
   monthShort: string; // "Sep"
-  fullLabel: string; // "Lunes 1 Sep"
+  fullLabel: string; // "Lunes 21 Sep"
   isToday: boolean;
   isTomorrow: boolean;
+  year?: number;
 }
+
+export const DEFAULT_STUDIO2_OPEN_CLASSES = [
+  {
+    id: "oc_lunes_1",
+    nombre_clase: "OPEN CLASS: Comercial & Performance",
+    profesor: "Andrea Soto",
+    dia_semana: "LUNES",
+    hora_inicio: "19:00",
+    hora_fin: "20:30",
+    sede: "castilla",
+    sala: "Sala 1",
+    aforo_maximo: 20,
+    tipo_clase: "Open Class"
+  },
+  {
+    id: "oc_martes_1",
+    nombre_clase: "OPEN CLASS: Heels & Choreo",
+    profesor: "Alejandro Rovina",
+    dia_semana: "MARTES",
+    hora_inicio: "19:00",
+    hora_fin: "20:30",
+    sede: "castilla",
+    sala: "Sala 1",
+    aforo_maximo: 20,
+    tipo_clase: "Open Class"
+  },
+  {
+    id: "oc_miercoles_1",
+    nombre_clase: "OPEN CLASS: Urbano & Freestyle",
+    profesor: "Lucas López",
+    dia_semana: "MIÉRCOLES",
+    hora_inicio: "19:00",
+    hora_fin: "20:30",
+    sede: "castilla",
+    sala: "Sala 1",
+    aforo_maximo: 20,
+    tipo_clase: "Open Class"
+  },
+  {
+    id: "oc_jueves_1",
+    nombre_clase: "FORMACIÓN ROTATIVA",
+    profesor: "Formación Rotativa",
+    dia_semana: "JUEVES",
+    hora_inicio: "20:30",
+    hora_fin: "22:00",
+    sede: "castilla",
+    sala: "Sala 1",
+    aforo_maximo: 20,
+    tipo_clase: "Open Class"
+  },
+  {
+    id: "oc_viernes_1",
+    nombre_clase: "OPEN CLASS: Contemporáneo Fusion",
+    profesor: "Lucía Zamorano",
+    dia_semana: "VIERNES",
+    hora_inicio: "18:30",
+    hora_fin: "20:00",
+    sede: "castilla",
+    sala: "Sala 1",
+    aforo_maximo: 20,
+    tipo_clase: "Open Class"
+  },
+  {
+    id: "oc_sabado_1",
+    nombre_clase: "MASTER OPEN CLASS: Especial Fin de Semana",
+    profesor: "Andrea Soto",
+    dia_semana: "SÁBADO",
+    hora_inicio: "11:30",
+    hora_fin: "13:00",
+    sede: "castilla",
+    sala: "Sala Principal",
+    aforo_maximo: 25,
+    tipo_clase: "Open Class"
+  }
+];
 
 const STORAGE_KEY = "df_openclass_reservas_v2";
 
 /**
- * Generates the upcoming calendar dates for booking (next 30 days starting from current/upcoming season)
+ * Strips time and leading/trailing whitespace from ISO dates
  */
-export function getUpcomingCalendarDates(daysCount = 28): CalendarDayItem[] {
-  const list: CalendarDayItem[] = [];
+export function cleanDateISO(fechaISO: string | null | undefined): string {
+  if (!fechaISO) return "";
+  return fechaISO.split("T")[0].split(" ")[0].trim();
+}
+
+/**
+ * Creates a CalendarDayItem from a standard Date object
+ */
+export function createCalendarDayFromDate(d: Date): CalendarDayItem {
   const now = new Date();
-  
-  // Open Classes start on September 9th, 2026
-  const seasonOpenClassStart = new Date(2026, 8, 9, 0, 0, 0); // Sep 9, 2026
-  const start = now.getTime() < seasonOpenClassStart.getTime() ? new Date(seasonOpenClassStart) : new Date(now);
-  
+  const dayOfWeek = d.getDay();
   const dayNamesEs = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
   const dayShortEs = ["DOM", "LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB"];
   const monthNamesEs = [
@@ -52,6 +136,72 @@ export function getUpcomingCalendarDates(daysCount = 28): CalendarDayItem[] {
     "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"
   ];
 
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const dateISO = `${year}-${month}-${day}`;
+  const isToday = d.toDateString() === now.toDateString();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow = d.toDateString() === tomorrow.toDateString();
+
+  return {
+    dateISO,
+    dayName: dayNamesEs[dayOfWeek],
+    dayShort: dayShortEs[dayOfWeek],
+    dayNumber: d.getDate(),
+    monthName: monthNamesEs[d.getMonth()],
+    monthShort: monthShortEs[d.getMonth()],
+    fullLabel: isToday ? "Hoy" : isTomorrow ? "Mañana" : `${dayShortEs[dayOfWeek]} ${d.getDate()} ${monthShortEs[d.getMonth()]}`,
+    isToday,
+    isTomorrow,
+    year
+  };
+}
+
+/**
+ * Creates a CalendarDayItem from a YYYY-MM-DD string or ISO timestamp
+ */
+export function createCalendarDayFromISO(dateISO: string): CalendarDayItem {
+  if (!dateISO) return createCalendarDayFromDate(new Date());
+  const cleanISO = dateISO.split("T")[0].split(" ")[0].trim().replace(/[\/\.]/g, "-");
+  const parts = cleanISO.split("-").map(Number);
+  const rawYear = parts[0] || new Date().getFullYear();
+  const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+  const month = Math.max(0, Math.min(11, (parts[1] || 1) - 1));
+  const maxDayInMonth = new Date(year, month + 1, 0).getDate();
+  const day = Math.max(1, Math.min(maxDayInMonth, parts[2] || 1));
+  const date = new Date(year, month, day);
+  date.setFullYear(year);
+  return createCalendarDayFromDate(date);
+}
+
+/**
+ * Formats a calendar item or ISO date as "Lunes 21 de Septiembre"
+ */
+export function formatFullCalendarDate(calendarDay: CalendarDayItem | string | null | undefined): string {
+  if (!calendarDay) return "";
+  const item = typeof calendarDay === "string" 
+    ? createCalendarDayFromISO(calendarDay) 
+    : (calendarDay as any) instanceof Date
+    ? createCalendarDayFromDate(calendarDay as unknown as Date)
+    : !(calendarDay as CalendarDayItem).dayName && (calendarDay as CalendarDayItem).dateISO
+    ? createCalendarDayFromISO((calendarDay as CalendarDayItem).dateISO)
+    : calendarDay as CalendarDayItem;
+
+  if (!item || !item.dayName) return "";
+  const dayCap = item.dayName.charAt(0) + item.dayName.slice(1).toLowerCase();
+  return `${dayCap} ${item.dayNumber} de ${item.monthName}`;
+}
+
+/**
+ * Generates the upcoming calendar dates for booking (next daysCount days starting from today or startDate)
+ */
+export function getUpcomingCalendarDates(daysCount = 28, startDate?: Date): CalendarDayItem[] {
+  const list: CalendarDayItem[] = [];
+  const now = new Date();
+  const start = startDate ? new Date(startDate) : new Date(now);
+
   for (let i = 0; i < daysCount; i++) {
     const d = new Date(start);
     d.setDate(start.getDate() + i);
@@ -60,32 +210,7 @@ export function getUpcomingCalendarDates(daysCount = 28): CalendarDayItem[] {
     const dayOfWeek = d.getDay();
     if (dayOfWeek === 0) continue;
 
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    const dateISO = `${year}-${month}-${day}`;
-    const dayName = dayNamesEs[dayOfWeek];
-    const dayShort = dayShortEs[dayOfWeek];
-    const dayNumber = d.getDate();
-    const monthName = monthNamesEs[d.getMonth()];
-    const monthShort = monthShortEs[d.getMonth()];
-
-    const isToday = d.toDateString() === now.toDateString();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(now.getDate() + 1);
-    const isTomorrow = d.toDateString() === tomorrow.toDateString();
-
-    list.push({
-      dateISO,
-      dayName,
-      dayShort,
-      dayNumber,
-      monthName,
-      monthShort,
-      fullLabel: isToday ? "Hoy" : isTomorrow ? "Mañana" : `${dayShort} ${dayNumber} ${monthShort}`,
-      isToday,
-      isTomorrow
-    });
+    list.push(createCalendarDayFromDate(d));
   }
 
   return list;
@@ -114,13 +239,15 @@ export function formatSedeName(sede: string): string {
 }
 
 export function getSesionReservasCount(claseId: string, fechaISO: string): number {
+  const cleanISO = cleanDateISO(fechaISO);
   const all = getOpenClassReservas();
-  return all.filter(r => r.clase_id === claseId && r.fecha_iso === fechaISO && r.estado === "Confirmada").length;
+  return all.filter(r => r.clase_id === claseId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")).length;
 }
 
 export function isSesionCompleta(clase: any, fechaISO: string): boolean {
   if (!clase) return false;
-  const currentCount = getSesionReservasCount(clase.id, fechaISO);
+  const cleanISO = cleanDateISO(fechaISO);
+  const currentCount = getSesionReservasCount(clase.id, cleanISO);
   const maxCapacity = clase.aforo_maximo || 20;
   return currentCount >= maxCapacity;
 }
@@ -147,16 +274,17 @@ export function saveOpenClassReservas(reservas: OpenClassReserva[]): void {
 
 export function getReservasAlumno(alumnoId: string): OpenClassReserva[] {
   const all = getOpenClassReservas();
-  return all.filter(r => r.alumno_id === alumnoId && r.estado === "Confirmada");
+  return all.filter(r => r.alumno_id === alumnoId && (r.estado === "Confirmada" || r.estado === "Asistida"));
 }
 
 export function isAlumnoReservadoEnSesion(alumnoId: string, claseId: string, fechaISO: string): boolean {
+  const cleanISO = cleanDateISO(fechaISO);
   const all = getOpenClassReservas();
   return all.some(r => 
     r.alumno_id === alumnoId && 
     r.clase_id === claseId && 
-    r.fecha_iso === fechaISO && 
-    r.estado === "Confirmada"
+    r.fecha_iso === cleanISO && 
+    (r.estado === "Confirmada" || r.estado === "Asistida")
   );
 }
 
@@ -165,39 +293,121 @@ export function crearReservaOpenClass(data: {
   alumno_nombre: string;
   clase: any;
   calendarDay: CalendarDayItem;
+  alumno_email?: string;
+  alumno_telefono?: string;
+  alumno_dni?: string;
+  alumno_plan?: string;
 }): OpenClassReserva {
+  const maxCapacity = data.clase.aforo_maximo || 20;
+  const cleanISO = cleanDateISO(data.calendarDay.dateISO);
+  if (isSesionCompleta(data.clase, cleanISO)) {
+    throw new Error(`Aforo completo para la clase ${data.clase.nombre_clase} en fecha ${cleanISO}`);
+  }
+
+  const current = getOpenClassReservas();
+  const existing = current.find(r => 
+    r.alumno_id === data.alumno_id && 
+    r.clase_id === data.clase.id && 
+    r.fecha_iso === cleanISO && 
+    (r.estado === "Confirmada" || r.estado === "Asistida")
+  );
+  if (existing) {
+    return existing;
+  }
+
+  const dayCap = data.calendarDay.dayName.charAt(0) + data.calendarDay.dayName.slice(1).toLowerCase();
   const nueva: OpenClassReserva = {
-    id: "res_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+    id: "res_" + Date.now() + "_" + Math.floor(Math.random() * 10000),
     alumno_id: data.alumno_id,
     alumno_nombre: data.alumno_nombre,
+    alumno_email: data.alumno_email,
+    alumno_telefono: data.alumno_telefono,
+    alumno_dni: data.alumno_dni,
+    alumno_plan: data.alumno_plan,
     clase_id: data.clase.id,
     nombre_clase: data.clase.nombre_clase,
     profesor: data.clase.profesor,
-    sede: normalizeSede(data.clase.sede || "tejar"),
+    sede: normalizeSede(data.clase.sede || "castilla"),
     sala: data.clase.sala || "Sala 1",
-    fecha_iso: data.calendarDay.dateISO,
-    fecha_formateada: `${data.calendarDay.dayName.charAt(0) + data.calendarDay.dayName.slice(1).toLowerCase()} ${data.calendarDay.dayNumber} de ${data.calendarDay.monthName}`,
+    fecha_iso: cleanISO,
+    fecha_formateada: `${dayCap} ${data.calendarDay.dayNumber} de ${data.calendarDay.monthName}`,
     dia_semana: data.calendarDay.dayName,
     hora_inicio: data.clase.hora_inicio,
     hora_fin: data.clase.hora_fin,
     creado_en: new Date().toISOString(),
-    estado: "Confirmada"
+    estado: "Confirmada",
+    asistido: false
   };
 
-  const current = getOpenClassReservas();
   const updated = [nueva, ...current];
   saveOpenClassReservas(updated);
   return nueva;
 }
 
 export function getReservasPorClaseYSesion(claseId: string, fechaISO: string): OpenClassReserva[] {
+  const cleanISO = cleanDateISO(fechaISO);
   const all = getOpenClassReservas();
-  return all.filter(r => r.clase_id === claseId && r.fecha_iso === fechaISO && r.estado === "Confirmada");
+  return all.filter(r => r.clase_id === claseId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida"));
 }
 
 export function cancelarReservaOpenClass(reservaId: string): boolean {
   const current = getOpenClassReservas();
+  const target = current.find(r => r.id === reservaId);
+  if (!target || target.estado === "Cancelada") {
+    return false;
+  }
   const updated = current.map(r => r.id === reservaId ? { ...r, estado: "Cancelada" as const } : r);
   saveOpenClassReservas(updated);
   return true;
 }
+
+export function confirmarAsistenciaReservaOpenClass(reservaId: string): boolean {
+  const current = getOpenClassReservas();
+  let found = false;
+  const updated = current.map(r => {
+    if (r.id === reservaId) {
+      found = true;
+      return { ...r, asistido: true, estado: "Confirmada" as const };
+    }
+    return r;
+  });
+  if (found) {
+    saveOpenClassReservas(updated);
+  }
+  return found;
+}
+
+export function marcarAsistenciaPorAlumnoYSesion(alumnoId: string, claseId: string, fechaISO: string): boolean {
+  const cleanISO = cleanDateISO(fechaISO);
+  const current = getOpenClassReservas();
+  let found = false;
+  const updated = current.map(r => {
+    if (r.alumno_id === alumnoId && r.clase_id === claseId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")) {
+      found = true;
+      return { ...r, asistido: true };
+    }
+    return r;
+  });
+  if (found) {
+    saveOpenClassReservas(updated);
+  }
+  return found;
+}
+
+export function marcarAsistenciaPorAlumnoEnFecha(alumnoId: string, fechaISO: string): boolean {
+  const cleanISO = cleanDateISO(fechaISO);
+  const current = getOpenClassReservas();
+  let found = false;
+  const updated = current.map(r => {
+    if (r.alumno_id === alumnoId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")) {
+      found = true;
+      return { ...r, asistido: true };
+    }
+    return r;
+  });
+  if (found) {
+    saveOpenClassReservas(updated);
+  }
+  return found;
+}
+
