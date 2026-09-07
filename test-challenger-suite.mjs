@@ -591,11 +591,6 @@ function testIsSesionCompleta(storage, clase, fechaISO) {
 }
 
 function testCrearReserva(storage, data) {
-  const maxCapacity = data.clase.aforo_maximo || 20;
-  if (testIsSesionCompleta(storage, data.clase, data.fecha_iso)) {
-    throw new Error(`Aforo completo para la clase ${data.clase.nombre_clase} en fecha ${data.fecha_iso}`);
-  }
-
   const current = testGetReservas(storage);
   const existing = current.find(r => 
     r.alumno_id === data.alumno_id && 
@@ -604,6 +599,11 @@ function testCrearReserva(storage, data) {
     (r.estado === "Confirmada" || r.estado === "Asistida")
   );
   if (existing) return existing;
+
+  const maxCapacity = data.clase.aforo_maximo || 20;
+  if (testIsSesionCompleta(storage, data.clase, data.fecha_iso)) {
+    throw new Error(`Aforo completo para la clase ${data.clase.nombre_clase} en fecha ${data.fecha_iso}`);
+  }
 
   const nueva = {
     id: "res_" + Date.now() + "_" + Math.floor(Math.random() * 10000),
@@ -1015,6 +1015,119 @@ runTest("5.18 Sede scoping: Only Studio 2 Paseo Castilla Open Classes are target
   const studio2Classes = dbClasses.filter(c => normalizeSede(c.sede) === "castilla");
   assert.strictEqual(studio2Classes.length, 2);
   assert.strictEqual(studio2Classes.every(c => c.sede === "castilla" || c.sede === "alcorcon"), true);
+});
+
+runTest("5.19 Full capacity (20/20) booking idempotency", () => {
+  const memStorage = createMockStorage();
+  const testClass = { id: "test_full_cap_class", nombre_clase: "Full Cap Class", aforo_maximo: 20 };
+  const fullDate = "2026-11-30";
+
+  for (let i = 1; i <= 20; i++) {
+    testCrearReserva(memStorage, {
+      alumno_id: `student_${i}`,
+      alumno_nombre: `Student ${i}`,
+      clase: testClass,
+      fecha_iso: fullDate
+    });
+  }
+
+  assert.strictEqual(testGetSesionReservasCount(memStorage, testClass.id, fullDate), 20);
+  assert.strictEqual(testIsSesionCompleta(memStorage, testClass, fullDate), true);
+
+  // Re-booking an already confirmed student at 20/20 capacity must not throw
+  let res;
+  assert.doesNotThrow(() => {
+    res = testCrearReserva(memStorage, {
+      alumno_id: "student_1",
+      alumno_nombre: "Student 1",
+      clase: testClass,
+      fecha_iso: fullDate
+    });
+  });
+  assert.strictEqual(res.alumno_id, "student_1");
+
+  // A 21st student must throw
+  assert.throws(() => {
+    testCrearReserva(memStorage, {
+      alumno_id: "student_21",
+      alumno_nombre: "Student 21",
+      clase: testClass,
+      fecha_iso: fullDate
+    });
+  }, /Aforo completo/);
+});
+
+runTest("5.20 European date formatting and parsing resilience", () => {
+  const cleanDate = (d) => {
+    if (!d) return "";
+    const raw = String(d).split("T")[0].split(" ")[0].trim().replace(/[\/\.]/g, "-");
+    const parts = raw.split("-").map(Number);
+    if (parts.length === 3 && parts.every(n => !isNaN(n))) {
+      if (parts[0] > 31) {
+        const y = parts[0] < 100 ? 2000 + parts[0] : parts[0];
+        return `${y}-${String(parts[1]).padStart(2, "0")}-${String(parts[2]).padStart(2, "0")}`;
+      } else if (parts[2] > 31) {
+        const y = parts[2] < 100 ? 2000 + parts[2] : parts[2];
+        return `${y}-${String(parts[1]).padStart(2, "0")}-${String(parts[0]).padStart(2, "0")}`;
+      }
+    }
+    return raw;
+  };
+
+  assert.strictEqual(cleanDate("21/09/2026"), "2026-09-21");
+  assert.strictEqual(cleanDate("28.09.2026"), "2026-09-28");
+  assert.strictEqual(cleanDate("2026-09-21T19:00:00.000Z"), "2026-09-21");
+});
+
+runTest("5.21 Scanner date scoping isolation (today check-in does not affect future bookings)", () => {
+  const memStorage = createMockStorage();
+  const testClass = { id: "oc_lunes_1", nombre_clase: "Andrea Soto" };
+  const todayISO = "2026-09-21";
+  const futureISO = "2026-09-28";
+  const studentId = "future_booked_student";
+
+  // Booked for next week
+  testCrearReserva(memStorage, {
+    alumno_id: studentId,
+    alumno_nombre: "Future Booked Student",
+    clase: testClass,
+    fecha_iso: futureISO
+  });
+
+  // Today check-in function:
+  const marcarAsistenciaPorFecha = (id, targetDate) => {
+    const all = testGetReservas(memStorage);
+    let found = false;
+    const updated = all.map(r => {
+      if (r.alumno_id === id && r.fecha_iso === targetDate && (r.estado === "Confirmada" || r.estado === "Asistida")) {
+        found = true;
+        return { ...r, asistido: true };
+      }
+      return r;
+    });
+    if (found) testSaveReservas(memStorage, updated);
+    return found;
+  };
+
+  // Entrance scan today:
+  const marked = marcarAsistenciaPorFecha(studentId, todayISO);
+  assert.strictEqual(marked, false, "Entrance scan today must not mark attendance for student with future booking only");
+
+  const futureRes = testGetReservasPorClaseYSesion(memStorage, testClass.id, futureISO)[0];
+  assert.strictEqual(futureRes.asistido, false, "Future booking must remain unassisted");
+});
+
+runTest("5.22 Presential cancellation refund logic distinguishes ilimitad from regular bonos", () => {
+  const isExemptFromBonoRefund = (plan) => {
+    const p = (plan || "").toLowerCase();
+    return p.includes("ilimitad");
+  };
+
+  assert.strictEqual(isExemptFromBonoRefund("Clases Regulares Adultos"), false);
+  assert.strictEqual(isExemptFromBonoRefund("Cuota Mensual 2 clases/sem"), false);
+  assert.strictEqual(isExemptFromBonoRefund("Bono 10 Clases"), false);
+  assert.strictEqual(isExemptFromBonoRefund("Mensualidad Ilimitada"), true);
+  assert.strictEqual(isExemptFromBonoRefund("Pase Ilimitado Open Class"), true);
 });
 
 

@@ -197,11 +197,14 @@ export default function OpenClassAsistentesModal({
     try {
       // 1. Insert into Supabase asistencias if valid ID
       if (reserva.alumno_id) {
+        const hora = (clase?.hora_inicio || reserva.hora_inicio || "19:00").trim();
+        const sessionDate = (calendarDay?.dateISO || reserva.fecha_iso).trim();
         await supabase
           .from("asistencias")
           .insert([{
             alumno_id: reserva.alumno_id,
-            clase_id: reserva.clase_id
+            clase_id: reserva.clase_id,
+            fecha_hora: `${sessionDate}T${hora}:00.000Z`
           }]);
       }
 
@@ -273,7 +276,7 @@ export default function OpenClassAsistentesModal({
 
         if (studentDB) {
           const planLower = (studentDB.plan_activo || "").toLowerCase();
-          const isUnlimited = planLower.includes("ilimitad") || planLower.includes("mensual") || planLower.includes("regular");
+          const isUnlimited = planLower.includes("ilimitad");
           
           if (!isUnlimited) {
             const currentSaldo = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
@@ -335,7 +338,7 @@ export default function OpenClassAsistentesModal({
 
     try {
       const planLower = (selectedStudentToAdd.plan_activo || "").toLowerCase();
-      const isUnlimited = planLower.includes("ilimitad") || planLower.includes("mensual") || planLower.includes("regular");
+      const isUnlimited = planLower.includes("ilimitad");
       const currentBalance = typeof selectedStudentToAdd.clases_restantes === "number" ? selectedStudentToAdd.clases_restantes : 0;
 
       // Check if student is already booked

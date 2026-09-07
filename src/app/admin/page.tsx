@@ -222,6 +222,17 @@ export default function AdminDashboardRecepcion() {
     return allOpenClasses.filter(c => normalizeDay(c.dia_semana) === normDay);
   }, [allOpenClasses, selectedCalendarDay, reservasTick]);
 
+  const handleSelectCalendarDay = (day: CalendarDayItem) => {
+    setSelectedCalendarDay(day);
+    if (clasesTab === "openclass") {
+      const normDay = normalizeDay(day.dayName);
+      const dayClasses = allOpenClasses.filter(c => normalizeDay(c.dia_semana) === normDay);
+      if (dayClasses.length > 0) {
+        setSelectedClaseId(dayClasses[0].id);
+      }
+    }
+  };
+
   // State for metrics
   const [metrics, setMetrics] = useState({
     checkinsCount: 0,
@@ -337,13 +348,17 @@ export default function AdminDashboardRecepcion() {
         });
       }
 
-      // Merge with DEFAULT_STUDIO2_OPEN_CLASSES if any default class is missing from db
-      const existingIds = new Set(openList.map(c => c.id));
-      DEFAULT_STUDIO2_OPEN_CLASSES.forEach(defClass => {
-        if (!existingIds.has(defClass.id)) {
-          openList.push(defClass);
-        }
-      });
+      // Merge with DEFAULT_STUDIO2_OPEN_CLASSES if empty or if any weekday is missing from db
+      if (openList.length === 0) {
+        openList = [...DEFAULT_STUDIO2_OPEN_CLASSES];
+      } else {
+        const existingDays = new Set(openList.map(c => normalizeDay(c.dia_semana)));
+        DEFAULT_STUDIO2_OPEN_CLASSES.forEach(defClass => {
+          if (!existingDays.has(normalizeDay(defClass.dia_semana))) {
+            openList.push(defClass);
+          }
+        });
+      }
 
       setAllOpenClasses(openList);
     } catch (err) {
@@ -432,14 +447,14 @@ export default function AdminDashboardRecepcion() {
       return;
     }
 
-    // 2. Si la clase seleccionada es una Open Class, sincronizar asistencia en la reserva
+    // 2. Si la clase seleccionada es una Open Class de hoy, sincronizar asistencia en la reserva
     let openClassMarked = false;
-    if (selectedClaseId && selectedCalendarDay) {
-      openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, selectedCalendarDay.dateISO);
+    const todayNow = new Date();
+    const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
+    if (selectedClaseId && (selectedCalendarDay?.isToday || selectedCalendarDay?.dateISO === todayISO)) {
+      openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, todayISO);
     }
     if (!openClassMarked) {
-      const todayNow = new Date();
-      const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
       openClassMarked = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
     }
     if (openClassMarked) {
@@ -607,14 +622,14 @@ export default function AdminDashboardRecepcion() {
         setFlashState('success');
         setTimeout(() => setFlashState(null), 1500);
 
-        // Sincronizar asistencia en Open Class si procede
+        // Sincronizar asistencia en Open Class si procede (siempre para la fecha de hoy)
         let openClassMarked = false;
-        if (selectedClaseId && selectedCalendarDay) {
-          openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, selectedCalendarDay.dateISO);
+        const todayNow = new Date();
+        const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
+        if (selectedClaseId && (selectedCalendarDay?.isToday || selectedCalendarDay?.dateISO === todayISO)) {
+          openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, todayISO);
         }
         if (!openClassMarked) {
-          const todayNow = new Date();
-          const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
           openClassMarked = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
         }
         if (openClassMarked) {
@@ -1220,7 +1235,7 @@ export default function AdminDashboardRecepcion() {
                       value={selectedCalendarDay.dateISO}
                       onChange={(e) => {
                         if (e.target.value) {
-                          setSelectedCalendarDay(createCalendarDayFromISO(e.target.value));
+                          handleSelectCalendarDay(createCalendarDayFromISO(e.target.value));
                         }
                       }}
                       className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-lg px-2 py-1 text-[11px] text-cyan-300 font-mono outline-none focus:border-cyan-400 cursor-pointer"
@@ -1235,7 +1250,7 @@ export default function AdminDashboardRecepcion() {
                         <button
                           key={day.dateISO}
                           type="button"
-                          onClick={() => setSelectedCalendarDay(day)}
+                          onClick={() => handleSelectCalendarDay(day)}
                           className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer flex flex-col items-center min-w-[58px] border ${
                             isSelected
                               ? "bg-gradient-to-b from-cyan-500 to-blue-600 text-white border-cyan-300 shadow-md shadow-cyan-500/25 scale-105"
@@ -1265,7 +1280,11 @@ export default function AdminDashboardRecepcion() {
                   {openClassesForSelectedDay.length === 0 ? (
                     <div className="py-8 px-4 text-center bg-[var(--color-bg)]/60 rounded-xl border border-dashed border-[var(--color-border)] space-y-2">
                       <p className="text-xs font-semibold text-slate-300">
-                        No hay Open Classes programadas para los {selectedCalendarDay.dayName.toLowerCase()}s en Studio 2.
+                        {(() => {
+                          const dayLower = selectedCalendarDay.dayName.toLowerCase();
+                          const plural = dayLower.endsWith("s") ? dayLower : dayLower + "s";
+                          return `No hay Open Classes programadas para los ${plural} en Studio 2.`;
+                        })()}
                       </p>
                       <p className="text-[11px] text-slate-400">
                         Selecciona un Lunes, Martes, Miércoles, Jueves, Viernes o Sábado para ver las sesiones disponibles.
