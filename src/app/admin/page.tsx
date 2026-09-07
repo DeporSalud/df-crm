@@ -8,6 +8,7 @@ import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
 import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
 import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
+import { isRegularClassStudent, isTeacherProfile } from "@/lib/matriculaService";
 
 const playSuccessSound = () => {
   try {
@@ -560,10 +561,24 @@ export default function AdminDashboardRecepcion() {
     // 2. Clear pending status & add remaining classes in Supabase
     if (studentDB) {
       const currentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
-      await supabase.from("alumnos").update({
-        plan_activo: req.bono_nombre,
+      const cleanPlan = (req.bono_nombre || "").replace(/\s*\(\+15€\s*Matr[ií]cula\)/i, "").trim();
+      const isTeacher = isTeacherProfile(studentDB) || (req.bono_nombre || "").toLowerCase().includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
+      const isFirstPurchase = !isTeacher && !isRegularClassStudent(studentDB) && (
+        req.bono_nombre?.includes("Matrícula") || 
+        req.bono_nombre?.includes("Matricula") || 
+        req.is_first_bono || 
+        !studentDB.matricula_pagada
+      );
+
+      const updateData: Record<string, any> = {
+        plan_activo: cleanPlan || req.bono_nombre,
         clases_restantes: currentClasses + clasesToAdd
-      }).eq("id", studentDB.id);
+      };
+      if (isFirstPurchase) {
+        updateData.matricula_pagada = true;
+      }
+
+      await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
     }
 
     // 3. Remove from local storage & pending list
@@ -583,7 +598,7 @@ export default function AdminDashboardRecepcion() {
         importeNum = parseFloat(cleaned);
       } else {
         const nameLower = (req.bono_nombre || "").toLowerCase();
-        const isTeacher = nameLower.includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
+        const isTeacher = isTeacherProfile(studentDB) || nameLower.includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
         if (nameLower.includes("suelta") || nameLower.includes("1 clase")) importeNum = isTeacher ? 13.50 : 15.00;
         else if (nameLower.includes("formaci") || nameLower.includes("especial")) importeNum = isTeacher ? 31.50 : 35.00;
         else if (nameLower.includes("4")) importeNum = isTeacher ? 40.50 : 45.00;

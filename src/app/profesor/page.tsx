@@ -1826,11 +1826,26 @@ export default function ProfesorPortal() {
                 <strong className="text-white">{selectedBonoForPayment.nombre}</strong>
               </div>
               <div className="flex justify-between items-center text-[var(--color-text-secondary)]">
-                <span>Precio oficial:</span>
-                <span className="line-through">{selectedBonoForPayment.precioOriginal}</span>
+                <span>Subtotal Bono:</span>
+                <span className="line-through font-mono">{selectedBonoForPayment.precioOriginal}</span>
+              </div>
+              <div className="flex justify-between items-center text-[var(--color-secondary)]">
+                <span>Descuento Docente (-10%):</span>
+                <span className="font-mono font-bold">
+                  {(() => {
+                    const orig = parseFloat((selectedBonoForPayment.precioOriginal || "0").replace(",", ".").replace(/[^0-9.]/g, "")) || 0;
+                    const doc = parseFloat((selectedBonoForPayment.precioDocente || "0").replace(",", ".").replace(/[^0-9.]/g, "")) || (orig * 0.9);
+                    const diff = orig - doc;
+                    return `-${diff.toFixed(2).replace(".", ",")} € (-10%)`;
+                  })()}
+                </span>
+              </div>
+              <div className="flex justify-between items-center text-emerald-400">
+                <span>Matrícula Anual:</span>
+                <span className="font-bold font-mono">0,00 € (Exenta por perfil Docente)</span>
               </div>
               <div className="flex justify-between items-center text-[var(--color-secondary)] font-bold text-sm pt-2 border-t border-white/10">
-                <span>Total con 10% dto:</span>
+                <span>Total a pagar:</span>
                 <span className="font-mono text-base">{selectedBonoForPayment.precioDocente}</span>
               </div>
             </div>

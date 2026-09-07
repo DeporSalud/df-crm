@@ -33,6 +33,7 @@ import {
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { getStudentFee, getStudentMonthlyRemittanceFee } from "@/lib/studentFees";
+import { isRegularClassStudent, isTeacherProfile } from "@/lib/matriculaService";
 import { 
   PagoTransaccion, 
   MetodoCobro, 
@@ -354,10 +355,24 @@ export default function PagosYFacturacionPage() {
 
     if (studentDB) {
       const currentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
-      await supabase.from("alumnos").update({
-        plan_activo: req.bono_nombre,
+      const cleanPlan = (req.bono_nombre || "").replace(/\s*\(\+15€\s*Matr[ií]cula\)/i, "").trim();
+      const isTeacher = isTeacherProfile(studentDB) || (req.bono_nombre || "").toLowerCase().includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
+      const isFirstPurchase = !isTeacher && !isRegularClassStudent(studentDB) && (
+        req.bono_nombre?.includes("Matrícula") || 
+        req.bono_nombre?.includes("Matricula") || 
+        req.is_first_bono || 
+        !studentDB.matricula_pagada
+      );
+
+      const updateData: Record<string, any> = {
+        plan_activo: cleanPlan || req.bono_nombre,
         clases_restantes: currentClasses + clasesToAdd
-      }).eq("id", studentDB.id);
+      };
+      if (isFirstPurchase) {
+        updateData.matricula_pagada = true;
+      }
+
+      await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
     }
 
     let importeNum = 45;
@@ -365,6 +380,16 @@ export default function PagosYFacturacionPage() {
       const cleaned = req.bono_precio.replace(/[^\d.,]/g, '').replace(',', '.');
       if (cleaned && !isNaN(parseFloat(cleaned))) {
         importeNum = parseFloat(cleaned);
+      } else {
+        const nameLower = (req.bono_nombre || "").toLowerCase();
+        const isTeacher = isTeacherProfile(studentDB) || nameLower.includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
+        if (nameLower.includes("suelta") || nameLower.includes("1 clase")) importeNum = isTeacher ? 13.50 : 15.00;
+        else if (nameLower.includes("formaci") || nameLower.includes("especial")) importeNum = isTeacher ? 31.50 : 35.00;
+        else if (nameLower.includes("4")) importeNum = isTeacher ? 40.50 : 45.00;
+        else if (nameLower.includes("8")) importeNum = isTeacher ? 51.30 : 57.00;
+        else if (nameLower.includes("10")) importeNum = isTeacher ? 71.10 : 79.00;
+        else if (nameLower.includes("ilimitad")) importeNum = isTeacher ? 90.00 : 100.00;
+        else importeNum = isTeacher ? 40.50 : 45.00;
       }
     }
 
