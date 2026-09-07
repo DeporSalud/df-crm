@@ -173,7 +173,12 @@ export default function ProfesorPortal() {
     if (!clase) return false;
     const name = (clase.nombre_clase || "").toLowerCase();
     const type = (clase.tipo_clase || "").toLowerCase();
-    return type.includes("open") || name.includes("open") || name.includes("comercial");
+    return (
+      type.includes("open") || 
+      name.includes("open class") || 
+      name.startsWith("open ") ||
+      name === "open"
+    );
   };
 
   const profesoresDisponibles = [
@@ -685,6 +690,17 @@ export default function ProfesorPortal() {
   const handleTeacherOpenClassBooking = async (clase: any) => {
     if (!teacherStudent?.id) return;
 
+    if (!isOpenClass(clase)) {
+      setModal({
+        isOpen: true,
+        title: "Solo Open Classes",
+        message: "En el portal de profesores solo está permitido reservar plazas en sesiones de Open Class. Las clases regulares no admiten reservas.",
+        type: "warning",
+        confirmText: "Entendido"
+      });
+      return;
+    }
+
     const isRotativa = 
       clase.nombre_clase?.toUpperCase().includes("ROTAT") || 
       clase.profesor?.toUpperCase().includes("ROTAT") ||
@@ -850,6 +866,17 @@ export default function ProfesorPortal() {
   // 5. Teacher Open Class Enrollment Handler
   const handleTeacherApuntarme = async (clase: any) => {
     if (!teacherStudent?.id) return;
+
+    if (!isOpenClass(clase)) {
+      setModal({
+        isOpen: true,
+        title: "Solo Open Classes",
+        message: "En el portal de profesores solo está permitido reservar plazas en sesiones de Open Class. Las clases regulares no admiten reservas.",
+        type: "warning",
+        confirmText: "Entendido"
+      });
+      return;
+    }
 
     // Check aforo
     const { count } = await supabase
