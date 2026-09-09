@@ -166,6 +166,7 @@ export default function ProfesorPortal() {
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [isRosterLoading, setIsRosterLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>({ isOpen: false, message: "" });
 
@@ -368,6 +369,7 @@ export default function ProfesorPortal() {
     setTeacherEnrolledClassIds([]);
     setSelectedBonoForPayment(null);
     setIsProcessingPayment(false);
+    setIsRosterLoading(false);
     setSavingId(null);
     setModal({ isOpen: false, message: "" });
   };
@@ -439,9 +441,10 @@ export default function ProfesorPortal() {
 
       if (data && data.length > 0) {
         const normalizedSelected = normalizeText(selectedProfesor);
-        const filtered = data.filter(c => 
-          normalizeText(c.profesor).includes(normalizedSelected)
-        );
+        const filtered = data.filter(c => {
+          const profNorm = normalizeText(c.profesor);
+          return profNorm.includes(normalizedSelected) || normalizedSelected.includes(profNorm);
+        });
 
         const sorted = filtered.sort((a, b) => {
           if (getDayOrder(a.dia_semana) !== getDayOrder(b.dia_semana)) {
@@ -499,6 +502,7 @@ export default function ProfesorPortal() {
       return;
     }
 
+    setIsRosterLoading(true);
     try {
       if (isOpenClass(clase)) {
         const sessionReservas = getReservasPorClaseYSesion(clase.id, dateIso);
@@ -540,27 +544,75 @@ export default function ProfesorPortal() {
         const markedIds = (asistencias || []).map(a => a.alumno_id);
         setAsistenciasRegistradas(markedIds);
       } else {
-        const { data: enrolled, error: enrollError } = await supabase
-          .from("alumnos_clases")
-          .select(`
-            alumno_id,
-            alumnos (
-              id,
-              nombre_completo,
-              telefono,
-              email,
-              plan_activo,
-              clases_restantes,
-              estado
-            )
-          `)
-          .eq("clase_id", clase.id);
+        let studentList: any[] = [];
 
-        if (enrollError) {
-          console.error("Error fetching enrolled students:", enrollError);
+        // 1. Robust 2-step query: alumnos_clases -> alumnos table (Guarantees data across all Supabase schemas)
+        try {
+          const { data: rawEnrollments, error: rawErr } = await supabase
+            .from("alumnos_clases")
+            .select("alumno_id")
+            .eq("clase_id", clase.id);
+
+          if (!rawErr && rawEnrollments && rawEnrollments.length > 0) {
+            const studentIds = rawEnrollments
+              .map((e: any) => e.alumno_id)
+              .filter((id: any) => Boolean(id && typeof id === "string" && id.trim() !== ""));
+
+            if (studentIds.length > 0) {
+              const { data: studentsData, error: studentsErr } = await supabase
+                .from("alumnos")
+                .select("id, nombre_completo, telefono, email, plan_activo, clases_restantes, estado, sede, dni")
+                .in("id", studentIds);
+
+              if (!studentsErr && studentsData && studentsData.length > 0) {
+                studentList = studentsData.map((s: any) => ({
+                  ...s,
+                  bono_agotado: typeof s.clases_restantes === "number" && s.clases_restantes <= 0,
+                  debe_cuota: s.estado === "Pendiente" || (s.plan_activo || "").toLowerCase().includes("pendiente")
+                }));
+              }
+            }
+          }
+        } catch (errStep1) {
+          console.error("Error fetching enrolled student IDs:", errStep1);
         }
 
-        const studentList = enrolled ? enrolled.map((e: any) => e.alumnos).filter(a => a != null) : [];
+        // 2. Relational nested query fallback if 2-step returned no rows
+        if (studentList.length === 0) {
+          try {
+            const { data: enrolled, error: enrollError } = await supabase
+              .from("alumnos_clases")
+              .select(`
+                alumno_id,
+                alumnos (
+                  id,
+                  nombre_completo,
+                  telefono,
+                  email,
+                  plan_activo,
+                  clases_restantes,
+                  estado,
+                  sede,
+                  dni
+                )
+              `)
+              .eq("clase_id", clase.id);
+
+            if (!enrollError && enrolled && enrolled.length > 0) {
+              studentList = enrolled
+                .map((e: any) => (Array.isArray(e.alumnos) ? e.alumnos[0] : e.alumnos))
+                .filter((a: any) => a != null && a.id)
+                .map((s: any) => ({
+                  ...s,
+                  bono_agotado: typeof s.clases_restantes === "number" && s.clases_restantes <= 0,
+                  debe_cuota: s.estado === "Pendiente" || (s.plan_activo || "").toLowerCase().includes("pendiente")
+                }));
+            }
+          } catch (errStep2) {
+            console.error("Error fetching nested enrolled students:", errStep2);
+          }
+        }
+
         studentList.sort((a: any, b: any) => (a.nombre_completo || "").localeCompare(b.nombre_completo || "", "es"));
         setRoster(studentList);
 
@@ -576,6 +628,8 @@ export default function ProfesorPortal() {
       }
     } catch (err) {
       console.error("Error in loadRosterForDate:", err);
+    } finally {
+      setIsRosterLoading(false);
     }
   };
 
@@ -586,6 +640,19 @@ export default function ProfesorPortal() {
     setSelectedSessionDate(defaultDate);
     loadRosterForDate(clase, defaultDate);
   };
+
+  // Automatic reactivity: whenever selectedClase changes, guarantee roster loading
+  useEffect(() => {
+    if (selectedClase?.id) {
+      const defaultDate = selectedSessionDate || 
+        calendarDays.find(d => normalizeDay(d.dayName) === normalizeDay(selectedClase.dia_semana))?.dateISO || 
+        new Date().toISOString().split("T")[0];
+      if (!selectedSessionDate) {
+        setSelectedSessionDate(defaultDate);
+      }
+      loadRosterForDate(selectedClase, defaultDate);
+    }
+  }, [selectedClase?.id]);
 
   const handleChangeSessionDate = (newDateIso: string) => {
     if (!selectedClase) return;
@@ -1312,7 +1379,7 @@ export default function ProfesorPortal() {
                         return (
                           <button
                             key={clase.id}
-                            onClick={() => setSelectedClase(clase)}
+                            onClick={() => handleSelectClase(clase)}
                             className="w-full text-left p-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-card)] hover:border-[var(--color-primary)] transition-all shadow-lg hover:shadow-xl group"
                           >
                             <div className="flex justify-between items-center gap-2 mb-1.5">
@@ -1443,7 +1510,12 @@ export default function ProfesorPortal() {
                     </div>
                   )}
 
-                  {roster.length === 0 ? (
+                  {isRosterLoading ? (
+                    <div className="py-8 text-center text-xs text-[var(--color-text-secondary)] flex items-center justify-center gap-2">
+                      <div className="w-4 h-4 border-2 border-[var(--color-primary)] border-t-transparent rounded-full animate-spin" />
+                      <span>Cargando alumnos de la clase...</span>
+                    </div>
+                  ) : roster.length === 0 ? (
                     <div className="py-8 text-center text-xs text-[var(--color-text-secondary)]">
                       {isOpenClass(selectedClase)
                         ? "No hay alumnos ni profesores inscritos para esta sesión."
