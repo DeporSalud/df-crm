@@ -1,3 +1,5 @@
+import { isPromoSeptiembreActive } from "./matriculaService";
+
 export type TipoTarifa = "bono" | "regular_infantil" | "regular_adulto" | "matricula" | "otro";
 export type PeriodicidadTarifa = "mensual" | "trimestral" | "anual" | "puntual";
 
@@ -92,6 +94,68 @@ export const TARIFAS_DEFAULT: TarifaItem[] = [
     descripcion: "Acceso a una sola sesión",
     precio: 15.00,
     clases_incluidas: 1,
+    periodicidad: "puntual",
+    activo: true
+  },
+
+  // PROMO OPEN CLASS • SOLO SEPTIEMBRE 2026 (9 AL 30 DE SEPTIEMBRE)
+  {
+    id: "promo_sep_4_alumno",
+    tipo: "bono",
+    nombre: "Promo Septiembre • 4 Clases (Alumno DF)",
+    descripcion: "Promo Septiembre exclusiva para Alumnos DF • Válido hasta 30 Sept • Matrícula Gratuita (0€)",
+    precio: 25.00,
+    clases_incluidas: 4,
+    periodicidad: "puntual",
+    activo: true
+  },
+  {
+    id: "promo_sep_8_alumno",
+    tipo: "bono",
+    nombre: "Promo Septiembre • 8 Clases (Alumno DF)",
+    descripcion: "Promo Septiembre exclusiva para Alumnos DF • Válido hasta 30 Sept • Matrícula Gratuita (0€)",
+    precio: 35.00,
+    clases_incluidas: 8,
+    periodicidad: "puntual",
+    activo: true
+  },
+  {
+    id: "promo_sep_12_alumno",
+    tipo: "bono",
+    nombre: "Promo Septiembre • 12 Clases (Alumno DF)",
+    descripcion: "Promo Septiembre exclusiva para Alumnos DF • Válido hasta 30 Sept • Matrícula Gratuita (0€)",
+    precio: 45.00,
+    clases_incluidas: 12,
+    periodicidad: "puntual",
+    activo: true
+  },
+  {
+    id: "promo_sep_4_no_alumno",
+    tipo: "bono",
+    nombre: "Promo Septiembre • 4 Clases (No Alumno)",
+    descripcion: "Promo Septiembre Bienvenida para No Alumnos • Válido hasta 30 Sept • Matrícula Gratuita (0€)",
+    precio: 30.00,
+    clases_incluidas: 4,
+    periodicidad: "puntual",
+    activo: true
+  },
+  {
+    id: "promo_sep_8_no_alumno",
+    tipo: "bono",
+    nombre: "Promo Septiembre • 8 Clases (No Alumno)",
+    descripcion: "Promo Septiembre Bienvenida para No Alumnos • Válido hasta 30 Sept • Matrícula Gratuita (0€)",
+    precio: 42.00,
+    clases_incluidas: 8,
+    periodicidad: "puntual",
+    activo: true
+  },
+  {
+    id: "promo_sep_12_no_alumno",
+    tipo: "bono",
+    nombre: "Promo Septiembre • 12 Clases (No Alumno)",
+    descripcion: "Promo Septiembre Bienvenida para No Alumnos • Válido hasta 30 Sept • Matrícula Gratuita (0€)",
+    precio: 55.00,
+    clases_incluidas: 12,
     periodicidad: "puntual",
     activo: true
   },
@@ -229,17 +293,28 @@ export function getTarifas(): TarifaItem[] {
       periodicidad: item.periodicidad || (item.tipo === "matricula" ? "anual" : item.tipo === "bono" ? "puntual" : "mensual")
     }));
 
+    const promoActive = isPromoSeptiembreActive();
+
     // Sincronizar automáticamente cualquier tarifa oficial nueva de TARIFAS_DEFAULT que no esté en localStorage
     const missingDefaults = TARIFAS_DEFAULT.filter(def => !formatted.some(p => p.id === def.id));
+    const finalTarifas = missingDefaults.length > 0 ? [...formatted, ...missingDefaults] : formatted;
+    
+    // Desactivar automáticamente si la promo de septiembre ya no está activa
+    const synced = finalTarifas.map(t => {
+      if (t.id.startsWith("promo_sep_")) {
+        return { ...t, activo: promoActive && t.activo };
+      }
+      return t;
+    });
+
     if (missingDefaults.length > 0) {
-      const merged = [...formatted, ...missingDefaults];
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-      return merged;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(synced));
     }
 
-    return formatted;
+    return synced;
   } catch (e) {
-    return TARIFAS_DEFAULT;
+    const promoActive = isPromoSeptiembreActive();
+    return TARIFAS_DEFAULT.map(t => t.id.startsWith("promo_sep_") ? { ...t, activo: promoActive } : t);
   }
 }
 

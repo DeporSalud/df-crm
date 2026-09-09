@@ -19,6 +19,73 @@ export interface BonoItemDefinition {
   desc?: string;
 }
 
+export interface PromoBonoItem {
+  id: string;
+  nombre: string;
+  clasesCount: number;
+  precioAlumno: number;
+  precioNoAlumno: number;
+  precioHabitual: number;
+  caducidadTexto: string;
+  caducidadISO: string;
+}
+
+export const PROMO_SEPTIEMBRE_BONOS: PromoBonoItem[] = [
+  {
+    id: "promo_sep_4",
+    nombre: "Promo Septiembre • 4 Clases",
+    clasesCount: 4,
+    precioAlumno: 25.00,
+    precioNoAlumno: 30.00,
+    precioHabitual: 45.00,
+    caducidadTexto: "Válido hasta el 30 de Septiembre de 2026",
+    caducidadISO: "2026-09-30T23:59:59.000Z"
+  },
+  {
+    id: "promo_sep_8",
+    nombre: "Promo Septiembre • 8 Clases",
+    clasesCount: 8,
+    precioAlumno: 35.00,
+    precioNoAlumno: 42.00,
+    precioHabitual: 57.00,
+    caducidadTexto: "Válido hasta el 30 de Septiembre de 2026",
+    caducidadISO: "2026-09-30T23:59:59.000Z"
+  },
+  {
+    id: "promo_sep_12",
+    nombre: "Promo Septiembre • 12 Clases",
+    clasesCount: 12,
+    precioAlumno: 45.00,
+    precioNoAlumno: 55.00,
+    precioHabitual: 79.00,
+    caducidadTexto: "Válido hasta el 30 de Septiembre de 2026",
+    caducidadISO: "2026-09-30T23:59:59.000Z"
+  }
+];
+
+/**
+ * Comprueba si la promoción "PROMO OPEN CLASS - SOLO SEPTIEMBRE" está activa.
+ * Vigencia oficial: Desde el 9 de septiembre de 2026 hasta el 30 de septiembre de 2026 a las 23:59:59.
+ * A partir del 1 de octubre de 2026 (o tras el 30 de septiembre), se desactiva automáticamente.
+ */
+export function isPromoSeptiembreActive(customDate?: Date | string): boolean {
+  const d = customDate ? new Date(customDate) : new Date();
+  const start = new Date("2026-09-09T00:00:00");
+  const end = new Date("2026-09-30T23:59:59.999");
+  return d >= start && d <= end;
+}
+
+export function isPromoSeptiembreBono(bonoId?: string | null): boolean {
+  if (!bonoId) return false;
+  const id = bonoId.toLowerCase();
+  return (
+    id.includes("promo_sep") || 
+    id.includes("promo sep") || 
+    id.includes("promo septiembre") ||
+    id.includes("promo open class")
+  );
+}
+
 export interface BonoCalculationInput {
   bonoId: string;
   basePrice: number;
@@ -27,9 +94,10 @@ export interface BonoCalculationInput {
   userRole?: string;
   isTeacher?: boolean;
   isFirstBonoOfYearExplicit?: boolean;
+  isPromoSeptiembre?: boolean;
 }
 
-export type ExemptionType = "regular" | "teacher" | "repeat_buyer" | "none";
+export type ExemptionType = "regular" | "teacher" | "repeat_buyer" | "promo_septiembre" | "none";
 
 export interface BonoCalculationResult {
   bonoId: string;
@@ -240,6 +308,43 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   const teacher = explicitIsTeacher ?? isTeacherProfile(student, undefined, userRole);
   const regular = isRegularClassStudent(student, { assignedClassIds });
   const alreadyPaid = hasPaidSeasonMatricula(student);
+  const isPromo = isPromoSeptiembreBono(bonoId) || Boolean(params.isPromoSeptiembre);
+
+  // 0. Bono Promoción Septiembre 2026: ¡MATRÍCULA TOTALMENTE GRATUITA (0,00 €)!
+  if (isPromo) {
+    if (teacher) {
+      const discountPercentage = 10;
+      const discountAmount = Math.round(basePrice * 0.10 * 100) / 100;
+      const bonoPrice = Math.round(basePrice * 0.90 * 100) / 100;
+      return {
+        bonoId,
+        basePrice,
+        discountPercentage,
+        discountAmount,
+        bonoPrice,
+        matriculaCost: 0.00,
+        isExempt: true,
+        exemptionType: "promo_septiembre",
+        exemptionLabel: "0,00€ (Matrícula Gratuita Promo Septiembre)",
+        totalToPay: bonoPrice,
+        isFirstBonoOfYear: false,
+      };
+    }
+
+    return {
+      bonoId,
+      basePrice,
+      discountPercentage: 0,
+      discountAmount: 0,
+      bonoPrice: basePrice,
+      matriculaCost: 0.00,
+      isExempt: true,
+      exemptionType: "promo_septiembre",
+      exemptionLabel: "0,00€ (Matrícula Gratuita Promo Septiembre)",
+      totalToPay: basePrice,
+      isFirstBonoOfYear: false,
+    };
+  }
 
   // 1. Docente: 10% dto + 0€ matrícula
   if (teacher) {

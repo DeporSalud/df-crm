@@ -29,6 +29,7 @@ import {
   CONCEPTOS_RAPIDOS, 
   registrarNuevoPago 
 } from "@/lib/pagosService";
+import { isPromoSeptiembreActive } from "@/lib/matriculaService";
 import { logActivity } from "@/lib/activityLogger";
 
 export function openGlobalCobro(student?: any) {
@@ -322,16 +323,23 @@ export default function GlobalCobroModal() {
                   3. Conceptos Rápidos
                 </label>
                 <div className="flex gap-1.5 flex-wrap">
-                  {CONCEPTOS_RAPIDOS.slice(0, 7).map(c => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => handleSelectQuickConcept(c.id)}
-                      className="px-2.5 py-1 rounded-lg bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border)] hover:border-[var(--color-secondary)] text-[11px] font-semibold text-slate-300 transition-colors cursor-pointer"
-                    >
-                      {c.titulo.split("(")[0]}
-                    </button>
-                  ))}
+                  {CONCEPTOS_RAPIDOS.filter(c => !c.id.startsWith("promo_sep_") || isPromoSeptiembreActive()).slice(0, 12).map(c => {
+                    const isPromo = c.id.startsWith("promo_sep_");
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => handleSelectQuickConcept(c.id)}
+                        className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer ${
+                          isPromo
+                            ? "bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25"
+                            : "bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] border-[var(--color-border)] hover:border-[var(--color-secondary)] text-slate-300"
+                        }`}
+                      >
+                        {c.titulo.split("(")[0]}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
