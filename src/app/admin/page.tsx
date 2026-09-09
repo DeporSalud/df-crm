@@ -348,16 +348,9 @@ export default function AdminDashboardRecepcion() {
         });
       }
 
-      // Merge with DEFAULT_STUDIO2_OPEN_CLASSES if empty or if any weekday is missing from db
+      // Fallback only if database returned 0 open classes
       if (openList.length === 0) {
         openList = [...DEFAULT_STUDIO2_OPEN_CLASSES];
-      } else {
-        const existingDays = new Set(openList.map(c => normalizeDay(c.dia_semana)));
-        DEFAULT_STUDIO2_OPEN_CLASSES.forEach(defClass => {
-          if (!existingDays.has(normalizeDay(defClass.dia_semana))) {
-            openList.push(defClass);
-          }
-        });
       }
 
       setAllOpenClasses(openList);
