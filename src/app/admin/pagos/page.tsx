@@ -49,6 +49,7 @@ import {
   anularPago
 } from "@/lib/pagosService";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
+import { getStoredIBAN } from "../alumnos/page";
 
 export type MetodoPagoRemesa = "SEPA" | "Stripe" | "Efectivo" | "TPV" | "Transferencia";
 
@@ -102,7 +103,7 @@ function generateSEPAXml(
     const endToEndId = `DF-REC-${monthStr.replace(/-/g, "")}-${String(idx + 1).padStart(4, "0")}`;
     const mandateId = `MND-${(s.dni || s.id || `STU${idx + 1}`).replace(/[^a-zA-Z0-9]/g, "")}`;
     const studentName = escapeXml(s.nombre_completo || "ALUMNO DANCE FACTORY");
-    const iban = sanitizeIBAN(s.iban, s.dni);
+    const iban = sanitizeIBAN(s.iban || getStoredIBAN(s.id), s.dni);
     const classInfo = escapeXml((assignedClasses[s.id] || []).join(" / ") || fee.claseNombre || "Cuota Regular");
 
     return `      <DrctDbtTxInf>
@@ -368,11 +369,11 @@ export default function PagosYFacturacionPage() {
         plan_activo: cleanPlan || req.bono_nombre,
         clases_restantes: currentClasses + clasesToAdd
       };
-      if (isFirstPurchase) {
-        updateData.matricula_pagada = true;
-      }
 
-      await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
+      const { error: updateErr } = await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
+      if (updateErr) {
+        console.warn("[Pagos] Error actualizando plan de alumno en Supabase:", updateErr.message);
+      }
     }
 
     let importeNum = 45;

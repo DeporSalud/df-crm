@@ -11,35 +11,67 @@ import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
 import { CheckCircle2 } from "lucide-react";
 
+// LocalStorage IBAN Helpers
+const IBAN_STORAGE_KEY = "df_student_ibans";
+
+export function getStoredIBAN(studentId: string): string {
+  if (typeof window === "undefined" || !studentId) return "";
+  try {
+    const raw = localStorage.getItem(IBAN_STORAGE_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    return map[studentId] || "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveStoredIBAN(studentId: string, iban: string): void {
+  if (typeof window === "undefined" || !studentId) return;
+  try {
+    const raw = localStorage.getItem(IBAN_STORAGE_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    if (iban && iban.trim()) {
+      map[studentId] = iban.replace(/[\s\-]/g, "").toUpperCase();
+    } else {
+      delete map[studentId];
+    }
+    localStorage.setItem(IBAN_STORAGE_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.error("Error saving IBAN to localStorage:", e);
+  }
+}
+
+export function deleteStoredIBAN(studentId: string): void {
+  if (typeof window === "undefined" || !studentId) return;
+  try {
+    const raw = localStorage.getItem(IBAN_STORAGE_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    delete map[studentId];
+    localStorage.setItem(IBAN_STORAGE_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.error("Error deleting IBAN from localStorage:", e);
+  }
+}
+
 // Validation Helpers
 function validateDNI(dni: string): { valid: boolean; message?: string } {
   if (!dni || !dni.trim()) return { valid: true };
   const clean = dni.toUpperCase().replace(/[\s\-]/g, "");
-  const niePrefixes: Record<string, string> = { X: "0", Y: "1", Z: "2" };
-  let numStr = clean;
-  if (/^[XYZ]/.test(clean)) {
-    numStr = niePrefixes[clean[0]] + clean.slice(1);
+  // Permite DNI, NIE y pasaportes internacionales alfanuméricos de entre 4 y 20 caracteres
+  if (/^[A-Z0-9]{4,20}$/i.test(clean)) {
+    return { valid: true };
   }
-  if (!/^\d{8}[A-Z]$/.test(numStr)) {
-    return { valid: false, message: "El DNI/NIE debe tener 8 dígitos y 1 letra (o formato NIE X/Y/Z...)" };
-  }
-  const letters = "TRWAGMYFPDXBNJZSQVHLCKE";
-  const number = parseInt(numStr.slice(0, 8), 10);
-  const letter = numStr.slice(8);
-  if (letters[number % 23] !== letter) {
-    return { valid: false, message: `Letra de DNI incorrecta. Debería ser ${letters[number % 23]}` };
-  }
-  return { valid: true };
+  return { valid: false, message: "El documento debe tener entre 4 y 20 caracteres alfanuméricos." };
 }
 
 function validatePhone(phone: string): { valid: boolean; message?: string } {
-  if (!phone || !phone.trim()) return { valid: false, message: "El teléfono es obligatorio." };
+  if (!phone || !phone.trim()) return { valid: true }; // Opcional en edición
   const clean = phone.replace(/[\s\-\(\)\.]/g, "");
-  const isValid = /^(?:\+34|0034)?[6789]\d{8}$/.test(clean);
-  if (!isValid) {
-    return { valid: false, message: "El teléfono debe ser un número español válido (9 dígitos comenzando por 6, 7, 8 o 9)." };
+  // Permite números españoles e internacionales (7 a 15 dígitos)
+  if (/^(?:\+?\d{1,4})?[0-9]{7,15}$/.test(clean)) {
+    return { valid: true };
   }
-  return { valid: true };
+  return { valid: false, message: "El teléfono debe contener entre 7 y 15 dígitos numéricos." };
 }
 
 function validateEmail(email: string): { valid: boolean; message?: string } {
@@ -56,24 +88,6 @@ function validateIBAN(iban: string): { valid: boolean; message?: string } {
   const clean = iban.toUpperCase().replace(/[\s\-]/g, "");
   if (!/^[A-Z]{2}\d{2}[A-Z0-9]{4,30}$/.test(clean)) {
     return { valid: false, message: "Formato de IBAN bancario incorrecto (ej. ES91...)." };
-  }
-  const rearranged = clean.slice(4) + clean.slice(0, 4);
-  let numeric = "";
-  for (const ch of rearranged) {
-    const code = ch.charCodeAt(0);
-    if (code >= 65 && code <= 90) {
-      numeric += (code - 55).toString();
-    } else {
-      numeric += ch;
-    }
-  }
-  let remainder = 0;
-  for (let i = 0; i < numeric.length; i += 7) {
-    const part = remainder.toString() + numeric.substring(i, i + 7);
-    remainder = parseInt(part, 10) % 97;
-  }
-  if (remainder !== 1) {
-    return { valid: false, message: "Dígitos de control de IBAN incorrectos (módulo 97)." };
   }
   return { valid: true };
 }
@@ -159,7 +173,11 @@ export default function AlumnosPage() {
     queryStudents = queryStudents.order("creado_en", { ascending: false });
     const { data: studentsData } = await queryStudents;
       
-    setStudents(studentsData || []);
+    const enriched = (studentsData || []).map((s: any) => ({
+      ...s,
+      iban: s.iban || getStoredIBAN(s.id)
+    }));
+    setStudents(enriched);
 
     // Fetch classes for assignment
     let queryClasses = supabase.from("clases_cuadrante").select("*");
@@ -274,6 +292,7 @@ export default function AlumnosPage() {
       .eq("alumno_id", student.id);
       
     const assignedIds = assigned ? assigned.map(a => a.clase_id) : [];
+    const studentIban = student.iban || getStoredIBAN(student.id);
 
     setFormData({
       sede: student.sede || "tejar",
@@ -282,7 +301,7 @@ export default function AlumnosPage() {
       email: student.email || "",
       dni: student.dni || "",
       direccion: student.direccion || "",
-      iban: student.iban || "",
+      iban: studentIban || "",
       fecha_nacimiento: student.fecha_nacimiento || "",
       tipo_alumno: (student.tipo_alumno || (student.fecha_nacimiento && (new Date().getFullYear() - new Date(student.fecha_nacimiento).getFullYear() <= 14) ? "infantil" : "adulto")) as "adulto" | "infantil",
       plan_activo: student.plan_activo || "Clases Regulares",
@@ -307,6 +326,7 @@ export default function AlumnosPage() {
         console.error("Error al eliminar alumno:", error);
         alert("Hubo un error al eliminar el alumno.");
       } else {
+        deleteStoredIBAN(id);
         fetchData();
       }
     } catch (err) {
@@ -384,58 +404,65 @@ export default function AlumnosPage() {
     }
     
     let clases_restantes = 0;
-    let bono_caducidad: string | null = null;
     if (formData.plan_activo === "Bono 4 clases") {
       clases_restantes = 4;
-      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
     } else if (formData.plan_activo === "Bono 8 clases") {
       clases_restantes = 8;
-      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
     } else if (formData.plan_activo === "Bono 10 clases") {
       clases_restantes = 10;
-      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
     } else if (formData.plan_activo === "Mensualidad Ilimitada") {
       clases_restantes = 999;
-      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
     } else if (formData.plan_activo === "Clase Suelta") {
       clases_restantes = 1;
-      const d = new Date(); d.setMonth(d.getMonth() + 1); bono_caducidad = d.toISOString();
     }
 
-    const payload: any = {
+    // Prepare clean payload containing only columns present in Supabase 'alumnos' table
+    const payload: Record<string, any> = {
       sede: formData.sede || (activeSede !== "consolidado" ? activeSede : "tejar"),
       nombre_completo: formData.nombre_completo.trim(),
       telefono: formData.telefono.trim(),
       email: formData.email.trim() || null,
       dni: formData.dni.trim() || null,
       direccion: formData.direccion.trim() || null,
-      iban: formData.iban.trim() || null,
       fecha_nacimiento: formData.fecha_nacimiento || null,
       plan_activo: formData.plan_activo,
       nfc_token: formData.nfc_token.trim() || null,
-      estado: formData.estado,
-      ...(bono_caducidad ? { bono_caducidad } : {})
+      estado: formData.estado
     };
 
-    let error;
+    let error: any = null;
     let studentId = editingId;
 
     if (isEditing && editingId) {
-      let { error: updateError } = await supabase.from("alumnos").update(payload).eq("id", editingId);
-      if (updateError && payload.bono_caducidad) {
-        delete payload.bono_caducidad;
-        const res = await supabase.from("alumnos").update(payload).eq("id", editingId);
-        updateError = res.error;
+      let toUpdate = { ...payload };
+      let { error: updateError } = await supabase.from("alumnos").update(toUpdate).eq("id", editingId);
+      
+      // Auto-retry loop if any column is not in schema cache
+      while (updateError && updateError.code === "PGRST204" && updateError.message) {
+        const match = updateError.message.match(/'([^']+)' column/);
+        if (match && match[1] && match[1] in toUpdate) {
+          delete toUpdate[match[1]];
+          const retry = await supabase.from("alumnos").update(toUpdate).eq("id", editingId);
+          updateError = retry.error;
+        } else {
+          break;
+        }
       }
       error = updateError;
     } else {
-      let insertPayload: any = { ...payload, clases_restantes };
+      let insertPayload: Record<string, any> = { ...payload, clases_restantes };
       let { data, error: insertError } = await supabase.from("alumnos").insert([insertPayload]).select("id").single();
-      if (insertError && insertPayload.bono_caducidad) {
-        delete insertPayload.bono_caducidad;
-        const res = await supabase.from("alumnos").insert([insertPayload]).select("id").single();
-        data = res.data;
-        insertError = res.error;
+      
+      while (insertError && insertError.code === "PGRST204" && insertError.message) {
+        const match = insertError.message.match(/'([^']+)' column/);
+        if (match && match[1] && match[1] in insertPayload) {
+          delete insertPayload[match[1]];
+          const retry = await supabase.from("alumnos").insert([insertPayload]).select("id").single();
+          data = retry.data;
+          insertError = retry.error;
+        } else {
+          break;
+        }
       }
       error = insertError;
       if (data) studentId = data.id;
@@ -443,27 +470,54 @@ export default function AlumnosPage() {
 
     if (error) {
       console.error("Error saving student:", error);
-      alert("Hubo un error al guardar el alumno.");
+      alert("Hubo un error al guardar el alumno: " + (error.message || "Error en base de datos"));
       return;
+    }
+
+    // Persist IBAN in local cache
+    if (studentId) {
+      saveStoredIBAN(studentId, formData.iban);
     }
 
     // Update assigned classes
     if (studentId) {
-      // First, remove existing assignments
-      await supabase.from("alumnos_clases").delete().eq("alumno_id", studentId);
-      
-      // Insert new assignments
-      if (formData.clases_asignadas.length > 0) {
-        const insertData = formData.clases_asignadas.map(claseId => ({
-          alumno_id: studentId,
-          clase_id: claseId
-        }));
-        await supabase.from("alumnos_clases").insert(insertData);
+      try {
+        await supabase.from("alumnos_clases").delete().eq("alumno_id", studentId);
+        
+        if (formData.clases_asignadas.length > 0) {
+          const insertData = formData.clases_asignadas.map(claseId => ({
+            alumno_id: studentId,
+            clase_id: claseId
+          }));
+          await supabase.from("alumnos_clases").insert(insertData);
+        }
+      } catch (errAssign) {
+        console.warn("Aviso al guardar clases asignadas:", errAssign);
       }
     }
 
+    logActivity({
+      origen: "recepcion",
+      tipo_evento: "edicion_alumno",
+      descripcion: isEditing 
+        ? `Alumno editado: ${formData.nombre_completo}`
+        : `Nuevo alumno matriculado: ${formData.nombre_completo}`,
+      usuario_afectado: formData.nombre_completo,
+      sede: formData.sede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+    });
+
     setIsModalOpen(false);
     fetchData();
+
+    setAppModal({
+      isOpen: true,
+      title: isEditing ? "Alumno Actualizado" : "Alumno Matriculado",
+      message: isEditing 
+        ? `Los datos de "${formData.nombre_completo}" se han guardado correctamente.`
+        : `El alumno "${formData.nombre_completo}" ha sido matriculado con éxito.`,
+      type: "success",
+      confirmText: "Aceptar"
+    });
   };
 
   const parseCSVLine = (text: string): string[] => {

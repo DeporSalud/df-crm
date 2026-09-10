@@ -23,7 +23,8 @@ import {
   cancelarReservaOpenClass,
   getReservasPorClaseYSesion,
   getOpenClassReservas,
-  OpenClassReserva
+  OpenClassReserva,
+  normalizeClaseId
 } from "@/lib/openClassService";
 
 const TEACHER_PINS: Record<string, { name: string; isAdmin?: boolean }> = {
@@ -504,8 +505,9 @@ export default function ProfesorPortal() {
 
     setIsRosterLoading(true);
     try {
+      const classUUID = normalizeClaseId(clase.id);
       if (isOpenClass(clase)) {
-        const sessionReservas = getReservasPorClaseYSesion(clase.id, dateIso);
+        const sessionReservas = getReservasPorClaseYSesion(classUUID, dateIso);
         const { data: allDbStudents } = await supabase.from("alumnos").select("*");
         const dbMap = new Map((allDbStudents || []).map((s: any) => [s.id, s]));
 
@@ -537,7 +539,7 @@ export default function ProfesorPortal() {
         const { data: asistencias } = await supabase
           .from("asistencias")
           .select("alumno_id, id, fecha_hora")
-          .eq("clase_id", clase.id)
+          .eq("clase_id", classUUID)
           .gte("fecha_hora", dateIso + "T00:00:00")
           .lte("fecha_hora", dateIso + "T23:59:59");
 
@@ -551,7 +553,7 @@ export default function ProfesorPortal() {
           const { data: rawEnrollments, error: rawErr } = await supabase
             .from("alumnos_clases")
             .select("alumno_id")
-            .eq("clase_id", clase.id);
+            .eq("clase_id", classUUID);
 
           if (!rawErr && rawEnrollments && rawEnrollments.length > 0) {
             const studentIds = rawEnrollments
@@ -596,7 +598,7 @@ export default function ProfesorPortal() {
                   dni
                 )
               `)
-              .eq("clase_id", clase.id);
+              .eq("clase_id", classUUID);
 
             if (!enrollError && enrolled && enrolled.length > 0) {
               studentList = enrolled
@@ -619,7 +621,7 @@ export default function ProfesorPortal() {
         const { data: asistencias } = await supabase
           .from("asistencias")
           .select("alumno_id, id, fecha_hora")
-          .eq("clase_id", clase.id)
+          .eq("clase_id", classUUID)
           .gte("fecha_hora", dateIso + "T00:00:00")
           .lte("fecha_hora", dateIso + "T23:59:59");
 
@@ -702,11 +704,12 @@ export default function ProfesorPortal() {
           }
         }
 
+        const selectedClassUUID = normalizeClaseId(selectedClase.id);
         await supabase
           .from("asistencias")
           .delete()
           .eq("alumno_id", student.id)
-          .eq("clase_id", selectedClase.id)
+          .eq("clase_id", selectedClassUUID)
           .gte("fecha_hora", targetDate + "T00:00:00")
           .lte("fecha_hora", targetDate + "T23:59:59");
 
@@ -720,7 +723,10 @@ export default function ProfesorPortal() {
           sede: isStudio1(selectedClase.sede) ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
         });
       } else {
-        if (!isRegular && typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
+        const selectedClassUUID = normalizeClaseId(selectedClase.id);
+        const isPrepaidOpenClass = isOpenClass(selectedClase) || Boolean(student.reserva_id);
+
+        if (!isRegular && !isPrepaidOpenClass && typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
           const newBalance = Math.max(0, student.clases_restantes - 1);
           await supabase
             .from("alumnos")
@@ -732,7 +738,7 @@ export default function ProfesorPortal() {
 
         await supabase.from("asistencias").insert([{
           alumno_id: student.id,
-          clase_id: selectedClase.id,
+          clase_id: selectedClassUUID,
           fecha_hora: targetDate + "T" + (selectedClase.hora_inicio || "18:00") + ":00.000Z"
         }]);
 

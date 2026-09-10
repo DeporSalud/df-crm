@@ -37,7 +37,8 @@ import {
   saveBonosAlumnos,
   consumirSesionBono,
   recargarSesionesBono,
-  crearBonoAlumno
+  crearBonoAlumno,
+  deleteBonoAlumno
 } from "@/lib/ventajasService";
 import { registrarNuevoPago } from "@/lib/pagosService";
 import { logActivity } from "@/lib/activityLogger";
@@ -342,6 +343,22 @@ export default function AdminVentajasPage() {
             type: "warning"
           });
         }
+      }
+    });
+  };
+
+  const handleDeleteBono = (bono: BonoAlumno) => {
+    setModal({
+      isOpen: true,
+      title: "Eliminar Bono",
+      message: `¿Estás seguro de que deseas eliminar permanentemente el bono de "${bono.alumno_nombre}" (${bono.tipo_bono})?`,
+      type: "warning",
+      showCancel: true,
+      confirmText: "Sí, Eliminar",
+      onConfirm: () => {
+        deleteBonoAlumno(bono.id);
+        setBonos(prev => prev.filter(b => b.id !== bono.id));
+        showToast("Bono eliminado correctamente.");
       }
     });
   };
@@ -893,6 +910,14 @@ export default function AdminVentajasPage() {
                               title="Recargar más sesiones a este bono"
                             >
                               ➕ Recargar
+                            </button>
+
+                            <button
+                              onClick={() => handleDeleteBono(bono)}
+                              className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-[11px] font-bold transition-colors cursor-pointer inline-flex items-center align-middle"
+                              title="Eliminar bono"
+                            >
+                              <Trash2 size={13} />
                             </button>
                           </td>
                         </tr>

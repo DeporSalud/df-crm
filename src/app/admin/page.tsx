@@ -701,11 +701,11 @@ export default function AdminDashboardRecepcion() {
         plan_activo: cleanPlan || req.bono_nombre,
         clases_restantes: currentClasses + clasesToAdd
       };
-      if (isFirstPurchase) {
-        updateData.matricula_pagada = true;
-      }
 
-      await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
+      const { error: updateErr } = await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
+      if (updateErr) {
+        console.warn("[Recepcion] Error actualizando plan de alumno en Supabase:", updateErr.message);
+      }
     }
 
     // 3. Remove from local storage & pending list

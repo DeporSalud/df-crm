@@ -152,98 +152,7 @@ export const INITIAL_VENTAJAS: VentajaItem[] = [
   }
 ];
 
-export const INITIAL_BONOS_ALUMNOS: BonoAlumno[] = [
-  {
-    id: "bono_alum_1",
-    alumno_id: "demo_1",
-    alumno_nombre: "Laura Gómez Martín",
-    alumno_dni: "50894721K",
-    alumno_telefono: "654 987 123",
-    alumno_email: "laura.gomez@gmail.com",
-    tipo_bono: "Bono 10 Clases Open Class",
-    total_clases: 10,
-    clases_consumidas: 3,
-    clases_restantes: 7,
-    precio_pagado: 79.00,
-    fecha_compra: "2026-08-01",
-    fecha_caducidad: "2026-11-30",
-    estado: "Activo",
-    sede: "tejar",
-    notas: "Canjeable en Studio 1 y Studio 2"
-  },
-  {
-    id: "bono_alum_2",
-    alumno_id: "demo_2",
-    alumno_nombre: "Carlos Menéndez Ruiz",
-    alumno_dni: "09483726L",
-    alumno_telefono: "611 223 344",
-    alumno_email: "carlos.menendez@hotmail.com",
-    tipo_bono: "Bono 4 Clases",
-    total_clases: 4,
-    clases_consumidas: 4,
-    clases_restantes: 0,
-    precio_pagado: 45.00,
-    fecha_compra: "2026-07-15",
-    fecha_caducidad: "2026-09-15",
-    estado: "Agotado",
-    sede: "tejar",
-    notas: "Todas las clases completadas"
-  },
-  {
-    id: "bono_alum_3",
-    alumno_id: "demo_3",
-    alumno_nombre: "Lucía Fernández Santos",
-    alumno_dni: "47382910M",
-    alumno_telefono: "622 334 455",
-    alumno_email: "lucia.fernandez@gmail.com",
-    tipo_bono: "Bono Especial Masterclasses (3 Sesiones)",
-    total_clases: 3,
-    clases_consumidas: 1,
-    clases_restantes: 2,
-    precio_pagado: 45.00,
-    fecha_compra: "2026-08-10",
-    fecha_caducidad: "2026-12-31",
-    estado: "Activo",
-    sede: "castilla",
-    notas: "Masterclasses y talleres de fin de semana"
-  },
-  {
-    id: "bono_alum_4",
-    alumno_id: "demo_4",
-    alumno_nombre: "Adrián Morales Blanco",
-    alumno_dni: "51829304N",
-    alumno_telefono: "633 445 566",
-    alumno_email: "adrian.morales@outlook.com",
-    tipo_bono: "Bono 8 Clases",
-    total_clases: 8,
-    clases_consumidas: 2,
-    clases_restantes: 6,
-    precio_pagado: 57.00,
-    fecha_compra: "2026-08-05",
-    fecha_caducidad: "2026-10-31",
-    estado: "Activo",
-    sede: "castilla",
-    notas: "Entrenamientos Urban y Heels"
-  },
-  {
-    id: "bono_alum_5",
-    alumno_id: "demo_5",
-    alumno_nombre: "Sofía Benítez Navarro",
-    alumno_dni: "02938475P",
-    alumno_telefono: "644 556 677",
-    alumno_email: "sofia.benitez@gmail.com",
-    tipo_bono: "Bono 10 Clases Open Class",
-    total_clases: 10,
-    clases_consumidas: 6,
-    clases_restantes: 4,
-    precio_pagado: 79.00,
-    fecha_compra: "2026-06-01",
-    fecha_caducidad: "2026-09-01",
-    estado: "Activo",
-    sede: "tejar",
-    notas: "Próximo a caducar (10 días restantes)"
-  }
-];
+export const INITIAL_BONOS_ALUMNOS: BonoAlumno[] = [];
 
 const STORAGE_KEY = "df_ventajas_catalog_v2";
 const RESERVAS_KEY = "df_ventajas_reservas_v2";
@@ -328,18 +237,32 @@ export function updateSolicitudStatus(id: string, estado: "Pendiente" | "Entrega
 // -------------------------------------------------------------
 
 export function getBonosAlumnos(): BonoAlumno[] {
-  if (typeof window === "undefined") return INITIAL_BONOS_ALUMNOS;
+  if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(BONOS_KEY);
     if (!raw) {
-      localStorage.setItem(BONOS_KEY, JSON.stringify(INITIAL_BONOS_ALUMNOS));
-      return INITIAL_BONOS_ALUMNOS;
+      localStorage.setItem(BONOS_KEY, JSON.stringify([]));
+      return [];
     }
     const parsed: BonoAlumno[] = JSON.parse(raw);
     const todayStr = new Date().toISOString().slice(0, 10);
     
+    // Purga automática de los 5 bonos de prueba iniciales
+    const demoIds = new Set(["bono_alum_1", "bono_alum_2", "bono_alum_3", "bono_alum_4", "bono_alum_5"]);
+    const demoDnis = new Set(["50894721K", "09483726L", "47382910M", "51829304N", "02938475P"]);
+    const cleaned = parsed.filter(b => 
+      !demoIds.has(b.id) && 
+      !demoDnis.has(b.alumno_dni || "") && 
+      !(b.alumno_id && b.alumno_id.startsWith("demo_"))
+    );
+
+    if (cleaned.length !== parsed.length) {
+      localStorage.setItem(BONOS_KEY, JSON.stringify(cleaned));
+      window.dispatchEvent(new Event("df_bonos_updated"));
+    }
+
     // Auto-update status for expired or exhausted bonos
-    return parsed.map(b => {
+    return cleaned.map(b => {
       let estado = b.estado;
       if (b.clases_restantes <= 0) {
         estado = "Agotado";
@@ -349,7 +272,7 @@ export function getBonosAlumnos(): BonoAlumno[] {
       return { ...b, estado };
     });
   } catch (e) {
-    return INITIAL_BONOS_ALUMNOS;
+    return [];
   }
 }
 
@@ -361,6 +284,12 @@ export function saveBonosAlumnos(bonos: BonoAlumno[]): void {
   } catch (e) {
     console.error("Error saving bonos alumnos:", e);
   }
+}
+
+export function deleteBonoAlumno(id: string): void {
+  const all = getBonosAlumnos();
+  const updated = all.filter(b => b.id !== id);
+  saveBonosAlumnos(updated);
 }
 
 export function consumirSesionBono(id: string): { success: boolean; bono?: BonoAlumno; message: string } {

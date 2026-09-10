@@ -16,7 +16,8 @@ import {
   getReservasPorClaseYSesion,
   getReservasAlumno,
   crearReservaOpenClass,
-  isAlumnoReservadoEnSesion
+  isAlumnoReservadoEnSesion,
+  normalizeClaseId
 } from "@/lib/openClassService";
 import { logActivity } from "@/lib/activityLogger";
 
@@ -199,11 +200,12 @@ export default function OpenClassAsistentesModal({
       if (reserva.alumno_id) {
         const hora = (clase?.hora_inicio || reserva.hora_inicio || "19:00").trim();
         const sessionDate = (calendarDay?.dateISO || reserva.fecha_iso).trim();
+        const classUUID = normalizeClaseId(reserva.clase_id);
         await supabase
           .from("asistencias")
           .insert([{
             alumno_id: reserva.alumno_id,
-            clase_id: reserva.clase_id,
+            clase_id: classUUID,
             fecha_hora: `${sessionDate}T${hora}:00.000Z`
           }]);
       }
@@ -290,15 +292,16 @@ export default function OpenClassAsistentesModal({
 
         // Clean up alumnos_clases only if no other active reservations remain for this class across any date
         try {
+          const targetClassId = normalizeClaseId(reserva.clase_id);
           const otherActive = getReservasAlumno(reserva.alumno_id).filter(
-            r => r.clase_id === reserva.clase_id && r.id !== reserva.id && (r.estado === "Confirmada" || r.estado === "Asistida")
+            r => normalizeClaseId(r.clase_id) === targetClassId && r.id !== reserva.id && (r.estado === "Confirmada" || r.estado === "Asistida")
           );
           if (otherActive.length === 0) {
             await supabase
               .from("alumnos_clases")
               .delete()
               .eq("alumno_id", reserva.alumno_id)
-              .eq("clase_id", reserva.clase_id);
+              .eq("clase_id", targetClassId);
           }
         } catch (e) {}
       }
@@ -395,17 +398,18 @@ export default function OpenClassAsistentesModal({
 
       // Sync with alumnos_clases in Supabase if not already linked
       try {
+        const classUUID = normalizeClaseId(clase.id);
         const { data: existingLink } = await supabase
           .from("alumnos_clases")
-          .select("id")
+          .select("alumno_id")
           .eq("alumno_id", selectedStudentToAdd.id)
-          .eq("clase_id", clase.id)
+          .eq("clase_id", classUUID)
           .maybeSingle();
 
         if (!existingLink) {
           await supabase.from("alumnos_clases").insert([{
             alumno_id: selectedStudentToAdd.id,
-            clase_id: clase.id
+            clase_id: classUUID
           }]);
         }
       } catch (e) {}

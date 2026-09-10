@@ -58,7 +58,7 @@ const getDayOrder = (day: string) => {
 
 // Validador y detector de conflictos de horarios, aulas y profesores
 function checkScheduleConflict(
-  newClass: { dia_semana: string; hora_inicio: string; hora_fin: string; sede: string; profesor: string; id?: string | null },
+  newClass: { dia_semana: string; hora_inicio: string; hora_fin: string; sede: string; profesor: string; id?: string | null; nombre_clase?: string },
   existingClasses: ClaseCuadrante[]
 ): { hasConflict: boolean; reason?: string } {
   // 1. Validar que hora_fin sea estrictamente posterior a hora_inicio
@@ -88,21 +88,22 @@ function checkScheduleConflict(
     if (overlaps) {
       const isExistingStudio1 = isStudio1(c.sede);
 
-      // Conflicto de Sala / Studio físico
-      if (isNewStudio1 === isExistingStudio1) {
-        const studioName = isNewStudio1 ? "Studio 1 (Plaza El Tejar)" : "Studio 2 (Paseo Castilla)";
-        return {
-          hasConflict: true,
-          reason: `Conflicto de Sala: Ya existe la clase "${c.nombre_clase}" en ${studioName} el ${c.dia_semana} en horario solapado (${c.hora_inicio} - ${c.hora_fin}).`
-        };
-      }
-
-      // Conflicto de Profesor (un profesor no puede impartir 2 clases simultáneamente)
+      // 1. Conflicto de Profesor (un profesor no puede impartir 2 clases simultáneamente en ningún centro)
       const existingProf = (c.profesor || "").trim().toLowerCase();
       if (newProf && existingProf && newProf === existingProf) {
         return {
           hasConflict: true,
           reason: `Conflicto de Profesor: El docente ${c.profesor} ya tiene asignada la clase "${c.nombre_clase}" el ${c.dia_semana} (${c.hora_inicio} - ${c.hora_fin}) en ${getStudioDisplayName(c.sede)}.`
+        };
+      }
+
+      // 2. Comprobación de clase duplicada exacta (mismo nombre, mismo estudio y mismo horario)
+      const newClassName = (newClass.nombre_clase || "").trim().toLowerCase();
+      const existingClassName = (c.nombre_clase || "").trim().toLowerCase();
+      if (newClassName && existingClassName && newClassName === existingClassName && isNewStudio1 === isExistingStudio1 && startA === startB && endA === endB) {
+        return {
+          hasConflict: true,
+          reason: `Clase Duplicada: Ya existe exactamente la clase "${c.nombre_clase}" en ${getStudioDisplayName(c.sede)} el ${c.dia_semana} (${c.hora_inicio} - ${c.hora_fin}).`
         };
       }
     }
@@ -325,7 +326,7 @@ export default function ClasesPage() {
       setModal({
         isOpen: true,
         title: "Error al Guardar",
-        message: "Hubo un error al guardar la clase en la base de datos.",
+        message: `Hubo un error al guardar la clase en la base de datos: ${error.message || "Error desconocido"}`,
         type: "warning",
         confirmText: "Aceptar"
       });

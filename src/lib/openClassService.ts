@@ -34,9 +34,23 @@ export interface CalendarDayItem {
   year?: number;
 }
 
+export const LEGACY_ID_MAP: Record<string, string> = {
+  "oc_lunes_1": "71b12578-d254-4354-bb1c-e0ebfd0178aa",
+  "oc_lunes_2": "1ee1eefb-7f1a-4423-ac6a-04030c5c0282",
+  "oc_martes_1": "85165dff-e126-4d32-90d4-2212c2fbb244",
+  "oc_miercoles_1": "1d7df61b-a65e-4f35-82b2-3d34242abb87",
+  "oc_miercoles_2": "6a374f52-f6d8-447c-be48-e8fe3eca8faf",
+  "oc_jueves_1": "39807014-ee30-4112-99cf-6b361c820834",
+};
+
+export function normalizeClaseId(id: string): string {
+  if (!id) return "";
+  return LEGACY_ID_MAP[id] || id;
+}
+
 export const DEFAULT_STUDIO2_OPEN_CLASSES = [
   {
-    id: "oc_lunes_1",
+    id: "71b12578-d254-4354-bb1c-e0ebfd0178aa", // Andrea Soto
     nombre_clase: "OPEN CLASS COMERCIAL",
     profesor: "Andrea Soto",
     dia_semana: "LUNES",
@@ -48,7 +62,7 @@ export const DEFAULT_STUDIO2_OPEN_CLASSES = [
     tipo_clase: "Open Class"
   },
   {
-    id: "oc_lunes_2",
+    id: "1ee1eefb-7f1a-4423-ac6a-04030c5c0282", // Nil Barberá
     nombre_clase: "OPEN CLASS COMERCIAL",
     profesor: "Nil Barberá",
     dia_semana: "LUNES",
@@ -60,7 +74,7 @@ export const DEFAULT_STUDIO2_OPEN_CLASSES = [
     tipo_clase: "Open Class"
   },
   {
-    id: "oc_martes_1",
+    id: "85165dff-e126-4d32-90d4-2212c2fbb244", // Nerea Olivares
     nombre_clase: "OPEN CLASS HEELS",
     profesor: "Nerea Olivares",
     dia_semana: "MARTES",
@@ -72,7 +86,7 @@ export const DEFAULT_STUDIO2_OPEN_CLASSES = [
     tipo_clase: "Open Class"
   },
   {
-    id: "oc_miercoles_1",
+    id: "1d7df61b-a65e-4f35-82b2-3d34242abb87", // Alejandro Rovina
     nombre_clase: "OPEN CLASS URBAN",
     profesor: "Alejandro Rovina",
     dia_semana: "MIÉRCOLES",
@@ -84,7 +98,7 @@ export const DEFAULT_STUDIO2_OPEN_CLASSES = [
     tipo_clase: "Open Class"
   },
   {
-    id: "oc_miercoles_2",
+    id: "6a374f52-f6d8-447c-be48-e8fe3eca8faf", // Mario Gadea
     nombre_clase: "OPEN CLASS COMERCIAL",
     profesor: "Mario Gadea",
     dia_semana: "MIÉRCOLES",
@@ -96,7 +110,7 @@ export const DEFAULT_STUDIO2_OPEN_CLASSES = [
     tipo_clase: "Open Class"
   },
   {
-    id: "oc_jueves_1",
+    id: "39807014-ee30-4112-99cf-6b361c820834", // Formación Rotativa
     nombre_clase: "FORMACIÓN ROTATIVA",
     profesor: "Formación Rotativa",
     dia_semana: "JUEVES",
@@ -260,8 +274,9 @@ export function formatSedeName(sede: string): string {
 export function getSesionReservasCount(claseId: string, fechaISO: string): number {
   const cleanISO = cleanDateISO(fechaISO);
   if (!cleanISO || !claseId) return 0;
+  const targetId = normalizeClaseId(claseId);
   const all = getOpenClassReservas();
-  return all.filter(r => r.clase_id === claseId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")).length;
+  return all.filter(r => normalizeClaseId(r.clase_id) === targetId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")).length;
 }
 
 export function isSesionCompleta(clase: any, fechaISO: string, aforoMaximo?: number): boolean {
@@ -279,7 +294,12 @@ export function getOpenClassReservas(): OpenClassReserva[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed: OpenClassReserva[] = JSON.parse(raw);
+    return parsed.map(r => ({
+      ...r,
+      clase_id: normalizeClaseId(r.clase_id)
+    }));
   } catch (e) {
     return [];
   }
@@ -303,10 +323,11 @@ export function getReservasAlumno(alumnoId: string): OpenClassReserva[] {
 export function isAlumnoReservadoEnSesion(alumnoId: string, claseId: string, fechaISO: string): boolean {
   const cleanISO = cleanDateISO(fechaISO);
   if (!cleanISO || !alumnoId || !claseId) return false;
+  const targetId = normalizeClaseId(claseId);
   const all = getOpenClassReservas();
   return all.some(r => 
     r.alumno_id === alumnoId && 
-    r.clase_id === claseId && 
+    normalizeClaseId(r.clase_id) === targetId && 
     r.fecha_iso === cleanISO && 
     (r.estado === "Confirmada" || r.estado === "Asistida")
   );
@@ -327,11 +348,13 @@ export function crearReservaOpenClass(data: {
     throw new Error("Fecha de calendario inválida para reserva de Open Class.");
   }
 
+  const classUUID = normalizeClaseId(data.clase.id);
+
   // Idempotency: Check if the student already holds a confirmed/attended reservation first
   const current = getOpenClassReservas();
   const existing = current.find(r => 
     r.alumno_id === data.alumno_id && 
-    r.clase_id === data.clase.id && 
+    normalizeClaseId(r.clase_id) === classUUID && 
     r.fecha_iso === cleanISO && 
     (r.estado === "Confirmada" || r.estado === "Asistida")
   );
@@ -353,7 +376,7 @@ export function crearReservaOpenClass(data: {
     alumno_telefono: data.alumno_telefono,
     alumno_dni: data.alumno_dni,
     alumno_plan: data.alumno_plan,
-    clase_id: data.clase.id,
+    clase_id: classUUID,
     nombre_clase: data.clase.nombre_clase,
     profesor: data.clase.profesor,
     sede: normalizeSede(data.clase.sede || "castilla"),
