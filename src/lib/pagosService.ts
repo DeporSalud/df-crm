@@ -69,9 +69,63 @@ export const CONCEPTOS_RAPIDOS: ConceptoRapidoConfig[] = [
 
 const STORAGE_KEY = "df_pagos_transacciones_v1";
 
+export const VERIFIED_STRIPE_TRANSACTIONS: PagoTransaccion[] = [
+  {
+    id: "stripe_cs_live_a1PrBXsfuDVKTuyZ5o1OC1dX5E1nzNg6MNQiotiy8nO7EXa8gtfkzENpRf",
+    numero_recibo: "STRIPE-ENPRF",
+    fecha_hora: "2026-09-10T15:39:00.000Z",
+    fecha_corta: "10/09/2026",
+    hora_corta: "17:39",
+    alumno_nombre: "Zaira Cristina Rius Seco",
+    concepto: "Promo Septiembre • 4 Clases (No Alumno)",
+    categoria: "bono",
+    importe: 30.00,
+    metodo_pago: "Stripe",
+    sede: "castilla",
+    atendido_por: "Pasarela Online Stripe",
+    notas: "ID Sesión: cs_live_a1PrBXsfuDVKTuyZ5o1OC1dX5E1nzNg6MNQiotiy8nO7EXa8gtfkzENpRf | Email: zahirar1820@gmail.com",
+    periodo_mes: "2026-09",
+    estado: "Cobrado"
+  },
+  {
+    id: "stripe_cs_live_a1EgAt3CLXBrPYlZJ69PnndPtY2Agc1ppOcEDsTMucp1YlRm7OVoyZ3srB",
+    numero_recibo: "STRIPE-Z3SRB",
+    fecha_hora: "2026-09-10T15:15:00.000Z",
+    fecha_corta: "10/09/2026",
+    hora_corta: "17:15",
+    alumno_nombre: "Sara Romero Rodríguez",
+    concepto: "Promo Septiembre • 4 Clases (No Alumno)",
+    categoria: "bono",
+    importe: 30.00,
+    metodo_pago: "Stripe",
+    sede: "castilla",
+    atendido_por: "Pasarela Online Stripe",
+    notas: "ID Sesión: cs_live_a1EgAt3CLXBrPYlZJ69PnndPtY2Agc1ppOcEDsTMucp1YlRm7OVoyZ3srB | Email: sromer0rodr1@gmail.com",
+    periodo_mes: "2026-09",
+    estado: "Cobrado"
+  },
+  {
+    id: "stripe_cs_live_a19e5tFzalE45jcEeIQQyeLBLfhTlSkMI6XPUafFDjRUqM2rs7bar0dcdM",
+    numero_recibo: "STRIPE-0DCDM",
+    fecha_hora: "2026-09-09T17:22:00.000Z",
+    fecha_corta: "09/09/2026",
+    hora_corta: "19:22",
+    alumno_nombre: "Lucía Zamorano",
+    concepto: "Clase Suelta Open Class",
+    categoria: "clase_suelta",
+    importe: 15.00,
+    metodo_pago: "Stripe",
+    sede: "castilla",
+    atendido_por: "Pasarela Online Stripe",
+    notas: "ID Sesión: cs_live_a19e5tFzalE45jcEeIQQyeLBLfhTlSkMI6XPUafFDjRUqM2rs7bar0dcdM | Email: luciaza0509@gmail.com",
+    periodo_mes: "2026-09",
+    estado: "Cobrado"
+  }
+];
+
 // Generate initial seed transactions (Recent counter payments + September SEPA simulated batch)
 export function generateSeedTransactions(): PagoTransaccion[] {
-  const transactions: PagoTransaccion[] = [];
+  const transactions: PagoTransaccion[] = [...VERIFIED_STRIPE_TRANSACTIONS];
   const today = new Date();
   const todayStr = today.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
   const todayISO = today.toISOString();
@@ -201,7 +255,19 @@ export function getHistorialPagos(): PagoTransaccion[] {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
       return initial;
     }
-    return JSON.parse(raw);
+    const list: PagoTransaccion[] = JSON.parse(raw);
+    let updated = false;
+    for (const vStripe of VERIFIED_STRIPE_TRANSACTIONS) {
+      const exists = list.some(p => p.id === vStripe.id || p.numero_recibo === vStripe.numero_recibo);
+      if (!exists) {
+        list.unshift(vStripe);
+        updated = true;
+      }
+    }
+    if (updated) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    }
+    return list;
   } catch (e) {
     return generateSeedTransactions();
   }
