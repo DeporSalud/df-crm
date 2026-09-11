@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
-import { getStudentFee, calculateFeeFromClasses } from "@/lib/studentFees";
+import { getStudentFee, calculateFeeFromClasses, saveStudentFeeOverride } from "@/lib/studentFees";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
 import { CheckCircle2 } from "lucide-react";
@@ -150,6 +150,7 @@ export default function AlumnosPage() {
     fecha_nacimiento: "",
     tipo_alumno: "adulto" as "adulto" | "infantil",
     plan_activo: "Sin Plan Activo",
+    cuota_mensual: 30,
     nfc_token: "",
     estado: "Activo",
     clases_asignadas: [] as string[]
@@ -197,6 +198,19 @@ export default function AlumnosPage() {
 
   useEffect(() => {
     fetchData();
+
+    const handleUpdate = () => {
+      fetchData();
+    };
+    window.addEventListener("df_student_fees_updated", handleUpdate);
+    window.addEventListener("df_pagos_updated", handleUpdate);
+    window.addEventListener("storage", handleUpdate);
+
+    return () => {
+      window.removeEventListener("df_student_fees_updated", handleUpdate);
+      window.removeEventListener("df_pagos_updated", handleUpdate);
+      window.removeEventListener("storage", handleUpdate);
+    };
   }, [activeSede]);
 
   // Open Comprehensive History Modal for a Student (Bonos, Payments, Calendar Bookings, Attendances)
@@ -293,6 +307,7 @@ export default function AlumnosPage() {
       
     const assignedIds = assigned ? assigned.map(a => a.clase_id) : [];
     const studentIban = student.iban || getStoredIBAN(student.id);
+    const feeInfo = getStudentFee(student);
 
     setFormData({
       sede: student.sede || "tejar",
@@ -304,7 +319,8 @@ export default function AlumnosPage() {
       iban: studentIban || "",
       fecha_nacimiento: student.fecha_nacimiento || "",
       tipo_alumno: (student.tipo_alumno || (student.fecha_nacimiento && (new Date().getFullYear() - new Date(student.fecha_nacimiento).getFullYear() <= 14) ? "infantil" : "adulto")) as "adulto" | "infantil",
-      plan_activo: student.plan_activo || "Clases Regulares",
+      plan_activo: student.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`,
+      cuota_mensual: feeInfo.cuotaBase,
       nfc_token: student.nfc_token || "",
       estado: student.estado || "Activo",
       clases_asignadas: assignedIds
@@ -338,14 +354,21 @@ export default function AlumnosPage() {
     const handleTipoAlumnoChange = (tipo: "adulto" | "infantil") => {
     setFormData(prev => {
       let newPlan = prev.plan_activo;
+      let newFee = prev.cuota_mensual;
       if (prev.clases_asignadas.length > 0) {
         const selectedObjs = availableClasses.filter(c => prev.clases_asignadas.includes(c.id));
-        const fee = calculateFeeFromClasses(selectedObjs, tipo);
-        newPlan = `Clases Regulares (${fee}€/mes)`;
+        newFee = calculateFeeFromClasses(selectedObjs, tipo);
+        newPlan = `Clases Regulares (${newFee}€/mes)`;
+      } else {
+        newFee = tipo === "infantil" ? 27 : 30;
+        if (newPlan.toLowerCase().includes("regulares")) {
+          newPlan = `Clases Regulares (${newFee}€/mes)`;
+        }
       }
       return {
         ...prev,
         tipo_alumno: tipo,
+        cuota_mensual: newFee,
         plan_activo: newPlan
       };
     });
@@ -359,17 +382,34 @@ export default function AlumnosPage() {
         : [...prev.clases_asignadas, classId];
       
       let newPlan = prev.plan_activo;
+      let newFee = prev.cuota_mensual;
       if (newAssigned.length === 0) {
         newPlan = "Sin Plan Activo";
+        newFee = 0;
       } else {
         const selectedObjs = availableClasses.filter(c => newAssigned.includes(c.id));
-        const fee = calculateFeeFromClasses(selectedObjs, prev.tipo_alumno || "adulto");
-        newPlan = `Clases Regulares (${fee}€/mes)`;
+        newFee = calculateFeeFromClasses(selectedObjs, prev.tipo_alumno || "adulto");
+        newPlan = `Clases Regulares (${newFee}€/mes)`;
       }
 
       return { 
         ...prev, 
         clases_asignadas: newAssigned,
+        cuota_mensual: newFee,
+        plan_activo: newPlan
+      };
+    });
+  };
+
+  const handleCuotaChange = (newCuota: number) => {
+    setFormData(prev => {
+      const isBono = prev.plan_activo.toLowerCase().includes("bono") || prev.plan_activo.toLowerCase().includes("promo") || prev.plan_activo.toLowerCase().includes("suelta");
+      const newPlan = isBono 
+        ? prev.plan_activo 
+        : (newCuota === 0 && prev.clases_asignadas.length === 0 ? "Sin Plan Activo" : `Clases Regulares (${newCuota}€/mes)`);
+      return {
+        ...prev,
+        cuota_mensual: newCuota,
         plan_activo: newPlan
       };
     });
@@ -416,6 +456,13 @@ export default function AlumnosPage() {
       clases_restantes = 1;
     }
 
+    // Ensure regular students have their custom cuota in plan_activo
+    let finalPlan = formData.plan_activo;
+    const isBonoOrPromo = finalPlan.toLowerCase().includes("bono") || finalPlan.toLowerCase().includes("promo") || finalPlan.toLowerCase().includes("suelta");
+    if (!isBonoOrPromo && formData.cuota_mensual > 0) {
+      finalPlan = `Clases Regulares (${formData.cuota_mensual}€/mes)`;
+    }
+
     // Prepare clean payload containing only columns present in Supabase 'alumnos' table
     const payload: Record<string, any> = {
       sede: formData.sede || (activeSede !== "consolidado" ? activeSede : "tejar"),
@@ -425,7 +472,7 @@ export default function AlumnosPage() {
       dni: formData.dni.trim() || null,
       direccion: formData.direccion.trim() || null,
       fecha_nacimiento: formData.fecha_nacimiento || null,
-      plan_activo: formData.plan_activo,
+      plan_activo: finalPlan,
       nfc_token: formData.nfc_token.trim() || null,
       estado: formData.estado
     };
@@ -474,9 +521,21 @@ export default function AlumnosPage() {
       return;
     }
 
-    // Persist IBAN in local cache
+    // Persist IBAN and Fee overrides in local cache
     if (studentId) {
       saveStoredIBAN(studentId, formData.iban);
+      if (formData.cuota_mensual > 0) {
+        saveStudentFeeOverride(studentId, formData.cuota_mensual);
+        if (formData.nombre_completo) {
+          saveStudentFeeOverride(formData.nombre_completo.toLowerCase().trim(), formData.cuota_mensual);
+        }
+        if (formData.nfc_token) {
+          saveStudentFeeOverride("card_" + formData.nfc_token.trim(), formData.cuota_mensual);
+        }
+        if (formData.email) {
+          saveStudentFeeOverride("email_" + formData.email.toLowerCase().trim(), formData.cuota_mensual);
+        }
+      }
     }
 
     // Update assigned classes
@@ -1423,6 +1482,51 @@ export default function AlumnosPage() {
                         className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors" 
                       />
                     </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-[var(--color-text-secondary)]">
+                          Cuota Mensual (€/mes) *
+                        </label>
+                        {formData.clases_asignadas.length > 0 && (
+                          <span className="text-[10px] font-bold text-emerald-400">
+                            ⚡ Sugerido por clases
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <input 
+                          type="number"
+                          step="1"
+                          min="0"
+                          value={formData.cuota_mensual || ""}
+                          onChange={(e) => handleCuotaChange(parseFloat(e.target.value) || 0)}
+                          placeholder="Ej. 41"
+                          className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-emerald-400 text-sm font-extrabold font-mono rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors pr-14"
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 font-mono pointer-events-none">
+                          €/mes
+                        </span>
+                      </div>
+                      
+                      {/* Presets rápidos */}
+                      <div className="flex gap-1 flex-wrap mt-2">
+                        {[25, 27, 30, 35, 37, 41, 45, 50].map((tarifa) => (
+                          <button
+                            key={tarifa}
+                            type="button"
+                            onClick={() => handleCuotaChange(tarifa)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono transition-colors cursor-pointer ${
+                              formData.cuota_mensual === tarifa
+                                ? "bg-emerald-500 text-slate-950 shadow-sm"
+                                : "bg-[var(--color-bg)] text-slate-400 hover:text-white border border-[var(--color-border)]"
+                            }`}
+                          >
+                            {tarifa}€
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <label className="block text-xs font-semibold text-[var(--color-text-secondary)]">Plan / Tarifa Activa</label>

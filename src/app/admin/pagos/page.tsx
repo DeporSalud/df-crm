@@ -255,7 +255,25 @@ export default function PagosYFacturacionPage() {
   // Load Payments, Pending Requests & Students
   const loadData = async () => {
     setIsLoading(true);
-    const storedPagos = getHistorialPagos();
+    let storedPagos = getHistorialPagos();
+
+    // Fetch live Stripe transactions from API
+    try {
+      const res = await fetch("/api/stripe/pagos");
+      if (res.ok) {
+        const json = await res.json();
+        if (json.transacciones && Array.isArray(json.transacciones)) {
+          const stripeTxs: PagoTransaccion[] = json.transacciones;
+          // Keep local manual desk payments (cash, dataphone, bizum, SEPA remesas)
+          const localManual = storedPagos.filter(p => !p.id.startsWith("stripe_") && !p.numero_recibo.startsWith("STRIPE-"));
+          storedPagos = [...stripeTxs, ...localManual];
+          saveHistorialPagos(storedPagos);
+        }
+      }
+    } catch (errStripe) {
+      console.warn("[Pagos] Error cargando transacciones de Stripe:", errStripe);
+    }
+
     setPagos(storedPagos);
 
     // Fetch Pending Requests (Transfer & Reception) from Supabase

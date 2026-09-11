@@ -90,10 +90,36 @@ export function calculateFeeFromClasses(
   return calcularCuotaPorHoras(totalHours, tipoAlumno, tarifasCustom);
 }
 
+const OVERRIDES_STORAGE_KEY = "df_student_fees_overrides";
+
+export function getStudentFeeOverrides(): Record<string, number> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(OVERRIDES_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+export function saveStudentFeeOverride(studentIdentifier: string, cuota: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    const current = getStudentFeeOverrides();
+    current[studentIdentifier] = cuota;
+    localStorage.setItem(OVERRIDES_STORAGE_KEY, JSON.stringify(current));
+    window.dispatchEvent(new Event("df_student_fees_updated"));
+    window.dispatchEvent(new Event("df_pagos_updated"));
+  } catch (e) {
+    console.error("Error saving student fee override:", e);
+  }
+}
+
 /**
  * Returns the exact monthly fee, prepaid advance (20€), and net September remittance for a student.
  */
 export function getStudentFee(student: {
+  id?: string | null;
   nombre_completo?: string | null;
   nfc_token?: string | null;
   email?: string | null;
@@ -114,7 +140,48 @@ export function getStudentFee(student: {
     }
   }
 
-  // 1. Try lookup by NFC card token
+  // 1. PRIORITY: Check local manual overrides set by administrator
+  const overrides = getStudentFeeOverrides();
+  let manualFee: number | undefined = undefined;
+
+  if (student.id && overrides[student.id] !== undefined) {
+    manualFee = overrides[student.id];
+  } else if (student.nombre_completo && overrides[student.nombre_completo.toLowerCase().trim()] !== undefined) {
+    manualFee = overrides[student.nombre_completo.toLowerCase().trim()];
+  } else if (student.nfc_token && overrides["card_" + student.nfc_token] !== undefined) {
+    manualFee = overrides["card_" + student.nfc_token];
+  } else if (student.email && overrides["email_" + student.email.toLowerCase().trim()] !== undefined) {
+    manualFee = overrides["email_" + student.email.toLowerCase().trim()];
+  }
+
+  if (typeof manualFee === "number" && manualFee > 0) {
+    return {
+      cuotaBase: manualFee,
+      adelanto,
+      netoSep: Math.max(0, manualFee - adelanto),
+      claseNombre: student.plan_activo || "Clases Regulares",
+      tipoAlumno
+    };
+  }
+
+  // 2. PRIORITY: Check if plan_activo has an explicit price set (e.g. "Clases Regulares (35€/mes)" or "30€")
+  if (student.plan_activo) {
+    const match = student.plan_activo.match(/(\d+(?:[.,]\d+)?)\s*€/);
+    if (match) {
+      const parsedFee = parseFloat(match[1].replace(',', '.'));
+      if (parsedFee > 0) {
+        return {
+          cuotaBase: parsedFee,
+          adelanto,
+          netoSep: Math.max(0, parsedFee - adelanto),
+          claseNombre: student.plan_activo,
+          tipoAlumno
+        };
+      }
+    }
+  }
+
+  // 3. Fallback: Lookup by NFC card token in static feeMap
   if (student.nfc_token) {
     const byCard = feeMap["card_" + student.nfc_token];
     if (byCard) {
@@ -128,10 +195,16 @@ export function getStudentFee(student: {
     }
   }
 
-  // 2. Try lookup by Name
+  // 4. Fallback: Lookup by Name in static feeMap
   if (student.nombre_completo) {
-    const key = student.nombre_completo.toLowerCase().trim();
-    const byName = feeMap[key];
+    const rawKey = student.nombre_completo.toLowerCase().trim();
+    const cleanKey = rawKey.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const byName = feeMap[rawKey] || feeMap[cleanKey] || Object.values(feeMap).find(e => 
+      e.nombre && (
+        e.nombre.toLowerCase().trim() === rawKey ||
+        e.nombre.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") === cleanKey
+      )
+    );
     if (byName) {
       return {
         cuotaBase: byName.cuota_base,
@@ -143,7 +216,7 @@ export function getStudentFee(student: {
     }
   }
 
-  // 3. Try lookup by Email
+  // 5. Fallback: Lookup by Email in static feeMap
   if (student.email) {
     const byEmail = feeMap["email_" + student.email.toLowerCase().trim()];
     if (byEmail) {
@@ -154,23 +227,6 @@ export function getStudentFee(student: {
         claseNombre: byEmail.clase,
         tipoAlumno
       };
-    }
-  }
-
-  // 4. Try parsing fee from plan_activo if present (e.g. "Clases Regulares (30€/mes)" or "37€")
-  if (student.plan_activo) {
-    const match = student.plan_activo.match(/(\d+)\s*€/);
-    if (match) {
-      const parsedFee = parseInt(match[1], 10);
-      if (parsedFee > 0) {
-        return {
-          cuotaBase: parsedFee,
-          adelanto,
-          netoSep: Math.max(0, parsedFee - adelanto),
-          claseNombre: "Clases Regulares",
-          tipoAlumno
-        };
-      }
     }
   }
 

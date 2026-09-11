@@ -43,6 +43,7 @@ import {
 import { registrarNuevoPago } from "@/lib/pagosService";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
+import { supabase } from "@/lib/supabase/client";
 
 export default function AdminVentajasPage() {
   const [items, setItems] = useState<VentajaItem[]>([]);
@@ -91,10 +92,127 @@ export default function AdminVentajasPage() {
   // AppModal State for confirmations & alerts
   const [modal, setModal] = useState<ModalState>({ isOpen: false, message: "" });
 
-  const loadData = () => {
+  const loadData = async () => {
     setItems(getVentajasCatalog());
     setSolicitudes(getSolicitudesVentajas());
-    setBonos(getBonosAlumnos());
+    const localBonos = getBonosAlumnos();
+
+    try {
+      const { data: dbStudents } = await supabase
+        .from("alumnos")
+        .select("*");
+
+      if (dbStudents && dbStudents.length > 0) {
+        // Filter students that have an active bono / promo or remaining classes
+        const bonoStudents = dbStudents.filter((s: any) => {
+          const plan = (s.plan_activo || "").toLowerCase();
+          const hasClases = typeof s.clases_restantes === "number" && s.clases_restantes > 0;
+          const isBonoOrPromo = plan.includes("bono") || 
+                                plan.includes("promo") || 
+                                plan.includes("open") || 
+                                plan.includes("suelta") || 
+                                plan.includes("sesion") ||
+                                (plan.includes("clases") && !plan.includes("regular"));
+          return hasClases || isBonoOrPromo;
+        });
+
+        const todayStr = new Date().toISOString().slice(0, 10);
+
+        const mappedFromDb: BonoAlumno[] = bonoStudents.map((s: any) => {
+          const plan = s.plan_activo || "Bono de Clases";
+          const planLower = plan.toLowerCase();
+          
+          let totalClases = 4;
+          if (planLower.includes("12")) totalClases = 12;
+          else if (planLower.includes("10")) totalClases = 10;
+          else if (planLower.includes("8")) totalClases = 8;
+          else if (planLower.includes("4")) totalClases = 4;
+          else if (planLower.includes("suelta") || planLower.includes("1 clase")) totalClases = 1;
+          else if (typeof s.clases_restantes === "number" && s.clases_restantes > 4) totalClases = s.clases_restantes;
+
+          const clasesRestantes = typeof s.clases_restantes === "number" ? s.clases_restantes : 0;
+          const clasesConsumidas = Math.max(0, totalClases - clasesRestantes);
+
+          let precio = 45.00;
+          if (planLower.includes("promo")) {
+            if (planLower.includes("no alumno")) {
+              if (planLower.includes("12")) precio = 55.00;
+              else if (planLower.includes("8")) precio = 42.00;
+              else precio = 30.00;
+            } else {
+              if (planLower.includes("12")) precio = 45.00;
+              else if (planLower.includes("8")) precio = 35.00;
+              else precio = 25.00;
+            }
+          } else if (planLower.includes("suelta")) {
+            precio = 15.00;
+          } else if (planLower.includes("8")) {
+            precio = 57.00;
+          } else if (planLower.includes("10")) {
+            precio = 79.00;
+          } else if (planLower.includes("4")) {
+            precio = 45.00;
+          }
+
+          // Calculate expiry
+          let fechaCaducidad = "2026-09-30";
+          if (planLower.includes("promo") || planLower.includes("septiembre")) {
+            fechaCaducidad = "2026-09-30";
+          } else if (s.creado_en) {
+            const expDate = new Date(s.creado_en);
+            expDate.setDate(expDate.getDate() + 90);
+            fechaCaducidad = expDate.toISOString().slice(0, 10);
+          } else {
+            const expDate = new Date();
+            expDate.setDate(expDate.getDate() + 90);
+            fechaCaducidad = expDate.toISOString().slice(0, 10);
+          }
+
+          let estado: "Activo" | "Agotado" | "Caducado" = "Activo";
+          if (clasesRestantes <= 0) {
+            estado = "Agotado";
+          } else if (fechaCaducidad < todayStr) {
+            estado = "Caducado";
+          }
+
+          const sede: "tejar" | "castilla" = (s.sede === "castilla" || s.sede === "alcorcon") ? "castilla" : "tejar";
+
+          return {
+            id: `bono_db_${s.id}`,
+            alumno_id: s.id,
+            alumno_nombre: s.nombre_completo,
+            alumno_dni: s.dni || undefined,
+            alumno_telefono: s.telefono || undefined,
+            alumno_email: s.email || undefined,
+            tipo_bono: plan,
+            total_clases: totalClases,
+            clases_consumidas: clasesConsumidas,
+            clases_restantes: clasesRestantes,
+            precio_pagado: precio,
+            fecha_compra: s.creado_en ? s.creado_en.slice(0, 10) : todayStr,
+            fecha_caducidad: fechaCaducidad,
+            estado,
+            sede,
+            notas: "Bono sincronizado desde Supabase"
+          };
+        });
+
+        // Merge DB bonos with local manual bonos (avoid duplicates)
+        const combined = [...mappedFromDb];
+        localBonos.forEach(lb => {
+          if (!combined.some(c => c.id === lb.id || (lb.alumno_id && c.alumno_id === lb.alumno_id))) {
+            combined.push(lb);
+          }
+        });
+
+        setBonos(combined);
+        return;
+      }
+    } catch (errDb) {
+      console.warn("[Ventajas] Error loading bonos from Supabase:", errDb);
+    }
+
+    setBonos(localBonos);
   };
 
   useEffect(() => {
@@ -323,26 +441,31 @@ export default function AdminVentajasPage() {
       type: "info",
       showCancel: true,
       confirmText: "Canjear 1 Clase",
-      onConfirm: () => {
+      onConfirm: async () => {
         const res = consumirSesionBono(bono.id);
-        if (res.success) {
-          logActivity({
-            origen: "recepcion",
-            tipo_evento: "registro_acceso",
-            descripcion: `Canje de sesión de bono para ${bono.alumno_nombre} (${res.bono?.clases_restantes} restantes)`,
-            usuario_afectado: bono.alumno_nombre,
-            sede: bono.sede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
-          });
-          loadData();
-          showToast(`✓ ${res.message}`);
-        } else {
-          setModal({
-            isOpen: true,
-            title: "No se pudo canjear",
-            message: res.message,
-            type: "warning"
-          });
+        const newRestantes = Math.max(0, bono.clases_restantes - 1);
+
+        // Sync to Supabase if student exists
+        if (bono.alumno_id) {
+          try {
+            await supabase
+              .from("alumnos")
+              .update({ clases_restantes: newRestantes })
+              .eq("id", bono.alumno_id);
+          } catch (e) {
+            console.warn("Error updating Supabase clases_restantes:", e);
+          }
         }
+
+        logActivity({
+          origen: "recepcion",
+          tipo_evento: "registro_acceso",
+          descripcion: `Canje de sesión de bono para ${bono.alumno_nombre} (${newRestantes} restantes)`,
+          usuario_afectado: bono.alumno_nombre,
+          sede: bono.sede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+        });
+        await loadData();
+        showToast(`✓ 1 sesión consumida. Quedan ${newRestantes} clases.`);
       }
     });
   };
@@ -355,9 +478,19 @@ export default function AdminVentajasPage() {
       type: "warning",
       showCancel: true,
       confirmText: "Sí, Eliminar",
-      onConfirm: () => {
+      onConfirm: async () => {
         deleteBonoAlumno(bono.id);
-        setBonos(prev => prev.filter(b => b.id !== bono.id));
+        if (bono.alumno_id) {
+          try {
+            await supabase
+              .from("alumnos")
+              .update({ clases_restantes: 0, plan_activo: "Sin Plan Activo" })
+              .eq("id", bono.alumno_id);
+          } catch (e) {
+            console.warn("Error resetting student in Supabase:", e);
+          }
+        }
+        await loadData();
         showToast("Bono eliminado correctamente.");
       }
     });
@@ -370,47 +503,85 @@ export default function AdminVentajasPage() {
     setIsRecargaModalOpen(true);
   };
 
-  const handleSaveRecarga = (e: React.FormEvent) => {
+  const handleSaveRecarga = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!recargaBonoId) return;
 
+    const targetBono = bonos.find(b => b.id === recargaBonoId);
     const updated = recargarSesionesBono(recargaBonoId, recargaClases, recargaPrecio);
-    if (updated) {
+    
+    if (targetBono?.alumno_id) {
+      try {
+        const newClasses = (targetBono.clases_restantes || 0) + recargaClases;
+        await supabase
+          .from("alumnos")
+          .update({ clases_restantes: newClasses })
+          .eq("id", targetBono.alumno_id);
+      } catch (e) {
+        console.warn("Error updating Supabase clases_restantes on recarga:", e);
+      }
+    }
+
+    const bonoRef = updated || targetBono;
+    if (bonoRef) {
       // Registrar cobro de la recarga en el libro de pagos
       if (recargaPrecio > 0) {
         registrarNuevoPago({
-          alumno_id: updated.alumno_id,
-          alumno_nombre: updated.alumno_nombre,
-          alumno_telefono: updated.alumno_telefono,
-          concepto: `Recarga Bono: +${recargaClases} Clases (${updated.tipo_bono})`,
+          alumno_id: bonoRef.alumno_id,
+          alumno_nombre: bonoRef.alumno_nombre,
+          alumno_telefono: bonoRef.alumno_telefono,
+          concepto: `Recarga Bono: +${recargaClases} Clases (${bonoRef.tipo_bono})`,
           categoria: "bono",
           importe: recargaPrecio,
           metodo_pago: "Efectivo",
-          sede: updated.sede,
-          atendido_por: updated.sede === "tejar" ? "Recepción Studio 1" : "Recepción Studio 2",
-          notas: `Recarga de ${recargaClases} clases para bono #${updated.id}`
+          sede: bonoRef.sede,
+          atendido_por: bonoRef.sede === "tejar" ? "Recepción Studio 1" : "Recepción Studio 2",
+          notas: `Recarga de ${recargaClases} clases para bono #${bonoRef.id}`
         });
       }
 
       logActivity({
         origen: "recepcion",
         tipo_evento: "edicion_alumno",
-        descripcion: `Recarga de bono (+${recargaClases} clases) para ${updated.alumno_nombre}`,
-        usuario_afectado: updated.alumno_nombre,
-        sede: updated.sede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+        descripcion: `Recarga de bono (+${recargaClases} clases) para ${bonoRef.alumno_nombre}`,
+        usuario_afectado: bonoRef.alumno_nombre,
+        sede: bonoRef.sede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
       });
 
       setIsRecargaModalOpen(false);
-      loadData();
+      await loadData();
       showToast(`✓ Bono recargado (+${recargaClases} clases) y cobro registrado`);
     }
   };
 
-  const handleCreateNuevoBono = (e: React.FormEvent) => {
+  const handleCreateNuevoBono = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bonoFormAlumno.trim() || bonoFormClases <= 0) return;
 
+    // Check if student exists in Supabase to link
+    let linkedStudentId: string | undefined = undefined;
+    try {
+      const { data: found } = await supabase
+        .from("alumnos")
+        .select("id")
+        .ilike("nombre_completo", bonoFormAlumno.trim())
+        .maybeSingle();
+      if (found) {
+        linkedStudentId = found.id;
+        await supabase
+          .from("alumnos")
+          .update({
+            plan_activo: bonoFormTipo,
+            clases_restantes: bonoFormClases
+          })
+          .eq("id", found.id);
+      }
+    } catch (e) {
+      console.warn("Error finding/updating student in Supabase:", e);
+    }
+
     const nuevo = crearBonoAlumno({
+      alumno_id: linkedStudentId,
       alumno_nombre: bonoFormAlumno.trim(),
       alumno_dni: bonoFormDni.trim() || undefined,
       alumno_telefono: bonoFormTelefono.trim() || undefined,
@@ -424,6 +595,7 @@ export default function AdminVentajasPage() {
 
     if (bonoRegistrarCobro && bonoFormPrecio > 0) {
       registrarNuevoPago({
+        alumno_id: linkedStudentId,
         alumno_nombre: bonoFormAlumno.trim(),
         alumno_dni: bonoFormDni.trim() || undefined,
         alumno_telefono: bonoFormTelefono.trim() || undefined,
@@ -446,7 +618,7 @@ export default function AdminVentajasPage() {
     });
 
     setIsBonoModalOpen(false);
-    loadData();
+    await loadData();
     showToast(`✓ Bono emitido para ${bonoFormAlumno} y registrado con éxito`);
   };
 
