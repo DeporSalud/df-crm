@@ -74,7 +74,7 @@ export async function GET() {
       }
 
       const importe = typeof s.amount_total === "number" ? s.amount_total / 100 : 0;
-      const sede: SedePago = (meta.sede === "castilla" || meta.sede === "alcorcon") ? "castilla" : "tejar";
+      const sede: SedePago = (meta.sede === "castilla" || meta.sede === "alcorcon" || bonoLower.includes("promo") || bonoLower.includes("open") || bonoLower.includes("bono") || bonoLower.includes("suelta")) ? "castilla" : "tejar";
 
       const receiptSuffix = (s.id || "").replace(/^cs_live_/, "").slice(-6).toUpperCase();
 
