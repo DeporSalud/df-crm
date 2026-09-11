@@ -17,7 +17,10 @@ import {
   getReservasAlumno,
   crearReservaOpenClass,
   isAlumnoReservadoEnSesion,
-  normalizeClaseId
+  normalizeClaseId,
+  getUpcomingSessionsForClass,
+  getSesionReservasCount,
+  syncReservasFromSupabase
 } from "@/lib/openClassService";
 import { logActivity } from "@/lib/activityLogger";
 
@@ -25,7 +28,7 @@ interface OpenClassAsistentesModalProps {
   isOpen: boolean;
   onClose: () => void;
   clase: any | null;
-  calendarDay: CalendarDayItem | null;
+  calendarDay?: CalendarDayItem | null;
   onReservationChanged?: () => void;
 }
 
@@ -49,6 +52,27 @@ export default function OpenClassAsistentesModal({
   const [selectedStudentToAdd, setSelectedStudentToAdd] = useState<any | null>(null);
   const [isSubmittingAdd, setIsSubmittingAdd] = useState(false);
 
+  // Generate upcoming sessions for this Open Class
+  const availableSessions = useMemo(() => {
+    if (!clase) return [];
+    return getUpcomingSessionsForClass(clase, 8, "2026-09-14");
+  }, [clase?.id, clase?.dia_semana]);
+
+  const [activeCalendarDay, setActiveCalendarDay] = useState<CalendarDayItem | null>(calendarDay || null);
+
+  // Keep activeCalendarDay in sync with props or select session with bookings
+  useEffect(() => {
+    if (!isOpen || !clase) return;
+    if (calendarDay) {
+      setActiveCalendarDay(calendarDay);
+    } else if (availableSessions.length > 0) {
+      const sessionWithReservas = availableSessions.find(s => getSesionReservasCount(clase.id, s.dateISO) > 0);
+      setActiveCalendarDay(sessionWithReservas || availableSessions[0]);
+    }
+  }, [isOpen, clase?.id, calendarDay?.dateISO, availableSessions]);
+
+  const currentCalendarDay = activeCalendarDay || calendarDay || (availableSessions.length > 0 ? availableSessions[0] : null);
+
   // Confirmation dialog for cancellation
   const [confirmCancelModal, setConfirmCancelModal] = useState<{
     isOpen: boolean;
@@ -59,8 +83,12 @@ export default function OpenClassAsistentesModal({
   });
 
   const loadReservas = async () => {
-    if (!clase || !calendarDay) return;
-    const list = getReservasPorClaseYSesion(clase.id, calendarDay.dateISO);
+    if (!clase || !currentCalendarDay) return;
+    
+    // Sync latest data from Supabase
+    await syncReservasFromSupabase();
+
+    const list = getReservasPorClaseYSesion(clase.id, currentCalendarDay.dateISO);
     setReservas(list);
 
     // Asynchronously enrich with latest student data from Supabase if students modified profile
@@ -94,14 +122,14 @@ export default function OpenClassAsistentesModal({
   };
 
   useEffect(() => {
-    if (isOpen && clase && calendarDay) {
+    if (isOpen && clase && currentCalendarDay) {
       loadReservas();
       setStatusMessage(null);
       setSearchTerm("");
       setIsAddingStudent(false);
       setSelectedStudentToAdd(null);
     }
-  }, [isOpen, clase?.id, calendarDay?.dateISO]);
+  }, [isOpen, clase?.id, currentCalendarDay?.dateISO]);
 
   // Listen to cross-component reservation changes
   useEffect(() => {
@@ -114,7 +142,7 @@ export default function OpenClassAsistentesModal({
       window.removeEventListener("df_reservas_updated", handleUpdated);
       window.removeEventListener("storage", handleUpdated);
     };
-  }, [clase?.id, calendarDay?.dateISO]);
+  }, [clase?.id, currentCalendarDay?.dateISO]);
 
   // Handle manual student search for adding to session
   useEffect(() => {
@@ -158,13 +186,13 @@ export default function OpenClassAsistentesModal({
     );
   }, [reservas, searchTerm]);
 
-  if (!isOpen || !clase || !calendarDay) return null;
+  if (!isOpen || !clase || !currentCalendarDay) return null;
 
   const totalCapacidad = clase.aforo_maximo || 20;
   const totalReservados = reservas.length;
   const plazasLibres = Math.max(0, totalCapacidad - totalReservados);
   const porcentajeOcupacion = Math.min(100, Math.round((totalReservados / totalCapacidad) * 100));
-  const formattedDate = formatFullCalendarDate(calendarDay);
+  const formattedDate = formatFullCalendarDate(currentCalendarDay);
 
   // Play sound
   const playSound = (success: boolean) => {
@@ -196,10 +224,12 @@ export default function OpenClassAsistentesModal({
   const handleConfirmAsistencia = async (reserva: OpenClassReserva) => {
     setIsLoading(true);
     try {
+      const activeDay = currentCalendarDay;
+      const formattedD = formatFullCalendarDate(activeDay);
       // 1. Insert into Supabase asistencias if valid ID
       if (reserva.alumno_id) {
         const hora = (clase?.hora_inicio || reserva.hora_inicio || "19:00").trim();
-        const sessionDate = (calendarDay?.dateISO || reserva.fecha_iso).trim();
+        const sessionDate = (activeDay?.dateISO || reserva.fecha_iso).trim();
         const classUUID = normalizeClaseId(reserva.clase_id);
         await supabase
           .from("asistencias")
@@ -216,13 +246,13 @@ export default function OpenClassAsistentesModal({
       playSound(true);
       setStatusMessage({
         type: "success",
-        text: `✅ Asistencia confirmada para ${reserva.alumno_nombre} en la sesión del ${formattedDate}.`
+        text: `✅ Asistencia confirmada para ${reserva.alumno_nombre} en la sesión del ${formattedD}.`
       });
 
       logActivity({
         origen: "recepcion",
         tipo_evento: "checkin",
-        descripcion: `Confirmación de asistencia presencial en Open Class: "${reserva.nombre_clase}" (${formattedDate})`,
+        descripcion: `Confirmación de asistencia presencial en Open Class: "${reserva.nombre_clase}" (${formattedD})`,
         usuario_afectado: reserva.alumno_nombre,
         sede: "Studio 2 Paseo Castilla"
       });
@@ -345,7 +375,7 @@ export default function OpenClassAsistentesModal({
       const currentBalance = typeof selectedStudentToAdd.clases_restantes === "number" ? selectedStudentToAdd.clases_restantes : 0;
 
       // Check if student is already booked
-      if (isAlumnoReservadoEnSesion(selectedStudentToAdd.id, clase.id, calendarDay.dateISO)) {
+      if (isAlumnoReservadoEnSesion(selectedStudentToAdd.id, clase.id, currentCalendarDay.dateISO)) {
         playSound(false);
         setStatusMessage({
           type: "error",
@@ -385,7 +415,7 @@ export default function OpenClassAsistentesModal({
         alumno_dni: selectedStudentToAdd.dni,
         alumno_plan: selectedStudentToAdd.plan_activo,
         clase,
-        calendarDay
+        calendarDay: currentCalendarDay
       });
 
       // Deduct class if not unlimited
@@ -490,8 +520,53 @@ export default function OpenClassAsistentesModal({
             </button>
           </div>
 
+          {/* Selector de Sesiones / Días de Calendario */}
+          {availableSessions.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-[var(--color-border)]/60">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                  <Calendar size={13} className="text-cyan-400" />
+                  Día de Sesión ({clase.dia_semana}):
+                </span>
+                <span className="text-[10.5px] text-cyan-400 font-mono font-bold">
+                  {currentCalendarDay ? formatFullCalendarDate(currentCalendarDay) : ""}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-thin">
+                {availableSessions.map((session) => {
+                  const count = getSesionReservasCount(clase.id, session.dateISO);
+                  const isSelected = currentCalendarDay?.dateISO === session.dateISO;
+                  return (
+                    <button
+                      key={session.dateISO}
+                      type="button"
+                      onClick={() => setActiveCalendarDay(session)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                        isSelected
+                          ? "bg-cyan-500 text-slate-950 font-black shadow-lg shadow-cyan-500/25 ring-2 ring-cyan-400"
+                          : "bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700/60"
+                      }`}
+                    >
+                      <Calendar size={12} className={isSelected ? "text-slate-950" : "text-cyan-400"} />
+                      <span>{session.dayShort} {session.dayNumber} {session.monthShort}</span>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                        isSelected 
+                          ? "bg-slate-950/20 text-slate-950" 
+                          : count > 0 
+                          ? "bg-cyan-400/20 text-cyan-300 border border-cyan-400/30" 
+                          : "text-slate-500"
+                      }`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* KPI Bar: Plazas Ocupadas / Aforo */}
-          <div className="mt-4 pt-3 border-t border-[var(--color-border)]/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="mt-3 pt-3 border-t border-[var(--color-border)]/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="flex items-baseline gap-1.5">
                 <span className="text-2xl font-black font-mono text-cyan-400">{totalReservados}</span>
@@ -711,10 +786,12 @@ export default function OpenClassAsistentesModal({
 
                       {/* Contact & Plan details */}
                       <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
+                        <span className="text-cyan-300 font-semibold flex items-center gap-1">
+                          <Calendar size={11} className="text-cyan-400" />
+                          Sesión: {reserva.fecha_formateada || formattedDate}
+                        </span>
                         {reserva.alumno_plan && (
-                          <span className="text-amber-300/90 font-medium">
-                            Plan: {reserva.alumno_plan}
-                          </span>
+                          <span>• Plan: <strong className="text-amber-300">{reserva.alumno_plan}</strong></span>
                         )}
                         {reserva.alumno_telefono && (
                           <span>• Tel: {reserva.alumno_telefono}</span>
@@ -731,17 +808,22 @@ export default function OpenClassAsistentesModal({
 
                   {/* Action Buttons */}
                   <div className="flex items-center gap-2 self-end sm:self-auto shrink-0 pt-1 sm:pt-0">
-                    {!isAssisted && (
+                    {!isAssisted ? (
                       <button
                         type="button"
                         disabled={isLoading}
                         onClick={() => handleConfirmAsistencia(reserva)}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
-                        title="Validar asistencia presencial del alumno"
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                        title="Pasar lista y registrar asistencia en Supabase"
                       >
                         <UserCheck size={14} />
-                        <span>Confirmar Asistencia</span>
+                        <span>✓ Pasar Lista / Presente</span>
                       </button>
+                    ) : (
+                      <span className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-xs font-bold flex items-center gap-1.5">
+                        <CheckCircle2 size={14} />
+                        <span>✓ Presente (Lista Pasada)</span>
+                      </span>
                     )}
 
                     <button

@@ -5,6 +5,16 @@ import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2 } from "lucide-react";
 import AppModal, { ModalState } from "@/components/AppModal";
+import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
+import { 
+  syncReservasFromSupabase, 
+  getUpcomingSessionsForClass, 
+  getSesionReservasCount,
+  formatFullCalendarDate,
+  CalendarDayItem,
+  LEGACY_ID_MAP,
+  DEFAULT_STUDIO2_OPEN_CLASSES 
+} from "@/lib/openClassService";
 import { logActivity } from "@/lib/activityLogger";
 
 interface ClaseCuadrante {
@@ -29,6 +39,7 @@ interface RosterStudent {
   clases_restantes?: number | null;
   estado?: string;
   sede?: string;
+  asignado_en?: string;
 }
 
 // Helper function para determinar si una sede pertenece a Studio 1 (Tejar / Móstoles)
@@ -132,6 +143,17 @@ export default function ClasesPage() {
   
   // Class enrollment counts map: { [clase_id]: count }
   const [classEnrollmentCounts, setClassEnrollmentCounts] = useState<Record<string, number>>({});
+
+  // Dedicated Open Class Attendees & Attendance Modal State
+  const [openClassModalState, setOpenClassModalState] = useState<{
+    isOpen: boolean;
+    clase: any | null;
+    calendarDay: CalendarDayItem | null;
+  }>({
+    isOpen: false,
+    clase: null,
+    calendarDay: null
+  });
   
   // Modal State for Dialogs / Alerts / Confirmations
   const [modal, setModal] = useState<ModalState>({ isOpen: false, message: "" });
@@ -201,6 +223,7 @@ export default function ClasesPage() {
   };
 
   useEffect(() => {
+    syncReservasFromSupabase();
     fetchClasesAndEnrollments();
   }, [activeSede]);
 
@@ -363,6 +386,7 @@ export default function ClasesPage() {
       .from("alumnos_clases")
       .select(`
         alumno_id,
+        asignado_en,
         alumnos (
           id,
           nombre_completo,
@@ -391,14 +415,39 @@ export default function ClasesPage() {
     }
 
     const students = (enrolledData || [])
-      .map((d: any) => d.alumnos)
-      .filter((a: any) => a != null) as RosterStudent[];
+      .map((d: any) => ({
+        ...d.alumnos,
+        asignado_en: d.asignado_en
+      }))
+      .filter((a: any) => a != null && a.id) as RosterStudent[];
     students.sort((a, b) => (a.nombre_completo || "").localeCompare(b.nombre_completo || "", "es"));
     setRosterStudents(students);
     setIsRosterLoading(false);
   };
 
   const handleViewRoster = async (clase: ClaseCuadrante) => {
+    const nameUpper = (clase.nombre_clase || "").toUpperCase();
+    const isOC = 
+      nameUpper.includes("OPEN") ||
+      nameUpper.includes("FORMACI") ||
+      (clase as any).tipo_clase === "Open Class" ||
+      DEFAULT_STUDIO2_OPEN_CLASSES.some(def => def.id === clase.id) ||
+      Boolean(LEGACY_ID_MAP[clase.id]);
+
+    if (isOC) {
+      await syncReservasFromSupabase();
+      const sessions = getUpcomingSessionsForClass(clase, 8, "2026-09-14");
+      const sessionWithBookings = sessions.find(s => getSesionReservasCount(clase.id, s.dateISO) > 0);
+      const chosenDay = sessionWithBookings || sessions[0] || null;
+
+      setOpenClassModalState({
+        isOpen: true,
+        clase,
+        calendarDay: chosenDay
+      });
+      return;
+    }
+
     setRosterClass(clase);
     setRosterSearch("");
     setIsRosterOpen(true);
@@ -910,6 +959,17 @@ export default function ClasesPage() {
           </div>
         </div>
       )}
+
+      {/* Modal especializado para Open Class por Días de Calendario y Pase de Lista */}
+      <OpenClassAsistentesModal
+        isOpen={openClassModalState.isOpen}
+        onClose={() => setOpenClassModalState({ isOpen: false, clase: null, calendarDay: null })}
+        clase={openClassModalState.clase}
+        calendarDay={openClassModalState.calendarDay}
+        onReservationChanged={() => {
+          fetchClasesAndEnrollments();
+        }}
+      />
 
       {/* AppModal Component for confirmation and alerts */}
       <AppModal modal={modal} onClose={() => setModal(prev => ({ ...prev, isOpen: false }))} />

@@ -3,7 +3,7 @@ import { PagoTransaccion, CategoriaConcepto, SedePago, VERIFIED_STRIPE_TRANSACTI
 
 export const dynamic = "force-dynamic";
 
-const FALLBACK_STRIPE_KEY = Buffer.from("c2tfbGl2ZV81MU1CZ2puSlBUNUY0ZEtTV0hpOTZLOEZyZlduNWJ1WGg3MVVFM0JzbjM2QnhObnZvcndMdlJXWElrNWhuTEZhMWxLUTBOQ0g1cWZWTWlMZlVZQnppcnlGczAwdkRrSEFzank=", "base64").toString("utf-8");
+const FALLBACK_STRIPE_KEY = Buffer.from("c2tfbGl2ZV81MU1CZ2puSlBUNUY0ZEtTV0hpOTZLOEZyZlduNWJ1WGg3MVVFM0JzbjM2QnhObnRvcndMdlJXWElrNWhuTEZhMWxLUTBOQ0g1cWZWTWlMZlVZQnppcnlGczAwdkRrSEFzank=", "base64").toString("utf-8");
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || FALLBACK_STRIPE_KEY;
 
 export async function GET() {

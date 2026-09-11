@@ -9,6 +9,7 @@ import { logActivity } from "@/lib/activityLogger";
 import { getStudentFee, calculateFeeFromClasses, saveStudentFeeOverride } from "@/lib/studentFees";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
+import { syncReservasFromSupabase } from "@/lib/openClassService";
 import { CheckCircle2 } from "lucide-react";
 
 // LocalStorage IBAN Helpers
@@ -227,6 +228,7 @@ export default function AlumnosPage() {
     // 2. Load Calendar Open Class reservations
     if (typeof window !== "undefined") {
       try {
+        await syncReservasFromSupabase();
         const rawRes = localStorage.getItem("df_openclass_reservas_v2");
         const allRes = rawRes ? JSON.parse(rawRes) : [];
         const studentRes = allRes.filter((r: any) => 

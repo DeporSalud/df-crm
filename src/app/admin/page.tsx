@@ -17,6 +17,8 @@ import {
 import {
   getUpcomingCalendarDates,
   createCalendarDayFromISO,
+  createCalendarDayFromDate,
+  cleanDateISO,
   formatFullCalendarDate,
   CalendarDayItem,
   getSesionReservasCount,
@@ -26,7 +28,9 @@ import {
   normalizeDay,
   normalizeSede,
   marcarAsistenciaPorAlumnoYSesion,
-  marcarAsistenciaPorAlumnoEnFecha
+  marcarAsistenciaPorAlumnoEnFecha,
+  syncReservasFromSupabase,
+  getReservasCountForDate
 } from "@/lib/openClassService";
 
 const playSuccessSound = () => {
@@ -231,6 +235,7 @@ export default function AdminDashboardRecepcion() {
         setSelectedClaseId(dayClasses[0].id);
       }
     }
+    syncReservasFromSupabase().then(() => setReservasTick(prev => prev + 1));
   };
 
   // State for metrics
@@ -332,8 +337,11 @@ export default function AdminDashboardRecepcion() {
       alumnosActivos: alumnosCount || 0
     });
 
-    // 4. Fetch Open Classes (Studio 2 Paseo Castilla exclusively)
+    // 4. Fetch Open Classes (Studio 2 Paseo Castilla exclusively) & Sync Reservations
     try {
+      await syncReservasFromSupabase();
+      setReservasTick(prev => prev + 1);
+
       const { data: dbOpenClasses } = await supabase
         .from("clases_cuadrante")
         .select("*")
@@ -344,7 +352,12 @@ export default function AdminDashboardRecepcion() {
         openList = dbOpenClasses.filter((c: any) => {
           if (normalizeSede(c.sede) !== "castilla") return false;
           const nameUpper = (c.nombre_clase || "").toUpperCase();
-          return c.tipo_clase === "Open Class" || nameUpper.includes("OPEN CLASS") || nameUpper.includes("FORMACI");
+          return (
+            c.tipo_clase === "Open Class" || 
+            nameUpper.includes("OPEN CLASS") || 
+            nameUpper.includes("FORMACI") ||
+            DEFAULT_STUDIO2_OPEN_CLASSES.some(d => d.id === c.id)
+          );
         });
       }
 
@@ -1130,9 +1143,24 @@ export default function AdminDashboardRecepcion() {
                 type="button"
                 onClick={() => {
                   setClasesTab("openclass");
-                  if (openClassesForSelectedDay.length > 0) {
-                    setSelectedClaseId(openClassesForSelectedDay[0].id);
+                  // Auto-select first day with open classes if selected day has none
+                  const currentNorm = normalizeDay(selectedCalendarDay.dayName);
+                  const hasClassesOnSelected = allOpenClasses.some(c => normalizeDay(c.dia_semana) === currentNorm);
+                  let targetDay = selectedCalendarDay;
+                  if (!hasClassesOnSelected) {
+                    const firstDayWithClasses = calendarDays.find(d => 
+                      allOpenClasses.some(c => normalizeDay(c.dia_semana) === normalizeDay(d.dayName))
+                    );
+                    if (firstDayWithClasses) {
+                      targetDay = firstDayWithClasses;
+                      setSelectedCalendarDay(firstDayWithClasses);
+                    }
                   }
+                  const dayClasses = allOpenClasses.filter(c => normalizeDay(c.dia_semana) === normalizeDay(targetDay.dayName));
+                  if (dayClasses.length > 0) {
+                    setSelectedClaseId(dayClasses[0].id);
+                  }
+                  syncReservasFromSupabase().then(() => setReservasTick(prev => prev + 1));
                 }}
                 className={`flex-1 py-1.5 px-3 rounded-lg transition-all cursor-pointer text-center flex items-center justify-center gap-1.5 ${
                   clasesTab === "openclass"
@@ -1168,28 +1196,69 @@ export default function AdminDashboardRecepcion() {
                   <p className="text-sm text-[var(--color-text-secondary)] py-4 text-center">No hay clases programadas para hoy en esta sede.</p>
                 ) : (
                   <div className="space-y-2.5 max-h-[65vh] overflow-y-auto pr-1">
-                    {clasesHoy.map((clase) => (
-                      <div 
-                        key={clase.id}
-                        onClick={() => setSelectedClaseId(clase.id)}
-                        className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all ${
-                          selectedClaseId === clase.id 
-                            ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/10 shadow-md' 
-                            : 'border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-primary)]/50'
-                        }`}
-                      >
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="font-semibold text-sm text-[var(--color-text-title)]">{clase.nombre_clase}</span>
-                          <span className="text-xs font-mono font-bold text-[var(--color-secondary)]">
-                            {clase.hora_inicio}
-                          </span>
+                    {clasesHoy.map((clase) => {
+                      const isOC = 
+                        (clase.nombre_clase || "").toUpperCase().includes("OPEN") ||
+                        (clase.nombre_clase || "").toUpperCase().includes("FORMACI") ||
+                        clase.tipo_clase === "Open Class" ||
+                        DEFAULT_STUDIO2_OPEN_CLASSES.some(d => d.id === clase.id);
+                      const isSelected = selectedClaseId === clase.id;
+                      const todayISO = cleanDateISO(new Date().toISOString());
+                      const reservasCount = isOC ? getSesionReservasCount(clase.id, todayISO) : 0;
+
+                      return (
+                        <div 
+                          key={clase.id}
+                          onClick={() => setSelectedClaseId(clase.id)}
+                          className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all ${
+                            isSelected 
+                              ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/10 shadow-md' 
+                              : 'border-[var(--color-border)] bg-[var(--color-bg)] hover:border-[var(--color-primary)]/50'
+                          }`}
+                        >
+                          <div className="flex justify-between items-start mb-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-sm text-[var(--color-text-title)]">{clase.nombre_clase}</span>
+                              {isOC && (
+                                <span className="text-[9.5px] font-bold px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                                  🌟 Open Class
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs font-mono font-bold text-[var(--color-secondary)]">
+                              {clase.hora_inicio}
+                            </span>
+                          </div>
+                          <div className="text-xs text-[var(--color-text-secondary)] flex justify-between mt-1">
+                            <span>Prof: {clase.profesor}</span>
+                            <span>Aforo: {clase.aforo_maximo} alumnos</span>
+                          </div>
+
+                          {isOC && (
+                            <div className="mt-2.5 pt-2 border-t border-[var(--color-border)]/60 flex items-center justify-between">
+                              <span className="text-[11px] text-cyan-400 font-bold">
+                                {reservasCount} reserva{reservasCount === 1 ? "" : "s"} para hoy
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAsistentesModalState({
+                                    isOpen: true,
+                                    clase,
+                                    calendarDay: createCalendarDayFromDate(new Date())
+                                  });
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                              >
+                                <Users size={12} />
+                                <span>Ver y Pasar Lista</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
-                        <div className="text-xs text-[var(--color-text-secondary)] flex justify-between mt-1">
-                          <span>Prof: {clase.profesor}</span>
-                          <span>Aforo: {clase.aforo_maximo} alumnos</span>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </>
@@ -1239,12 +1308,13 @@ export default function AdminDashboardRecepcion() {
                   <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 pt-1 scrollbar-thin">
                     {calendarDays.map((day) => {
                       const isSelected = selectedCalendarDay.dateISO === day.dateISO;
+                      const dayBookingsCount = getReservasCountForDate(day.dateISO);
                       return (
                         <button
                           key={day.dateISO}
                           type="button"
                           onClick={() => handleSelectCalendarDay(day)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer flex flex-col items-center min-w-[58px] border ${
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition-all cursor-pointer flex flex-col items-center min-w-[62px] border relative ${
                             isSelected
                               ? "bg-gradient-to-b from-cyan-500 to-blue-600 text-white border-cyan-300 shadow-md shadow-cyan-500/25 scale-105"
                               : "bg-[var(--color-bg-card)] text-slate-300 border-[var(--color-border)] hover:border-cyan-500/50 hover:text-white"
@@ -1255,6 +1325,15 @@ export default function AdminDashboardRecepcion() {
                           </span>
                           <span className="text-sm font-black">{day.dayNumber}</span>
                           <span className="text-[9px] uppercase font-mono opacity-80">{day.monthShort}</span>
+                          {dayBookingsCount > 0 && (
+                            <span className={`mt-0.5 text-[8.5px] font-mono font-black px-1.5 py-0.2 rounded-full whitespace-nowrap ${
+                              isSelected
+                                ? "bg-slate-950 text-cyan-300 border border-cyan-300"
+                                : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                            }`}>
+                              {dayBookingsCount} {dayBookingsCount === 1 ? "reserva" : "reservas"}
+                            </span>
+                          )}
                         </button>
                       );
                     })}

@@ -1,3 +1,5 @@
+import { supabase } from "@/lib/supabase/client";
+
 export interface OpenClassReserva {
   id: string;
   alumno_id: string;
@@ -249,12 +251,63 @@ export function getUpcomingCalendarDates(daysCount = 28, startDate?: Date): Cale
   return list;
 }
 
+export const DAY_NAME_TO_INDEX: Record<string, number> = {
+  "DOMINGO": 0,
+  "LUNES": 1,
+  "MARTES": 2,
+  "MIERCOLES": 3,
+  "MIÉRCOLES": 3,
+  "JUEVES": 4,
+  "VIERNES": 5,
+  "SABADO": 6,
+  "SÁBADO": 6,
+};
+
 export function normalizeDay(day: string): string {
   return (day || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase()
     .trim();
+}
+
+/**
+ * Calculates the next calendar date (YYYY-MM-DD) that falls on targetDayName, on or after baseDateStr
+ */
+export function getNextDateForDay(baseDateStr: string, targetDayName: string): string {
+  const normTarget = normalizeDay(targetDayName);
+  const targetIndex = DAY_NAME_TO_INDEX[normTarget] ?? 1; // Default to LUNES
+  const cleanBase = cleanDateISO(baseDateStr) || "2026-09-14";
+  const parts = cleanBase.split("-").map(Number);
+  const y = parts[0] || 2026;
+  const m = (parts[1] || 9) - 1;
+  const d = parts[2] || 14;
+  
+  const dateObj = new Date(y, m, d);
+  const currentDay = dateObj.getDay();
+  const diff = (targetIndex - currentDay + 7) % 7;
+  dateObj.setDate(dateObj.getDate() + diff);
+
+  const resY = dateObj.getFullYear();
+  const resM = String(dateObj.getMonth() + 1).padStart(2, "0");
+  const resD = String(dateObj.getDate()).padStart(2, "0");
+  return `${resY}-${resM}-${resD}`;
+}
+
+/**
+ * Generates the upcoming weekly sessions for a specific class (e.g. all upcoming Mondays)
+ */
+export function getUpcomingSessionsForClass(clase: any, count = 8, startFromISO = "2026-09-14"): CalendarDayItem[] {
+  const diaSemana = (typeof clase === "string" ? clase : clase?.dia_semana) || "LUNES";
+  const firstDateISO = getNextDateForDay(startFromISO, diaSemana);
+  const parts = cleanDateISO(firstDateISO).split("-").map(Number);
+  const list: CalendarDayItem[] = [];
+  
+  for (let i = 0; i < count; i++) {
+    const d = new Date(parts[0], parts[1] - 1, parts[2] + (i * 7));
+    list.push(createCalendarDayFromDate(d));
+  }
+  return list;
 }
 
 export function normalizeSede(sede: string): "tejar" | "castilla" {
@@ -277,6 +330,13 @@ export function getSesionReservasCount(claseId: string, fechaISO: string): numbe
   const targetId = normalizeClaseId(claseId);
   const all = getOpenClassReservas();
   return all.filter(r => normalizeClaseId(r.clase_id) === targetId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")).length;
+}
+
+export function getReservasCountForDate(fechaISO: string): number {
+  const cleanISO = cleanDateISO(fechaISO);
+  if (!cleanISO) return 0;
+  const all = getOpenClassReservas();
+  return all.filter(r => r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")).length;
 }
 
 export function isSesionCompleta(clase: any, fechaISO: string, aforoMaximo?: number): boolean {
@@ -399,8 +459,13 @@ export function crearReservaOpenClass(data: {
 export function getReservasPorClaseYSesion(claseId: string, fechaISO: string): OpenClassReserva[] {
   const cleanISO = cleanDateISO(fechaISO);
   if (!cleanISO || !claseId) return [];
+  const targetId = normalizeClaseId(claseId);
   const all = getOpenClassReservas();
-  return all.filter(r => r.clase_id === claseId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida"));
+  return all.filter(r => 
+    normalizeClaseId(r.clase_id) === targetId && 
+    cleanDateISO(r.fecha_iso) === cleanISO && 
+    (r.estado === "Confirmada" || r.estado === "Asistida")
+  );
 }
 
 export function cancelarReservaOpenClass(reservaId: string): boolean {
@@ -420,7 +485,7 @@ export function confirmarAsistenciaReservaOpenClass(reservaId: string): boolean 
   const updated = current.map(r => {
     if (r.id === reservaId) {
       found = true;
-      return { ...r, asistido: true, estado: "Confirmada" as const };
+      return { ...r, asistido: true, estado: "Asistida" as const };
     }
     return r;
   });
@@ -433,12 +498,18 @@ export function confirmarAsistenciaReservaOpenClass(reservaId: string): boolean 
 export function marcarAsistenciaPorAlumnoYSesion(alumnoId: string, claseId: string, fechaISO: string): boolean {
   const cleanISO = cleanDateISO(fechaISO);
   if (!cleanISO || !alumnoId || !claseId) return false;
+  const targetId = normalizeClaseId(claseId);
   const current = getOpenClassReservas();
   let found = false;
   const updated = current.map(r => {
-    if (r.alumno_id === alumnoId && r.clase_id === claseId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")) {
+    if (
+      r.alumno_id === alumnoId && 
+      normalizeClaseId(r.clase_id) === targetId && 
+      cleanDateISO(r.fecha_iso) === cleanISO && 
+      (r.estado === "Confirmada" || r.estado === "Asistida")
+    ) {
       found = true;
-      return { ...r, asistido: true };
+      return { ...r, asistido: true, estado: "Asistida" as const };
     }
     return r;
   });
@@ -454,9 +525,9 @@ export function marcarAsistenciaPorAlumnoEnFecha(alumnoId: string, fechaISO: str
   const current = getOpenClassReservas();
   let found = false;
   const updated = current.map(r => {
-    if (r.alumno_id === alumnoId && r.fecha_iso === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")) {
+    if (r.alumno_id === alumnoId && cleanDateISO(r.fecha_iso) === cleanISO && (r.estado === "Confirmada" || r.estado === "Asistida")) {
       found = true;
-      return { ...r, asistido: true };
+      return { ...r, asistido: true, estado: "Asistida" as const };
     }
     return r;
   });
@@ -465,4 +536,161 @@ export function marcarAsistenciaPorAlumnoEnFecha(alumnoId: string, fechaISO: str
   }
   return found;
 }
+
+/**
+ * Synchronizes Open Class reservations from Supabase (alumnos_clases + asistencias) into localStorage
+ */
+export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
+  if (typeof window === "undefined") return [];
+  try {
+    const { data: acData, error: acError } = await supabase
+      .from("alumnos_clases")
+      .select(`
+        alumno_id,
+        clase_id,
+        asignado_en,
+        alumnos (
+          id,
+          nombre_completo,
+          email,
+          telefono,
+          dni,
+          plan_activo
+        ),
+        clases_cuadrante (
+          id,
+          nombre_clase,
+          profesor,
+          dia_semana,
+          hora_inicio,
+          hora_fin,
+          sede,
+          sala,
+          tipo_clase,
+          aforo_maximo
+        )
+      `);
+
+    if (acError || !acData) {
+      console.warn("Could not fetch alumnos_clases for open classes sync:", acError);
+      return getOpenClassReservas();
+    }
+
+    // Also fetch attendances to know who is already marked present
+    const asistenciasMap = new Set<string>();
+    try {
+      const { data: asData } = await supabase
+        .from("asistencias")
+        .select("alumno_id, clase_id, fecha_hora");
+      if (asData) {
+        asData.forEach((a: any) => {
+          const datePart = cleanDateISO(a.fecha_hora);
+          const key = `${a.alumno_id}_${normalizeClaseId(a.clase_id)}_${datePart}`;
+          asistenciasMap.add(key);
+        });
+      }
+    } catch (e) {}
+
+    const dbMappedReservas: OpenClassReserva[] = [];
+
+    for (const row of acData) {
+      let c = (row as any).clases_cuadrante;
+      const a = (row as any).alumnos;
+      if (!a) continue;
+
+      const normClassId = normalizeClaseId(row.clase_id);
+      if (!c) {
+        c = DEFAULT_STUDIO2_OPEN_CLASSES.find(def => def.id === normClassId);
+      }
+      if (!c) continue;
+
+      const isOC = 
+        (c.nombre_clase || "").toUpperCase().includes("OPEN") ||
+        (c.nombre_clase || "").toUpperCase().includes("FORMACI") ||
+        c.tipo_clase === "Open Class" ||
+        DEFAULT_STUDIO2_OPEN_CLASSES.some(def => def.id === normClassId) ||
+        Boolean(LEGACY_ID_MAP[row.clase_id]);
+
+      if (!isOC) continue;
+
+      const diaSemana = c.dia_semana || "LUNES";
+      const rawDate = row.asignado_en ? cleanDateISO(row.asignado_en) : "";
+      
+      // Calculate session date
+      let fechaISO = "";
+      if (rawDate) {
+        const calDay = createCalendarDayFromISO(rawDate);
+        if (normalizeDay(calDay.dayName) === normalizeDay(diaSemana)) {
+          fechaISO = rawDate;
+        } else {
+          fechaISO = getNextDateForDay(rawDate, diaSemana);
+        }
+      } else {
+        fechaISO = getNextDateForDay("2026-09-14", diaSemana);
+      }
+
+      const calItem = createCalendarDayFromISO(fechaISO);
+      const dayCap = calItem.dayName.charAt(0) + calItem.dayName.slice(1).toLowerCase();
+      const attendanceKey = `${row.alumno_id}_${normClassId}_${fechaISO}`;
+      const isAttended = asistenciasMap.has(attendanceKey);
+
+      dbMappedReservas.push({
+        id: `res_sb_${row.alumno_id}_${normClassId}_${fechaISO}`,
+        alumno_id: row.alumno_id,
+        alumno_nombre: a.nombre_completo || "Alumno",
+        alumno_email: a.email || "",
+        alumno_telefono: a.telefono || "",
+        alumno_dni: a.dni || "",
+        alumno_plan: a.plan_activo || "Bono Open Class",
+        clase_id: normClassId,
+        nombre_clase: c.nombre_clase || "OPEN CLASS",
+        profesor: c.profesor || "",
+        sede: normalizeSede(c.sede || "castilla"),
+        sala: c.sala || "Sala 1",
+        fecha_iso: fechaISO,
+        fecha_formateada: `${dayCap} ${calItem.dayNumber} de ${calItem.monthName}`,
+        dia_semana: calItem.dayName,
+        hora_inicio: c.hora_inicio || "19:00",
+        hora_fin: c.hora_fin || "20:00",
+        creado_en: row.asignado_en || new Date().toISOString(),
+        estado: isAttended ? "Asistida" : "Confirmada",
+        asistido: isAttended
+      });
+    }
+
+    // Merge with current local reservations
+    const local = getOpenClassReservas();
+    const merged: OpenClassReserva[] = [...dbMappedReservas];
+
+    for (const l of local) {
+      const normLocalClassId = normalizeClaseId(l.clase_id);
+      const matchIndex = merged.findIndex(m => 
+        m.alumno_id === l.alumno_id &&
+        normalizeClaseId(m.clase_id) === normLocalClassId &&
+        m.fecha_iso === l.fecha_iso
+      );
+
+      if (matchIndex >= 0) {
+        if (l.asistido || l.estado === "Asistida") {
+          merged[matchIndex].asistido = true;
+          merged[matchIndex].estado = "Asistida";
+        } else if (l.estado === "Cancelada") {
+          merged[matchIndex].estado = "Cancelada";
+        }
+      } else {
+        merged.push({
+          ...l,
+          clase_id: normLocalClassId
+        });
+      }
+    }
+
+    saveOpenClassReservas(merged);
+    return merged;
+  } catch (err) {
+    console.error("Error in syncReservasFromSupabase:", err);
+    return getOpenClassReservas();
+  }
+}
+
 
