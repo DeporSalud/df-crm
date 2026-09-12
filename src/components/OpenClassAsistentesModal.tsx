@@ -429,6 +429,10 @@ export default function OpenClassAsistentesModal({
       // Sync with alumnos_clases in Supabase if not already linked
       try {
         const classUUID = normalizeClaseId(clase.id);
+        const sessionDate = (currentCalendarDay?.dateISO || "2026-09-14").trim();
+        const sessionHour = (clase.hora_inicio || "19:00").trim();
+        const sessionISO = `${sessionDate}T${sessionHour}:00.000Z`;
+
         const { data: existingLink } = await supabase
           .from("alumnos_clases")
           .select("alumno_id")
@@ -439,8 +443,15 @@ export default function OpenClassAsistentesModal({
         if (!existingLink) {
           await supabase.from("alumnos_clases").insert([{
             alumno_id: selectedStudentToAdd.id,
-            clase_id: classUUID
+            clase_id: classUUID,
+            asignado_en: sessionISO
           }]);
+        } else {
+          await supabase.from("alumnos_clases").update({
+            asignado_en: sessionISO
+          })
+          .eq("alumno_id", selectedStudentToAdd.id)
+          .eq("clase_id", classUUID);
         }
       } catch (e) {}
 

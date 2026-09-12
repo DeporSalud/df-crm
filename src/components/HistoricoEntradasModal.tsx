@@ -116,7 +116,6 @@ export default function HistoricoEntradasModal({
             nombre_clase,
             profesor,
             sede,
-            sala,
             hora_inicio,
             hora_fin
           )

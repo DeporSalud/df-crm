@@ -565,8 +565,6 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
           hora_inicio,
           hora_fin,
           sede,
-          sala,
-          tipo_clase,
           aforo_maximo
         )
       `);
@@ -678,10 +676,13 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
           merged[matchIndex].estado = "Cancelada";
         }
       } else {
-        merged.push({
-          ...l,
-          clase_id: normLocalClassId
-        });
+        // Only keep local reservations that do not originate from Supabase (res_sb_)
+        if (!l.id.startsWith("res_sb_")) {
+          merged.push({
+            ...l,
+            clase_id: normLocalClassId
+          });
+        }
       }
     }
 
