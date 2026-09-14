@@ -377,7 +377,9 @@ export function saveOpenClassReservas(reservas: OpenClassReserva[]): void {
 
 export function getReservasAlumno(alumnoId: string): OpenClassReserva[] {
   const all = getOpenClassReservas();
-  return all.filter(r => r.alumno_id === alumnoId && (r.estado === "Confirmada" || r.estado === "Asistida"));
+  return all
+    .filter(r => r.alumno_id === alumnoId && (r.estado === "Confirmada" || r.estado === "Asistida"))
+    .sort((a, b) => (a.fecha_iso || "").localeCompare(b.fecha_iso || ""));
 }
 
 export function isAlumnoReservadoEnSesion(alumnoId: string, claseId: string, fechaISO: string): boolean {
@@ -672,8 +674,6 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
         if (l.asistido || l.estado === "Asistida") {
           merged[matchIndex].asistido = true;
           merged[matchIndex].estado = "Asistida";
-        } else if (l.estado === "Cancelada") {
-          merged[matchIndex].estado = "Cancelada";
         }
       } else {
         // Only keep local reservations that do not originate from Supabase (res_sb_)

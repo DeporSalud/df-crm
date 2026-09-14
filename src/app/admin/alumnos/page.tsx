@@ -226,19 +226,25 @@ export default function AlumnosPage() {
     setHistoryPayments(payments);
 
     // 2. Load Calendar Open Class reservations
+    let studentRes: any[] = [];
     if (typeof window !== "undefined") {
       try {
-        await syncReservasFromSupabase();
-        const rawRes = localStorage.getItem("df_openclass_reservas_v2");
-        const allRes = rawRes ? JSON.parse(rawRes) : [];
-        const studentRes = allRes.filter((r: any) => 
-          r.alumno_id === student.id || 
-          (r.alumno_nombre && student.nombre_completo && r.alumno_nombre.toLowerCase() === student.nombre_completo.toLowerCase())
+        const synced = await syncReservasFromSupabase();
+        studentRes = (synced || []).filter((r: any) => 
+          (r.alumno_id === student.id || 
+          (r.alumno_nombre && student.nombre_completo && r.alumno_nombre.toLowerCase() === student.nombre_completo.toLowerCase())) &&
+          r.estado !== "Cancelada"
         );
+        studentRes.sort((a: any, b: any) => (a.fecha_iso || "").localeCompare(b.fecha_iso || ""));
         setHistoryReservas(studentRes);
       } catch (e) {
         setHistoryReservas([]);
       }
+    }
+
+    // Auto-select tab: if student has reservations and no payments, open 'reservas' tab
+    if (studentRes.length > 0 && payments.length === 0) {
+      setHistoryTab("reservas");
     }
 
     // 3. Load In-Person Attendances from Supabase
