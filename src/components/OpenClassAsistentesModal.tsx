@@ -320,13 +320,19 @@ export default function OpenClassAsistentesModal({
           }
         }
 
-        // Clean up alumnos_clases only if no other active reservations remain for this class across any date
+        // Clean up specific session enrollment in alumnos_clases
         try {
           const targetClassId = normalizeClaseId(reserva.clase_id);
-          const otherActive = getReservasAlumno(reserva.alumno_id).filter(
-            r => normalizeClaseId(r.clase_id) === targetClassId && r.id !== reserva.id && (r.estado === "Confirmada" || r.estado === "Asistida")
-          );
-          if (otherActive.length === 0) {
+          const sessionDate = reserva.fecha_iso;
+          if (sessionDate) {
+            await supabase
+              .from("alumnos_clases")
+              .delete()
+              .eq("alumno_id", reserva.alumno_id)
+              .eq("clase_id", targetClassId)
+              .gte("asignado_en", `${sessionDate}T00:00:00`)
+              .lte("asignado_en", `${sessionDate}T23:59:59`);
+          } else {
             await supabase
               .from("alumnos_clases")
               .delete()
@@ -435,9 +441,11 @@ export default function OpenClassAsistentesModal({
 
         const { data: existingLink } = await supabase
           .from("alumnos_clases")
-          .select("alumno_id")
+          .select("id")
           .eq("alumno_id", selectedStudentToAdd.id)
           .eq("clase_id", classUUID)
+          .gte("asignado_en", `${sessionDate}T00:00:00`)
+          .lte("asignado_en", `${sessionDate}T23:59:59`)
           .maybeSingle();
 
         if (!existingLink) {
@@ -446,12 +454,6 @@ export default function OpenClassAsistentesModal({
             clase_id: classUUID,
             asignado_en: sessionISO
           }]);
-        } else {
-          await supabase.from("alumnos_clases").update({
-            asignado_en: sessionISO
-          })
-          .eq("alumno_id", selectedStudentToAdd.id)
-          .eq("clase_id", classUUID);
         }
       } catch (e) {}
 

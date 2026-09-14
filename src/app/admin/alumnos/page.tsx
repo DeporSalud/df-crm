@@ -301,13 +301,20 @@ export default function AlumnosPage() {
 
     setAvailableClasses(allClases || []);
 
-    // Fetch student assigned classes
+    // Fetch student assigned classes (excluding Open Classes)
     const { data: assigned } = await supabase
       .from("alumnos_clases")
-      .select("clase_id")
+      .select("clase_id, clases_cuadrante(nombre_clase)")
       .eq("alumno_id", student.id);
       
-    const assignedIds = assigned ? assigned.map(a => a.clase_id) : [];
+    const assignedIds = assigned 
+      ? assigned
+          .filter((a: any) => {
+            const nom = a.clases_cuadrante?.nombre_clase || "";
+            return !nom.toUpperCase().includes("OPEN") && !nom.toUpperCase().includes("FORMACI");
+          })
+          .map((a: any) => a.clase_id) 
+      : [];
     const studentIban = student.iban || getStoredIBAN(student.id);
     const feeInfo = getStudentFee(student);
 
@@ -540,10 +547,32 @@ export default function AlumnosPage() {
       }
     }
 
-    // Update assigned classes
+    // Update assigned classes (preserving Open Class session bookings)
     if (studentId) {
       try {
-        await supabase.from("alumnos_clases").delete().eq("alumno_id", studentId);
+        // Fetch open class IDs to prevent deleting them
+        const { data: openClasses } = await supabase
+          .from("clases_cuadrante")
+          .select("id, nombre_clase");
+        const openClassIds = new Set(
+          (openClasses || [])
+            .filter(c => (c.nombre_clase || "").toUpperCase().includes("OPEN") || (c.nombre_clase || "").toUpperCase().includes("FORMACI"))
+            .map(c => c.id)
+        );
+
+        // Only delete regular classes
+        const { data: currentAssigned } = await supabase
+          .from("alumnos_clases")
+          .select("id, clase_id")
+          .eq("alumno_id", studentId);
+
+        const regularAssignedIdsToDelete = (currentAssigned || [])
+          .filter(a => !openClassIds.has(a.clase_id))
+          .map(a => a.id);
+
+        if (regularAssignedIdsToDelete.length > 0) {
+          await supabase.from("alumnos_clases").delete().in("id", regularAssignedIdsToDelete);
+        }
         
         if (formData.clases_asignadas.length > 0) {
           const insertData = formData.clases_asignadas.map(claseId => ({
