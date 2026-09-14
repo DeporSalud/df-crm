@@ -20,7 +20,8 @@ import {
   normalizeClaseId,
   getUpcomingSessionsForClass,
   getSesionReservasCount,
-  syncReservasFromSupabase
+  syncReservasFromSupabase,
+  isReservaCancelable
 } from "@/lib/openClassService";
 import { logActivity } from "@/lib/activityLogger";
 
@@ -287,8 +288,8 @@ export default function OpenClassAsistentesModal({
     setConfirmCancelModal({ isOpen: false, reserva: null });
 
     try {
-      // 1. Cancel in service (returns false if already cancelled)
-      const didCancel = cancelarReservaOpenClass(reserva.id);
+      // 1. Cancel in service (allowing admin bypass for reception staff)
+      const didCancel = cancelarReservaOpenClass(reserva.id, { allowUnder24h: true });
       if (!didCancel) {
         setStatusMessage({
           type: "error",
@@ -893,6 +894,18 @@ export default function OpenClassAsistentesModal({
               <br /><br />
               Se <strong className="text-emerald-400">reintegrará automáticamente 1 clase</strong> al saldo de bono del alumno en el sistema y se liberará 1 plaza en el aforo.
             </p>
+
+            {!isReservaCancelable(confirmCancelModal.reserva).cancelable && (
+              <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-xs text-amber-200 flex items-start gap-2">
+                <AlertTriangle size={15} className="text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <strong className="text-amber-300 block">Normativa de 24h: Bloqueada para el alumno</strong>
+                  <p className="text-[11px] text-amber-200/90 leading-tight">
+                    Faltan menos de 24h para esta sesión. El alumno no puede cancelarla desde su app móvil. Esta acción constituye una cancelación y devolución administrativa excepcional.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="flex items-center justify-end gap-2.5 pt-2">
               <button

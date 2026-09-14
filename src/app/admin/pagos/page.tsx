@@ -49,7 +49,7 @@ import {
   anularPago
 } from "@/lib/pagosService";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
-import { getStoredIBAN } from "../alumnos/page";
+import { getStoredIBAN } from "@/lib/ibanStorage";
 
 export type MetodoPagoRemesa = "SEPA" | "Stripe" | "Efectivo" | "TPV" | "Transferencia";
 

@@ -470,12 +470,68 @@ export function getReservasPorClaseYSesion(claseId: string, fechaISO: string): O
   );
 }
 
-export function cancelarReservaOpenClass(reservaId: string): boolean {
+/**
+ * Calculates hours remaining until session start.
+ * Negative number if already started/past.
+ */
+export function getHorasRestantesParaSesion(fechaISO?: string, horaInicio?: string): number {
+  const cleanISO = cleanDateISO(fechaISO || "");
+  if (!cleanISO) return 0;
+  const [year, month, day] = cleanISO.split("-").map(Number);
+  const [h, m] = (horaInicio || "19:00").split(":").map(Number);
+  const sessionDate = new Date(year, month - 1, day, isNaN(h) ? 19 : h, isNaN(m) ? 0 : m, 0, 0);
+  const now = new Date();
+  return (sessionDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+}
+
+/**
+ * Checks if a reservation can be cancelled according to the strict 24-hour advance policy.
+ */
+export function isReservaCancelable(reserva: { fecha_iso?: string; hora_inicio?: string }): {
+  cancelable: boolean;
+  horasRestantes: number;
+  motivo?: string;
+} {
+  const horasRestantes = getHorasRestantesParaSesion(reserva.fecha_iso, reserva.hora_inicio);
+  
+  if (horasRestantes <= 0) {
+    return {
+      cancelable: false,
+      horasRestantes,
+      motivo: "La sesión ya ha comenzado o se ha impartido. No es posible cancelarla."
+    };
+  }
+
+  if (horasRestantes <= 24) {
+    return {
+      cancelable: false,
+      horasRestantes,
+      motivo: "Faltan menos de 24 horas para el inicio de la clase. Según la normativa oficial, no es cancelable y la sesión se computa de tu bono."
+    };
+  }
+
+  return {
+    cancelable: true,
+    horasRestantes
+  };
+}
+
+export function cancelarReservaOpenClass(reservaId: string, options?: { allowUnder24h?: boolean }): boolean {
   const current = getOpenClassReservas();
   const target = current.find(r => r.id === reservaId);
   if (!target || target.estado === "Cancelada") {
     return false;
   }
+
+  // Reject cancellation if within 24 hours unless explicitly allowed (admin bypass)
+  if (!options?.allowUnder24h) {
+    const { cancelable, motivo } = isReservaCancelable(target);
+    if (!cancelable) {
+      console.warn("Cancelación bloqueada por normativa de 24h:", motivo);
+      return false;
+    }
+  }
+
   const updated = current.map(r => r.id === reservaId ? { ...r, estado: "Cancelada" as const, asistido: false } : r);
   saveOpenClassReservas(updated);
   return true;
