@@ -67,6 +67,19 @@ const getDayOrder = (day: string) => {
   return days[(day || "").toUpperCase()] || 8;
 };
 
+// Helper function para detectar si una clase es Open Class o Formación Rotativa
+const isClassOpenClass = (c?: { nombre_clase?: string; tipo_clase?: string; id?: string } | null): boolean => {
+  if (!c) return false;
+  const nameUpper = (c.nombre_clase || "").toUpperCase();
+  return (
+    nameUpper.includes("OPEN") ||
+    nameUpper.includes("FORMACI") ||
+    (c as any).tipo_clase === "Open Class" ||
+    Boolean(c.id && DEFAULT_STUDIO2_OPEN_CLASSES.some(def => def.id === c.id)) ||
+    Boolean(c.id && LEGACY_ID_MAP[c.id])
+  );
+};
+
 // Validador y detector de conflictos de horarios, aulas y profesores
 function checkScheduleConflict(
   newClass: { dia_semana: string; hora_inicio: string; hora_fin: string; sede: string; profesor: string; id?: string | null; nombre_clase?: string },
@@ -319,7 +332,11 @@ export default function ClasesPage() {
     }
 
     // 2. Validar reducción de aforo por debajo del número de inscritos actuales
-    if (isEditing && editingId) {
+    // Para Open Classes, el aforo es por sesión individual, no la suma acumulada histórica
+    const editingClase = isEditing && editingId ? clases.find(c => c.id === editingId) : null;
+    const isOC = isClassOpenClass({ ...editingClase, ...formData, id: editingId || undefined });
+
+    if (isEditing && editingId && !isOC) {
       const currentEnrolled = classEnrollmentCounts[editingId] || 0;
       if (formData.aforo_maximo < currentEnrolled) {
         setModal({
@@ -426,13 +443,7 @@ export default function ClasesPage() {
   };
 
   const handleViewRoster = async (clase: ClaseCuadrante) => {
-    const nameUpper = (clase.nombre_clase || "").toUpperCase();
-    const isOC = 
-      nameUpper.includes("OPEN") ||
-      nameUpper.includes("FORMACI") ||
-      (clase as any).tipo_clase === "Open Class" ||
-      DEFAULT_STUDIO2_OPEN_CLASSES.some(def => def.id === clase.id) ||
-      Boolean(LEGACY_ID_MAP[clase.id]);
+    const isOC = isClassOpenClass(clase);
 
     if (isOC) {
       await syncReservasFromSupabase();
@@ -621,7 +632,15 @@ export default function ClasesPage() {
                 </tr>
               ) : filteredClases.length > 0 ? (
                 filteredClases.map((item, idx) => {
-                  const enrolledCount = classEnrollmentCounts[item.id] || 0;
+                  const isOC = isClassOpenClass(item);
+                  let enrolledCount = classEnrollmentCounts[item.id] || 0;
+                  if (isOC) {
+                    const sessions = getUpcomingSessionsForClass(item, 8, "2026-09-14");
+                    const activeSession = sessions.find(s => getSesionReservasCount(item.id, s.dateISO) > 0) || sessions[0];
+                    if (activeSession) {
+                      enrolledCount = getSesionReservasCount(item.id, activeSession.dateISO);
+                    }
+                  }
                   const isFull = enrolledCount >= (item.aforo_maximo || 15);
                   const studio1 = isStudio1(item.sede);
 

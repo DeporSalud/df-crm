@@ -46,7 +46,8 @@ const TEACHER_PINS: Record<string, { name: string; isAdmin?: boolean }> = {
   "1009": { name: "NEREA OLIVARES" },
   "1010": { name: "ALEJANDRO ROVINA" },
   "1011": { name: "NIL BARBERÁ" },
-  "1012": { name: "MARIO GADEA" }
+  "1012": { name: "MARIO GADEA" },
+  "1013": { name: "DANIELA MÉRIDA" }
 };
 
 // Safe haptic feedback helper
@@ -209,6 +210,7 @@ export default function ProfesorPortal() {
     "ALEJANDRO ROVINA",
     "NIL BARBERÁ",
     "MARIO GADEA",
+    "DANIELA MÉRIDA",
     "RUTH DOMÍNGUEZ"
   ];
 

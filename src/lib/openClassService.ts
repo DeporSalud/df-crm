@@ -108,7 +108,7 @@ export const DEFAULT_STUDIO2_OPEN_CLASSES = [
     hora_fin: "21:00",
     sede: "castilla",
     sala: "Sala 1",
-    aforo_maximo: 20,
+    aforo_maximo: 18,
     tipo_clase: "Open Class"
   },
   {
