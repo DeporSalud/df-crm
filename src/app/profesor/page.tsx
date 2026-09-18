@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { 
   UserCheck, Check, Clock, Users, ShieldAlert, Sparkles, Calendar, Search, 
@@ -24,7 +24,12 @@ import {
   getReservasPorClaseYSesion,
   getOpenClassReservas,
   OpenClassReserva,
-  normalizeClaseId
+  normalizeClaseId,
+  syncReservasFromSupabase,
+  getUpcomingSessionsForClass,
+  DEFAULT_STUDIO2_OPEN_CLASSES,
+  LEGACY_ID_MAP,
+  cleanDateISO
 } from "@/lib/openClassService";
 
 const TEACHER_PINS: Record<string, { name: string; isAdmin?: boolean }> = {
@@ -40,7 +45,8 @@ const TEACHER_PINS: Record<string, { name: string; isAdmin?: boolean }> = {
   "1008": { name: "DARÍO HUMBERTO" },
   "1009": { name: "NEREA OLIVARES" },
   "1010": { name: "ALEJANDRO ROVINA" },
-  "1011": { name: "NIL BARBERÁ" }
+  "1011": { name: "NIL BARBERÁ" },
+  "1012": { name: "MARIO GADEA" }
 };
 
 // Safe haptic feedback helper
@@ -134,6 +140,20 @@ const checkTeacherTimeConflict = (
   return { conflict: false };
 };
 
+const isOpenClass = (clase: any) => {
+  if (!clase) return false;
+  const nameUpper = (clase.nombre_clase || "").toUpperCase();
+  const typeUpper = (clase.tipo_clase || "").toUpperCase();
+  return (
+    typeUpper.includes("OPEN") || 
+    nameUpper.includes("OPEN") || 
+    nameUpper.includes("FORMACI") || 
+    nameUpper.includes("ROTAT") ||
+    Boolean(DEFAULT_STUDIO2_OPEN_CLASSES?.some((def: any) => def.id === clase.id)) ||
+    Boolean(LEGACY_ID_MAP?.[clase.id])
+  );
+};
+
 export default function ProfesorPortal() {
   const [pinInput, setPinInput] = useState<string>("");
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -161,6 +181,11 @@ export default function ProfesorPortal() {
   const [allOpenClasses, setAllOpenClasses] = useState<any[]>([]);
   const [teacherEnrolledClassIds, setTeacherEnrolledClassIds] = useState<string[]>([]);
   const [openClassReservasVersion, setOpenClassReservasVersion] = useState<number>(0);
+
+  const openClassSessions = useMemo(() => {
+    if (!selectedClase || !isOpenClass(selectedClase)) return [];
+    return getUpcomingSessionsForClass(selectedClase, 8, "2026-09-14");
+  }, [selectedClase?.id, selectedClase?.dia_semana, openClassReservasVersion]);
   
   // Checkout
   const [selectedBonoForPayment, setSelectedBonoForPayment] = useState<any | null>(null);
@@ -170,18 +195,6 @@ export default function ProfesorPortal() {
   const [isRosterLoading, setIsRosterLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>({ isOpen: false, message: "" });
-
-  const isOpenClass = (clase: any) => {
-    if (!clase) return false;
-    const name = (clase.nombre_clase || "").toLowerCase();
-    const type = (clase.tipo_clase || "").toLowerCase();
-    return (
-      type.includes("open") || 
-      name.includes("open class") || 
-      name.startsWith("open ") ||
-      name === "open"
-    );
-  };
 
   const profesoresDisponibles = [
     "LUCÍA MUÑOZ",
@@ -195,6 +208,7 @@ export default function ProfesorPortal() {
     "NEREA OLIVARES",
     "ALEJANDRO ROVINA",
     "NIL BARBERÁ",
+    "MARIO GADEA",
     "RUTH DOMÍNGUEZ"
   ];
 
@@ -276,14 +290,15 @@ export default function ProfesorPortal() {
   // Handle PIN Keypad input
   const handleKeyClick = (digit: string) => {
     triggerHaptic(15);
-    if (pinInput.length >= 4) return;
     setPinError("");
-    const newPin = pinInput + digit;
-    setPinInput(newPin);
-
-    if (newPin.length === 4) {
-      validatePin(newPin);
-    }
+    setPinInput(prev => {
+      if (prev.length >= 4) return prev;
+      const newPin = prev + digit;
+      if (newPin.length === 4) {
+        setTimeout(() => validatePin(newPin), 0);
+      }
+      return newPin;
+    });
   };
 
   const handleDelete = () => {
@@ -432,6 +447,8 @@ export default function ProfesorPortal() {
   const fetchTeacherClasses = async () => {
     setIsLoading(true);
     try {
+      await syncReservasFromSupabase();
+
       const { data, error } = await supabase
         .from("clases_cuadrante")
         .select("*");
@@ -507,7 +524,76 @@ export default function ProfesorPortal() {
     try {
       const classUUID = normalizeClaseId(clase.id);
       if (isOpenClass(clase)) {
-        const sessionReservas = getReservasPorClaseYSesion(classUUID, dateIso);
+        await syncReservasFromSupabase();
+
+        // 1. Fetch from synced service
+        let sessionReservas = getReservasPorClaseYSesion(classUUID, dateIso);
+
+        // 2. Direct fallback to alumnos_clases in Supabase if service returns 0
+        if (sessionReservas.length === 0) {
+          const { data: directRows } = await supabase
+            .from("alumnos_clases")
+            .select(`
+              id,
+              alumno_id,
+              clase_id,
+              asignado_en,
+              alumnos (
+                id,
+                nombre_completo,
+                email,
+                telefono,
+                dni,
+                plan_activo,
+                clases_restantes,
+                estado,
+                sede
+              )
+            `)
+            .eq("clase_id", classUUID);
+
+          const matchingDirect = (directRows || []).filter(r => {
+            const rawDate = r.asignado_en ? cleanDateISO(r.asignado_en) : "";
+            return !dateIso || rawDate === dateIso || rawDate.startsWith(dateIso);
+          });
+
+          if (matchingDirect.length > 0) {
+            const attendees = matchingDirect.map(r => {
+              const a: any = Array.isArray(r.alumnos) ? r.alumnos[0] : r.alumnos;
+              const isDocente = (a?.nombre_completo || "").toLowerCase().includes("docente") ||
+                                (a?.plan_activo || "").toLowerCase().includes("docente");
+              return {
+                id: r.alumno_id,
+                nombre_completo: a?.nombre_completo || "Alumno",
+                email: a?.email || "",
+                telefono: a?.telefono || "",
+                plan_activo: a?.plan_activo || "Open Class",
+                clases_restantes: a?.clases_restantes ?? null,
+                estado: a?.estado || "Activo",
+                sede: a?.sede || clase.sede,
+                is_docente: isDocente,
+                reserva_id: r.id,
+                fecha_reserva: dateIso,
+                bono_agotado: false,
+                debe_cuota: false
+              };
+            });
+            setRoster(attendees);
+
+            const { data: asistenciasData } = await supabase
+              .from("asistencias")
+              .select("alumno_id")
+              .eq("clase_id", classUUID)
+              .gte("fecha_hora", dateIso + "T00:00:00")
+              .lte("fecha_hora", dateIso + "T23:59:59");
+
+            const ids = (asistenciasData || []).map((a: any) => a.alumno_id);
+            setAsistenciasRegistradas(ids);
+            setIsRosterLoading(false);
+            return;
+          }
+        }
+
         const { data: allDbStudents } = await supabase.from("alumnos").select("*");
         const dbMap = new Map((allDbStudents || []).map((s: any) => [s.id, s]));
 
@@ -615,8 +701,12 @@ export default function ProfesorPortal() {
           }
         }
 
-        studentList.sort((a: any, b: any) => (a.nombre_completo || "").localeCompare(b.nombre_completo || "", "es"));
-        setRoster(studentList);
+        // Deduplicate students by ID
+        const uniqueStudents = Array.from(
+          new Map(studentList.map(s => [s.id, s])).values()
+        ).sort((a: any, b: any) => (a.nombre_completo || "").localeCompare(b.nombre_completo || "", "es"));
+
+        setRoster(uniqueStudents);
 
         const { data: asistencias } = await supabase
           .from("asistencias")
@@ -635,31 +725,50 @@ export default function ProfesorPortal() {
     }
   };
 
-  const handleSelectClase = (clase: any) => {
+  const handleSelectClase = async (clase: any) => {
     setSelectedClase(clase);
     setRosterSearch("");
-    const defaultDate = calendarDays.find(d => normalizeDay(d.dayName) === normalizeDay(clase.dia_semana))?.dateISO || new Date().toISOString().split("T")[0];
-    setSelectedSessionDate(defaultDate);
-    loadRosterForDate(clase, defaultDate);
+    if (isOpenClass(clase)) {
+      await syncReservasFromSupabase();
+      const sessions = getUpcomingSessionsForClass(clase, 8, "2026-09-14");
+      const sessionWithBookings = sessions.find(s => getSesionReservasCount(clase.id, s.dateISO) > 0);
+      const chosenDate = sessionWithBookings?.dateISO || sessions[0]?.dateISO || new Date().toISOString().split("T")[0];
+      setSelectedSessionDate(chosenDate);
+      await loadRosterForDate(clase, chosenDate);
+    } else {
+      const defaultDate = calendarDays.find(d => normalizeDay(d.dayName) === normalizeDay(clase.dia_semana))?.dateISO || new Date().toISOString().split("T")[0];
+      setSelectedSessionDate(defaultDate);
+      await loadRosterForDate(clase, defaultDate);
+    }
   };
 
   // Automatic reactivity: whenever selectedClase changes, guarantee roster loading
   useEffect(() => {
     if (selectedClase?.id) {
-      const defaultDate = selectedSessionDate || 
-        calendarDays.find(d => normalizeDay(d.dayName) === normalizeDay(selectedClase.dia_semana))?.dateISO || 
-        new Date().toISOString().split("T")[0];
-      if (!selectedSessionDate) {
-        setSelectedSessionDate(defaultDate);
+      if (isOpenClass(selectedClase)) {
+        const sessions = getUpcomingSessionsForClass(selectedClase, 8, "2026-09-14");
+        const sessionWithBookings = sessions.find(s => getSesionReservasCount(selectedClase.id, s.dateISO) > 0);
+        const chosenDate = selectedSessionDate || sessionWithBookings?.dateISO || sessions[0]?.dateISO || new Date().toISOString().split("T")[0];
+        if (!selectedSessionDate) {
+          setSelectedSessionDate(chosenDate);
+        }
+        loadRosterForDate(selectedClase, chosenDate);
+      } else {
+        const defaultDate = selectedSessionDate || 
+          calendarDays.find(d => normalizeDay(d.dayName) === normalizeDay(selectedClase.dia_semana))?.dateISO || 
+          new Date().toISOString().split("T")[0];
+        if (!selectedSessionDate) {
+          setSelectedSessionDate(defaultDate);
+        }
+        loadRosterForDate(selectedClase, defaultDate);
       }
-      loadRosterForDate(selectedClase, defaultDate);
     }
   }, [selectedClase?.id]);
 
-  const handleChangeSessionDate = (newDateIso: string) => {
+  const handleChangeSessionDate = async (newDateIso: string) => {
     if (!selectedClase) return;
     setSelectedSessionDate(newDateIso);
-    loadRosterForDate(selectedClase, newDateIso);
+    await loadRosterForDate(selectedClase, newDateIso);
   };
 
   useEffect(() => {
@@ -1472,32 +1581,40 @@ export default function ProfesorPortal() {
                       </div>
 
                       <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none pt-1">
-                        {calendarDays
-                          .filter(d => normalizeDay(d.dayName) === normalizeDay(selectedClase.dia_semana))
-                          .map((day) => {
-                            const isSelected = selectedSessionDate === day.dateISO;
-                            return (
-                              <button
-                                key={day.dateISO}
-                                onClick={() => handleChangeSessionDate(day.dateISO)}
-                                className={`py-2 px-3 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer min-w-[65px] shrink-0 border text-center ${
-                                  isSelected
-                                    ? "bg-amber-400 text-slate-950 border-amber-300 font-extrabold shadow-md scale-105"
-                                    : "bg-[var(--color-bg-card)] text-slate-300 hover:bg-[var(--color-bg-hover)] border-[var(--color-border)]"
-                                }`}
-                              >
-                                <span className={`text-[9px] uppercase font-bold tracking-wider ${isSelected ? "text-slate-950" : "text-amber-400"}`}>
-                                  {day.isToday ? "Hoy" : day.dayShort}
-                                </span>
-                                <span className="text-base font-mono font-black leading-tight">
-                                  {day.dayNumber}
-                                </span>
-                                <span className="text-[8px] opacity-80 uppercase">
-                                  {day.monthShort}
-                                </span>
-                              </button>
-                            );
-                          })}
+                        {openClassSessions.map((day) => {
+                          const isSelected = selectedSessionDate === day.dateISO;
+                          const count = getSesionReservasCount(selectedClase.id, day.dateISO);
+                          return (
+                            <button
+                              key={day.dateISO}
+                              onClick={() => handleChangeSessionDate(day.dateISO)}
+                              className={`py-2 px-3 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer min-w-[72px] shrink-0 border text-center ${
+                                isSelected
+                                  ? "bg-amber-400 text-slate-950 border-amber-300 font-extrabold shadow-md scale-105"
+                                  : "bg-[var(--color-bg-card)] text-slate-300 hover:bg-[var(--color-bg-hover)] border-[var(--color-border)]"
+                              }`}
+                            >
+                              <span className={`text-[9px] uppercase font-bold tracking-wider ${isSelected ? "text-slate-950" : "text-amber-400"}`}>
+                                {day.isToday ? "Hoy" : day.dayShort}
+                              </span>
+                              <span className="text-base font-mono font-black leading-tight">
+                                {day.dayNumber}
+                              </span>
+                              <span className="text-[8px] opacity-80 uppercase">
+                                {day.monthShort}
+                              </span>
+                              <span className={`mt-1 px-1.5 py-0.5 rounded-full text-[9px] font-mono font-bold leading-none ${
+                                isSelected 
+                                  ? "bg-slate-950/20 text-slate-950" 
+                                  : count > 0 
+                                  ? "bg-amber-400/20 text-amber-300 border border-amber-400/30" 
+                                  : "text-slate-500"
+                              }`}>
+                                {count} {count === 1 ? "alumno" : "alumnos"}
+                              </span>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
