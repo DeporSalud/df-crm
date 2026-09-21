@@ -294,6 +294,23 @@ export function getNextDateForDay(baseDateStr: string, targetDayName: string): s
   return `${resY}-${resM}-${resD}`;
 }
 
+export function getTodayISO(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Calculates the next upcoming session date (YYYY-MM-DD) on or after today for a given class
+ */
+export function getNextUpcomingSessionDate(clase: any, baseDateISO?: string): string {
+  const todayISO = cleanDateISO(baseDateISO) || getTodayISO();
+  const diaSemana = (typeof clase === "string" ? clase : clase?.dia_semana) || "LUNES";
+  return getNextDateForDay(todayISO, diaSemana);
+}
+
 /**
  * Generates the upcoming weekly sessions for a specific class (e.g. all upcoming Mondays)
  */

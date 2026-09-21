@@ -21,7 +21,8 @@ import {
   getUpcomingSessionsForClass,
   getSesionReservasCount,
   syncReservasFromSupabase,
-  isReservaCancelable
+  isReservaCancelable,
+  getTodayISO
 } from "@/lib/openClassService";
 import { logActivity } from "@/lib/activityLogger";
 
@@ -61,14 +62,15 @@ export default function OpenClassAsistentesModal({
 
   const [activeCalendarDay, setActiveCalendarDay] = useState<CalendarDayItem | null>(calendarDay || null);
 
-  // Keep activeCalendarDay in sync with props or select session with bookings
+  // Keep activeCalendarDay in sync with props or select today/upcoming session
   useEffect(() => {
     if (!isOpen || !clase) return;
     if (calendarDay) {
       setActiveCalendarDay(calendarDay);
     } else if (availableSessions.length > 0) {
-      const sessionWithReservas = availableSessions.find(s => getSesionReservasCount(clase.id, s.dateISO) > 0);
-      setActiveCalendarDay(sessionWithReservas || availableSessions[0]);
+      const todayISO = getTodayISO();
+      const todayOrUpcoming = availableSessions.find(s => s.dateISO >= todayISO);
+      setActiveCalendarDay(todayOrUpcoming || availableSessions[0]);
     }
   }, [isOpen, clase?.id, calendarDay?.dateISO, availableSessions]);
 
@@ -562,7 +564,7 @@ export default function OpenClassAsistentesModal({
                       }`}
                     >
                       <Calendar size={12} className={isSelected ? "text-slate-950" : "text-cyan-400"} />
-                      <span>{session.dayShort} {session.dayNumber} {session.monthShort}</span>
+                      <span>{session.dayShort} {session.dayNumber} {session.monthShort}{session.isToday ? " (Hoy)" : ""}</span>
                       <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
                         isSelected 
                           ? "bg-slate-950/20 text-slate-950" 

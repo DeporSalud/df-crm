@@ -11,6 +11,8 @@ import {
   getUpcomingSessionsForClass, 
   getSesionReservasCount,
   formatFullCalendarDate,
+  createCalendarDayFromISO,
+  getNextUpcomingSessionDate,
   CalendarDayItem,
   LEGACY_ID_MAP,
   DEFAULT_STUDIO2_OPEN_CLASSES 
@@ -447,9 +449,8 @@ export default function ClasesPage() {
 
     if (isOC) {
       await syncReservasFromSupabase();
-      const sessions = getUpcomingSessionsForClass(clase, 8, "2026-09-14");
-      const sessionWithBookings = sessions.find(s => getSesionReservasCount(clase.id, s.dateISO) > 0);
-      const chosenDay = sessionWithBookings || sessions[0] || null;
+      const targetDateISO = getNextUpcomingSessionDate(clase);
+      const chosenDay = createCalendarDayFromISO(targetDateISO);
 
       setOpenClassModalState({
         isOpen: true,
@@ -618,7 +619,7 @@ export default function ClasesPage() {
                 <th className="py-3 px-4 text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">Horario</th>
                 <th className="py-3 px-4 text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">Clase</th>
                 <th className="py-3 px-4 text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">Profesor</th>
-                <th className="py-3 px-4 text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider text-center">Alumnos Matriculados</th>
+                <th className="py-3 px-4 text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider text-center">Matrículas / Reservas</th>
                 <th className="py-3 px-4 text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider text-center">Aforo</th>
                 <th className="py-3 px-4 text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider text-right">Acciones</th>
               </tr>
@@ -633,15 +634,20 @@ export default function ClasesPage() {
               ) : filteredClases.length > 0 ? (
                 filteredClases.map((item, idx) => {
                   const isOC = isClassOpenClass(item);
-                  let enrolledCount = classEnrollmentCounts[item.id] || 0;
+                  const enrolledCount = classEnrollmentCounts[item.id] || 0;
+                  let ocReservasCount = 0;
+                  let ocDayItem: CalendarDayItem | null = null;
+                  let ocIsToday = false;
+
                   if (isOC) {
-                    const sessions = getUpcomingSessionsForClass(item, 8, "2026-09-14");
-                    const activeSession = sessions.find(s => getSesionReservasCount(item.id, s.dateISO) > 0) || sessions[0];
-                    if (activeSession) {
-                      enrolledCount = getSesionReservasCount(item.id, activeSession.dateISO);
-                    }
+                    const targetDateISO = getNextUpcomingSessionDate(item);
+                    ocDayItem = createCalendarDayFromISO(targetDateISO);
+                    ocIsToday = ocDayItem.isToday;
+                    ocReservasCount = getSesionReservasCount(item.id, targetDateISO);
                   }
-                  const isFull = enrolledCount >= (item.aforo_maximo || 15);
+
+                  const maxCap = item.aforo_maximo || (isOC ? 20 : 15);
+                  const isFull = isOC ? ocReservasCount >= maxCap : enrolledCount >= maxCap;
                   const studio1 = isStudio1(item.sede);
 
                   return (
@@ -669,16 +675,38 @@ export default function ClasesPage() {
                         </div>
                       </td>
                       <td className="py-3 px-4 text-center">
-                        <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border inline-flex items-center gap-1.5 ${
-                          isFull
-                            ? "bg-[var(--color-danger)]/10 text-[var(--color-danger)] border-[var(--color-danger)]/30"
-                            : enrolledCount > 0 
-                            ? "bg-[var(--color-success)]/10 text-[var(--color-success)] border-[var(--color-success)]/30" 
-                            : "bg-[var(--color-bg)] text-[var(--color-text-secondary)] border-[var(--color-border)]"
-                        }`}>
-                          <Users size={12} />
-                          <span>{enrolledCount} / {item.aforo_maximo || 15} plazas</span>
-                        </span>
+                        {isOC ? (
+                          <div className="inline-flex flex-col items-center gap-1">
+                            <span className="text-[9.5px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                              Open Class • Sin matrícula
+                            </span>
+                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border inline-flex items-center gap-1.5 ${
+                              isFull
+                                ? "bg-[var(--color-danger)]/10 text-[var(--color-danger)] border-[var(--color-danger)]/30"
+                                : ocReservasCount > 0 
+                                ? "bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 shadow-sm shadow-cyan-500/10" 
+                                : "bg-[var(--color-bg)] text-[var(--color-text-secondary)] border-[var(--color-border)]"
+                            }`}>
+                              <Calendar size={12} className={ocReservasCount > 0 ? "text-cyan-400" : "text-slate-400"} />
+                              <span>
+                                {ocIsToday
+                                  ? `Hoy: ${ocReservasCount} / ${maxCap} reservas`
+                                  : `Próx. ${ocDayItem?.fullLabel}: ${ocReservasCount} / ${maxCap} reservas`}
+                              </span>
+                            </span>
+                          </div>
+                        ) : (
+                          <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border inline-flex items-center gap-1.5 ${
+                            isFull
+                              ? "bg-[var(--color-danger)]/10 text-[var(--color-danger)] border-[var(--color-danger)]/30"
+                              : enrolledCount > 0 
+                              ? "bg-[var(--color-success)]/10 text-[var(--color-success)] border-[var(--color-success)]/30" 
+                              : "bg-[var(--color-bg)] text-[var(--color-text-secondary)] border-[var(--color-border)]"
+                          }`}>
+                            <Users size={12} />
+                            <span>{enrolledCount} / {maxCap} matriculados</span>
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-center">
                         <span className="px-2 py-0.5 rounded-md bg-[var(--color-bg)] border border-[var(--color-border)] text-xs font-semibold text-[var(--color-text-title)] font-mono">
@@ -687,15 +715,26 @@ export default function ClasesPage() {
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex justify-end gap-1.5">
-                          {/* BOTÓN VER ALUMNOS INSCRITOS */}
-                          <button 
-                            onClick={() => handleViewRoster(item)}
-                            className="flex items-center gap-1 text-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white transition-all text-xs font-bold bg-[var(--color-primary)]/10 px-2.5 py-1 rounded-lg border border-[var(--color-primary)]/30 shadow-sm cursor-pointer"
-                            title="Ver listado de alumnos inscritos en esta clase"
-                          >
-                            <Users className="w-3.5 h-3.5" />
-                            <span>Ver Alumnos</span>
-                          </button>
+                          {/* BOTÓN VER ALUMNOS / RESERVAS */}
+                          {isOC ? (
+                            <button 
+                              onClick={() => handleViewRoster(item)}
+                              className="flex items-center gap-1 text-cyan-300 hover:bg-cyan-500 hover:text-slate-950 transition-all text-xs font-bold bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/30 shadow-sm cursor-pointer"
+                              title="Ver reservas y asistentes de esta Open Class"
+                            >
+                              <Calendar className="w-3.5 h-3.5" />
+                              <span>Ver Reservas</span>
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => handleViewRoster(item)}
+                              className="flex items-center gap-1 text-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white transition-all text-xs font-bold bg-[var(--color-primary)]/10 px-2.5 py-1 rounded-lg border border-[var(--color-primary)]/30 shadow-sm cursor-pointer"
+                              title="Ver listado de alumnos inscritos en esta clase"
+                            >
+                              <Users className="w-3.5 h-3.5" />
+                              <span>Ver Alumnos</span>
+                            </button>
+                          )}
 
                           <button 
                             onClick={() => handleOpenEdit(item)}
