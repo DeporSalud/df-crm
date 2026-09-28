@@ -323,7 +323,7 @@ export default function GlobalCobroModal() {
                   3. Conceptos Rápidos
                 </label>
                 <div className="flex gap-1.5 flex-wrap">
-                  {CONCEPTOS_RAPIDOS.filter(c => !c.id.startsWith("promo_sep_") || isPromoSeptiembreActive()).slice(0, 12).map(c => {
+                  {CONCEPTOS_RAPIDOS.filter(c => !c.id.startsWith("promo_sep_") || isPromoSeptiembreActive()).slice(0, 16).map(c => {
                     const isPromo = c.id.startsWith("promo_sep_");
                     return (
                       <button

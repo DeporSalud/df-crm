@@ -97,7 +97,7 @@ export interface BonoCalculationInput {
   isPromoSeptiembre?: boolean;
 }
 
-export type ExemptionType = "regular" | "teacher" | "repeat_buyer" | "promo_septiembre" | "none";
+export type ExemptionType = "regular" | "teacher" | "repeat_buyer" | "promo_septiembre" | "october_renewal_50" | "none";
 
 export interface BonoCalculationResult {
   bonoId: string;
@@ -236,6 +236,85 @@ export function isRegularClassStudent(
 }
 
 /**
+ * Comprueba si el alumno adquirió un bono de Open Class en el mes de septiembre de 2026.
+ * Estos alumnos disfrutan de un 50% de descuento en la matrícula al renovar en octubre (7,50 € en vez de 15,00 €).
+ */
+export function hasPurchasedSeptemberBono(student?: any): boolean {
+  if (!student) return false;
+
+  // 1. Flags explícitos
+  if (student.bono_septiembre === true || student.compro_bono_septiembre === true || student.promo_septiembre === true) {
+    return true;
+  }
+
+  // 2. localStorage si está disponible
+  if (typeof window !== "undefined" && student.id) {
+    if (localStorage.getItem(`df_has_september_bono_${student.id}`) === "true") {
+      return true;
+    }
+  }
+
+  // 3. Inspección de plan_activo: debe contener específicamente la promoción o bono de septiembre
+  const plan = (student.plan_activo || "").trim().toLowerCase();
+  if (
+    plan.includes("septiembre") || 
+    plan.includes("promo sep") || 
+    plan.includes("promo_sep") ||
+    plan.includes("promo 4") ||
+    plan.includes("promo 8") ||
+    plan.includes("promo 12") ||
+    plan.includes("bono septiembre")
+  ) {
+    return true;
+  }
+
+  // Si tiene un bono específico adquirido durante septiembre 2026
+  const isSpecificBono = (
+    plan.includes("bono 4") || 
+    plan.includes("bono 8") || 
+    plan.includes("bono 10")
+  );
+  if (isSpecificBono && student.creado_en) {
+    const createdDate = new Date(student.creado_en);
+    if (!isNaN(createdDate.getTime()) && 
+        createdDate >= new Date("2026-09-01T00:00:00Z") && 
+        createdDate < new Date("2026-10-01T00:00:00Z")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Comprueba si el alumno que compró bono en septiembre ya ha abonado la matrícula reducida de octubre (7,50 €)
+ * o la matrícula anual de la temporada.
+ */
+export function hasPaidOctoberRenewal(student?: any): boolean {
+  if (!student) return false;
+
+  if (student.matricula_octubre_pagada === true || student.matricula_renovacion_pagada === true) {
+    return true;
+  }
+
+  const plan = (student.plan_activo || "").toLowerCase();
+  if (plan.includes("renovación octubre") || plan.includes("renovacion octubre") || plan.includes("matrícula octubre")) {
+    return true;
+  }
+
+  if (typeof window !== "undefined" && student.id) {
+    if (localStorage.getItem(`df_matricula_octubre_paid_${student.id}`) === "true") {
+      return true;
+    }
+    if (localStorage.getItem(`df_matricula_paid_${student.id}`) === "true") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Comprueba si el alumno ya ha abonado la matrícula de temporada 2026/2027
  * (por ejemplo en una compra anterior de bono o registro previo).
  */
@@ -252,7 +331,12 @@ export function hasPaidSeasonMatricula(student?: any): boolean {
     return true;
   }
 
-  // 3. Saldo de clases activo (indica que ya ha adquirido y abonado un bono previo)
+  // 3. Comprador de bono de septiembre: solo se considera abonada si ya pagó la renovación de octubre
+  if (hasPurchasedSeptemberBono(student)) {
+    return hasPaidOctoberRenewal(student);
+  }
+
+  // 4. Saldo de clases activo (indica que ya ha adquirido y abonado un bono previo con matrícula pagada)
   const clasesCount = typeof student.clases_restantes === "number"
     ? student.clases_restantes
     : typeof student.clases_restantes === "string"
@@ -262,7 +346,7 @@ export function hasPaidSeasonMatricula(student?: any): boolean {
     return true;
   }
 
-  // 4. Plan activo consolidado previo de bono específico adquirido
+  // 5. Plan activo consolidado previo de bono específico adquirido
   // NOTA: NO incluir 'open class' genérico aquí, porque los alumnos exclusivos de Open Class
   // tienen la etiqueta/categoría 'Open Class' pero deben abonar la matrícula en su 1ª compra.
   const plan = (student.plan_activo || "").trim().toLowerCase();
@@ -309,6 +393,8 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   const regular = isRegularClassStudent(student, { assignedClassIds });
   const alreadyPaid = hasPaidSeasonMatricula(student);
   const isPromo = isPromoSeptiembreBono(bonoId) || Boolean(params.isPromoSeptiembre);
+  const isSeptemberBuyer = hasPurchasedSeptemberBono(student);
+  const alreadyPaidRenewal = hasPaidOctoberRenewal(student);
 
   // 0. Bono Promoción Septiembre 2026: ¡MATRÍCULA TOTALMENTE GRATUITA (0,00 €)!
   if (isPromo) {
@@ -383,8 +469,8 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
     };
   }
 
-  // 3. Alumno Exclusivo de Open Class que ya abonó la matrícula previamente
-  if (alreadyPaid && isFirstBonoOfYearExplicit !== true) {
+  // 3. Alumno que ya abonó la matrícula previamente esta temporada
+  if ((alreadyPaid || alreadyPaidRenewal) && isFirstBonoOfYearExplicit !== true) {
     return {
       bonoId,
       basePrice,
@@ -400,7 +486,25 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
     };
   }
 
-  // 4. Alumno Exclusivo de Open Class (1er bono de la temporada): cobra 15,00 €
+  // 4. NUEVA REGLA: Alumno que cogió un bono en Septiembre -> 50% de matrícula en Octubre (7,50 €)
+  // No requiere selector 'Soy alumno / No soy alumno', se aplica directamente.
+  if (isSeptemberBuyer && !alreadyPaidRenewal) {
+    return {
+      bonoId,
+      basePrice,
+      discountPercentage: 0,
+      discountAmount: 0,
+      bonoPrice: basePrice,
+      matriculaCost: 7.50,
+      isExempt: false,
+      exemptionType: "october_renewal_50",
+      exemptionLabel: "7,50 € (50% Dto. Renovación Octubre)",
+      totalToPay: Math.round((basePrice + 7.50) * 100) / 100,
+      isFirstBonoOfYear: true,
+    };
+  }
+
+  // 5. Alumno Exclusivo de Open Class Nuevo (1er bono de la temporada sin bono en septiembre): cobra 15,00 €
   return {
     bonoId,
     basePrice,

@@ -49,6 +49,8 @@ export interface ConceptoRapidoConfig {
 export const CONCEPTOS_RAPIDOS: ConceptoRapidoConfig[] = [
   { id: "mensualidad_regular", titulo: "Mensualidad Regular (Cuota Alumno)", categoria: "mensualidad", esVariable: true },
   { id: "matricula_anual", titulo: "Matrícula / Reserva de Plaza (Anticipo)", categoria: "matricula", importeSugerido: 20 },
+  { id: "matricula_octubre_50", titulo: "Matrícula 50% Renovación Octubre (Bono Sep)", categoria: "matricula", importeSugerido: 7.5 },
+  { id: "matricula_open_15", titulo: "Matrícula Anual Open Class (1er Bono)", categoria: "matricula", importeSugerido: 15 },
   { id: "promo_sep_4_alumno", titulo: "Promo Sep 4 Clases (Alumno DF)", categoria: "bono", importeSugerido: 25 },
   { id: "promo_sep_8_alumno", titulo: "Promo Sep 8 Clases (Alumno DF)", categoria: "bono", importeSugerido: 35 },
   { id: "promo_sep_12_alumno", titulo: "Promo Sep 12 Clases (Alumno DF)", categoria: "bono", importeSugerido: 45 },
