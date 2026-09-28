@@ -88,7 +88,7 @@ export function isPromoSeptiembreBono(bonoId?: string | null): boolean {
 
 export interface BonoCalculationInput {
   bonoId: string;
-  basePrice: number;
+  basePrice?: number;
   student?: any;
   assignedClassIds?: string[];
   userRole?: string;
@@ -396,15 +396,26 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   const isSeptemberBuyer = hasPurchasedSeptemberBono(student);
   const alreadyPaidRenewal = hasPaidOctoberRenewal(student);
 
+  const fallbackPrices: Record<string, number> = {
+    bono_4: 45,
+    bono_8: 57,
+    bono_10: 79,
+    ilimitado: 100,
+    clase_suelta: 15,
+  };
+  const effectiveBasePrice = typeof basePrice === "number" && !isNaN(basePrice) && basePrice > 0
+    ? basePrice
+    : (fallbackPrices[bonoId] || 45);
+
   // 0. Bono Promoción Septiembre 2026: ¡MATRÍCULA TOTALMENTE GRATUITA (0,00 €)!
   if (isPromo) {
     if (teacher) {
       const discountPercentage = 10;
-      const discountAmount = Math.round(basePrice * 0.10 * 100) / 100;
-      const bonoPrice = Math.round(basePrice * 0.90 * 100) / 100;
+      const discountAmount = Math.round(effectiveBasePrice * 0.10 * 100) / 100;
+      const bonoPrice = Math.round(effectiveBasePrice * 0.90 * 100) / 100;
       return {
         bonoId,
-        basePrice,
+        basePrice: effectiveBasePrice,
         discountPercentage,
         discountAmount,
         bonoPrice,
@@ -419,15 +430,15 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
 
     return {
       bonoId,
-      basePrice,
+      basePrice: effectiveBasePrice,
       discountPercentage: 0,
       discountAmount: 0,
-      bonoPrice: basePrice,
+      bonoPrice: effectiveBasePrice,
       matriculaCost: 0.00,
       isExempt: true,
       exemptionType: "promo_septiembre",
       exemptionLabel: "0,00€ (Matrícula Gratuita Promo Septiembre)",
-      totalToPay: basePrice,
+      totalToPay: effectiveBasePrice,
       isFirstBonoOfYear: false,
     };
   }
@@ -435,11 +446,11 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   // 1. Docente: 10% dto + 0€ matrícula
   if (teacher) {
     const discountPercentage = 10;
-    const discountAmount = Math.round(basePrice * 0.10 * 100) / 100;
-    const bonoPrice = Math.round(basePrice * 0.90 * 100) / 100;
+    const discountAmount = Math.round(effectiveBasePrice * 0.10 * 100) / 100;
+    const bonoPrice = Math.round(effectiveBasePrice * 0.90 * 100) / 100;
     return {
       bonoId,
-      basePrice,
+      basePrice: effectiveBasePrice,
       discountPercentage,
       discountAmount,
       bonoPrice,
@@ -456,15 +467,15 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   if (regular) {
     return {
       bonoId,
-      basePrice,
+      basePrice: effectiveBasePrice,
       discountPercentage: 0,
       discountAmount: 0,
-      bonoPrice: basePrice,
+      bonoPrice: effectiveBasePrice,
       matriculaCost: 0.00,
       isExempt: true,
       exemptionType: "regular",
       exemptionLabel: "0,00€ (Exenta por ser alumno de Clases Regulares)",
-      totalToPay: basePrice,
+      totalToPay: effectiveBasePrice,
       isFirstBonoOfYear: false,
     };
   }
@@ -473,15 +484,15 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   if ((alreadyPaid || alreadyPaidRenewal) && isFirstBonoOfYearExplicit !== true) {
     return {
       bonoId,
-      basePrice,
+      basePrice: effectiveBasePrice,
       discountPercentage: 0,
       discountAmount: 0,
-      bonoPrice: basePrice,
+      bonoPrice: effectiveBasePrice,
       matriculaCost: 0.00,
       isExempt: true,
       exemptionType: "repeat_buyer",
       exemptionLabel: "0,00€ (Abonada previamente)",
-      totalToPay: basePrice,
+      totalToPay: effectiveBasePrice,
       isFirstBonoOfYear: false,
     };
   }
@@ -491,15 +502,15 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   if (isSeptemberBuyer && !alreadyPaidRenewal) {
     return {
       bonoId,
-      basePrice,
+      basePrice: effectiveBasePrice,
       discountPercentage: 0,
       discountAmount: 0,
-      bonoPrice: basePrice,
+      bonoPrice: effectiveBasePrice,
       matriculaCost: 7.50,
       isExempt: false,
       exemptionType: "october_renewal_50",
       exemptionLabel: "7,50 € (50% Dto. Renovación Octubre)",
-      totalToPay: Math.round((basePrice + 7.50) * 100) / 100,
+      totalToPay: Math.round((effectiveBasePrice + 7.50) * 100) / 100,
       isFirstBonoOfYear: true,
     };
   }
@@ -507,15 +518,15 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   // 5. Alumno Exclusivo de Open Class Nuevo (1er bono de la temporada sin bono en septiembre): cobra 15,00 €
   return {
     bonoId,
-    basePrice,
+    basePrice: effectiveBasePrice,
     discountPercentage: 0,
     discountAmount: 0,
-    bonoPrice: basePrice,
+    bonoPrice: effectiveBasePrice,
     matriculaCost: 15.00,
     isExempt: false,
     exemptionType: "none",
     exemptionLabel: "+15,00 € (Matrícula Anual)",
-    totalToPay: Math.round((basePrice + 15.00) * 100) / 100,
+    totalToPay: Math.round((effectiveBasePrice + 15.00) * 100) / 100,
     isFirstBonoOfYear: true,
   };
 }
