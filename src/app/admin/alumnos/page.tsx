@@ -81,7 +81,13 @@ export default function AlumnosPage() {
   const handleCheckExpirations = async () => {
     setIsCheckingExpirations(true);
     try {
-      const res = await fetch("https://app.dancefactoryalcorcon.es/api/cron/check-expirations");
+      let res;
+      try {
+        res = await fetch("/api/cron/check-expirations");
+        if (!res.ok) throw new Error("Fallback a app.dancefactoryalcorcon.es");
+      } catch {
+        res = await fetch("https://app.dancefactoryalcorcon.es/api/cron/check-expirations");
+      }
       const data = await res.json();
       if (data.success) {
         alert(`✅ Verificación de caducidades completada:\n\n• Alumnos con bonos revisados: ${data.processedCount}\n• Emails de aviso enviados (≤ 7 días restantes): ${data.emailsSent}`);
@@ -89,7 +95,7 @@ export default function AlumnosPage() {
         alert("Aviso: " + (data.error || "No se pudo completar la verificación."));
       }
     } catch (e: any) {
-      alert("No se pudo conectar con el servicio de alertas: " + e.message);
+      alert("No se pudo conectar con el servidor de alertas: " + e.message);
     } finally {
       setIsCheckingExpirations(false);
     }
@@ -883,11 +889,26 @@ export default function AlumnosPage() {
                             <span className={`font-semibold text-xs ${student.clases_restantes === 0 ? 'text-[var(--color-danger)]' : 'text-[var(--color-text-title)]'}`}>
                               {student.clases_restantes} clases
                             </span>
-                            {student.bono_caducidad && (
-                              <span className="text-[10px] text-slate-400 font-mono block mt-0.5" title={`Caducidad: ${student.bono_caducidad}`}>
-                                Exp: {new Date(student.bono_caducidad).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" })}
-                              </span>
-                            )}
+                            {(() => {
+                              const plan = (student.plan_activo || "").toLowerCase();
+                              const isPromo = plan.includes("septiembre") || plan.includes("promo sep");
+                              let expDateStr = "";
+                              if (isPromo) {
+                                expDateStr = "30/09/26";
+                              } else if (student.bono_caducidad) {
+                                expDateStr = new Date(student.bono_caducidad).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
+                              } else if (typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
+                                const rawCreated = student.creado_en ? new Date(student.creado_en) : new Date("2026-09-14T00:00:00Z");
+                                const d = new Date(rawCreated);
+                                d.setMonth(d.getMonth() + 1);
+                                expDateStr = d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
+                              }
+                              return expDateStr ? (
+                                <span className="text-[10px] text-slate-400 font-mono block mt-0.5" title={`Caducidad: ${expDateStr}`}>
+                                  Exp: {expDateStr}
+                                </span>
+                              ) : null;
+                            })()}
                           </div>
                         )}
                       </td>
