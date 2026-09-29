@@ -268,11 +268,15 @@ export function hasPurchasedSeptemberBono(student?: any): boolean {
     return true;
   }
 
-  // Si tiene un bono específico adquirido durante septiembre 2026
+  // Si tiene un bono, clase suelta o pase adquirido durante septiembre 2026
   const isSpecificBono = (
-    plan.includes("bono 4") || 
-    plan.includes("bono 8") || 
-    plan.includes("bono 10")
+    plan.includes("bono") || 
+    plan.includes("clase suelta") || 
+    plan.includes("sesion suelta") || 
+    plan.includes("sesión suelta") || 
+    plan.includes("open class") || 
+    plan.includes("ilimitad") || 
+    plan.includes("pase")
   );
   if (isSpecificBono && student.creado_en) {
     const createdDate = new Date(student.creado_en);
