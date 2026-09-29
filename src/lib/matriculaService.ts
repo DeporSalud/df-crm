@@ -155,9 +155,33 @@ export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: s
   return false;
 }
 
+export const OPEN_CLASS_IDS = new Set([
+  "71b12578-d254-4354-bb1c-e0ebfd0178aa", // Andrea Soto
+  "1ee1eefb-7f1a-4423-ac6a-04030c5c0282", // Nil Barberá
+  "85165dff-e126-4d32-90d4-2212c2fbb244", // Nerea Olivares
+  "1d7df61b-a65e-4f35-82b2-3d34242abb87", // Alejandro Rovina
+  "6a374f52-f6d8-447c-be48-e8fe3eca8faf", // Mario Gadea
+  "39807014-ee30-4112-99cf-6b361c820834", // Formación Rotativa
+  "oc_lunes_1",
+  "oc_lunes_2",
+  "oc_martes_1",
+  "oc_miercoles_1",
+  "oc_miercoles_2",
+  "oc_jueves_1"
+]);
+
+export function isOpenClassId(id?: string | null): boolean {
+  if (!id) return false;
+  const clean = id.trim().toLowerCase();
+  if (clean.startsWith("oc_") || clean.startsWith("open_") || clean.includes("openclass")) {
+    return true;
+  }
+  return OPEN_CLASS_IDS.has(clean) || OPEN_CLASS_IDS.has(id);
+}
+
 /**
  * Identifica si un alumno está matriculado en clases regulares:
- * - Asignación en cuadrante / junction `alumnos_clases`
+ * - Asignación en cuadrante / junction `alumnos_clases` (excluyendo Open Classes)
  * - `plan_activo` de clases regulares (infantil, adulto, regular, mensual)
  * - Cuota mensual regular activa
  */
@@ -167,38 +191,62 @@ export function isRegularClassStudent(
 ): boolean {
   if (!student) return false;
 
-  // 1. Asignaciones explícitas en alumnos_clases (filtrando vacíos o nulos)
-  if (options?.assignedClassIds && options.assignedClassIds.filter(id => Boolean(id && typeof id === "string" && id.trim() !== "")).length > 0) {
-    return true;
-  }
-  if (typeof options?.enrollmentsCount === "number" && options.enrollmentsCount > 0) {
-    return true;
-  }
-  if (Array.isArray(student.alumnos_clases) && student.alumnos_clases.filter((item: any) => item && (item.clase_id || (typeof item === "string" && item.trim() !== ""))).length > 0) {
-    return true;
-  }
-  if (Array.isArray(student.alumnos_clases_ids) && student.alumnos_clases_ids.filter((id: any) => Boolean(id && typeof id === "string" && id.trim() !== "")).length > 0) {
-    return true;
-  }
-  if (Array.isArray(student.assigned_classes) && student.assigned_classes.filter((id: any) => Boolean(id && typeof id === "string" && id.trim() !== "")).length > 0) {
-    return true;
-  }
-
-  // 2. Flags booleanos directos
-  if (student.es_regular === true || student.es_alumno_regular === true || student.tiene_clases_regulares === true) {
-    return true;
-  }
-
-  // 3. Inspección de plan_activo
   const plan = (student.plan_activo || "").trim().toLowerCase();
+  const isBonoOrOpen = (
+    plan.includes("bono") || 
+    plan.includes("open class") || 
+    plan.includes("clase suelta") || 
+    plan.includes("sesion suelta") || 
+    plan.includes("sesión suelta") || 
+    plan.includes("promo sep") || 
+    plan.includes("septiembre")
+  );
+
+  // Helper para descartar IDs de Open Classes (las reservas de Open Class no son matrículas en clases regulares)
+  const isRegularClassId = (id: any) => {
+    if (!id || typeof id !== "string") return false;
+    const clean = id.trim();
+    if (clean === "") return false;
+    return !isOpenClassId(clean);
+  };
+
+  // 1. Asignaciones explícitas en alumnos_clases (filtrando vacíos, nulos y descartando Open Classes)
+  const regularAssignedIds = (options?.assignedClassIds || []).filter(isRegularClassId);
+  if (regularAssignedIds.length > 0) {
+    return true;
+  }
+
+  if (Array.isArray(student.alumnos_clases)) {
+    const hasRegular = student.alumnos_clases.some((item: any) => {
+      const cId = typeof item === "string" ? item : (item?.clase_id || "");
+      return isRegularClassId(cId);
+    });
+    if (hasRegular) return true;
+  }
+
+  if (Array.isArray(student.alumnos_clases_ids)) {
+    if (student.alumnos_clases_ids.some(isRegularClassId)) return true;
+  }
+
+  if (Array.isArray(student.assigned_classes)) {
+    if (student.assigned_classes.some(isRegularClassId)) return true;
+  }
+
+  // 2. Flags booleanos directos (solo si NO tiene un plan explícito de bono u open class)
+  if (!isBonoOrOpen) {
+    if (student.es_regular === true || student.es_alumno_regular === true || student.tiene_clases_regulares === true) {
+      return true;
+    }
+  }
+
+  // 3. Inspección de plan_activo: debe ser un plan de clases regulares
   if (plan && plan !== "sin plan activo" && !plan.startsWith("pendiente:")) {
-    // Si contiene "regular", "infantil" o "adulto"
+    // Si contiene "regular" o "regulares"
     if (plan.includes("regular") || plan.includes("regulares")) return true;
-    if (plan.includes("infantil") || plan.includes("adulto")) return true;
+    if ((plan.includes("infantil") || plan.includes("adulto")) && !isBonoOrOpen) return true;
     if (plan.includes("cuota mensual") || plan.includes("mensualidad regular")) return true;
 
     // Si es un curso regular conocido (no bono y no open class)
-    const isBonoOrOpen = plan.includes("bono") || plan.includes("open class") || plan.includes("clase suelta");
     if (!isBonoOrOpen && (
       plan.includes("baile") || plan.includes("danza") || plan.includes("hip hop") || 
       plan.includes("ballet") || plan.includes("contemporaneo") || plan.includes("contemporáneo") ||
@@ -216,7 +264,7 @@ export function isRegularClassStudent(
     : typeof student.cuota_mensual === "string"
     ? parseFloat(student.cuota_mensual.replace(",", ".").replace(/[^0-9.]/g, ""))
     : 0;
-  if (!isNaN(cuotaNum) && cuotaNum > 0) {
+  if (!isNaN(cuotaNum) && cuotaNum > 0 && !isBonoOrOpen) {
     return true;
   }
 
@@ -227,7 +275,8 @@ export function isRegularClassStudent(
     clasesAsignadas && 
     !emptyPlaceholders.includes(clasesAsignadas) && 
     !clasesAsignadas.includes("open class") && 
-    !clasesAsignadas.includes("bono")
+    !clasesAsignadas.includes("bono") &&
+    !isBonoOrOpen
   ) {
     return true;
   }
