@@ -891,16 +891,16 @@ export default function AlumnosPage() {
                             </span>
                             {(() => {
                               const plan = (student.plan_activo || "").toLowerCase();
-                              const isPromo = plan.includes("septiembre") || plan.includes("promo sep");
+                              const rawCreated = student.creado_en ? new Date(student.creado_en) : null;
+                              const isPromo = plan.includes("septiembre") || plan.includes("promo sep") || plan.includes("promo") || (rawCreated !== null && !isNaN(rawCreated.getTime()) && rawCreated < new Date("2026-10-01T00:00:00Z"));
                               let expDateStr = "";
                               if (isPromo) {
                                 expDateStr = "30/09/26";
                               } else if (student.bono_caducidad) {
                                 expDateStr = new Date(student.bono_caducidad).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
                               } else if (typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
-                                const rawCreated = student.creado_en ? new Date(student.creado_en) : new Date("2026-09-14T00:00:00Z");
-                                const d = new Date(rawCreated);
-                                d.setMonth(d.getMonth() + 1);
+                                const base = rawCreated && rawCreated >= new Date("2026-10-01T00:00:00Z") ? rawCreated : new Date();
+                                const d = new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
                                 expDateStr = d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
                               }
                               return expDateStr ? (
