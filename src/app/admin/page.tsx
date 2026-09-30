@@ -701,7 +701,7 @@ export default function AdminDashboardRecepcion() {
     // 2. Clear pending status & add remaining classes in Supabase
     if (studentDB) {
       const currentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
-      const cleanPlan = (req.bono_nombre || "").replace(/\s*\(\+15€\s*Matr[ií]cula\)/i, "").trim();
+      const cleanPlan = (req.bono_nombre || "").replace(/\s*\(\+[0-9,.]+\s*€?\s*Matr[ií]cula\)/gi, "").trim();
       const isTeacher = isTeacherProfile(studentDB) || (req.bono_nombre || "").toLowerCase().includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
       const isFirstPurchase = !isTeacher && !isRegularClassStudent(studentDB) && (
         req.bono_nombre?.includes("Matrícula") || 

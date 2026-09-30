@@ -95,9 +95,10 @@ export interface BonoCalculationInput {
   isTeacher?: boolean;
   isFirstBonoOfYearExplicit?: boolean;
   isPromoSeptiembre?: boolean;
+  clasesCount?: number;
 }
 
-export type ExemptionType = "regular" | "teacher" | "repeat_buyer" | "promo_septiembre" | "october_renewal_50" | "none";
+export type ExemptionType = "regular" | "teacher" | "repeat_buyer" | "promo_septiembre" | "october_renewal_50" | "clase_suelta" | "none";
 
 export interface BonoCalculationResult {
   bonoId: string;
@@ -415,10 +416,7 @@ export function hasPaidSeasonMatricula(student?: any): boolean {
       plan.includes("bono 8") || 
       plan.includes("bono 10") || 
       plan.includes("ilimitad") || 
-      plan.includes("pase") ||
-      plan.includes("clase suelta") ||
-      plan.includes("sesion suelta") ||
-      plan.includes("sesión suelta")
+      plan.includes("pase")
     );
     if (isSpecificBono && !plan.includes("matrícula") && !plan.includes("matricula")) {
       return true;
@@ -426,6 +424,23 @@ export function hasPaidSeasonMatricula(student?: any): boolean {
   }
 
   return false;
+}
+
+/**
+ * Comprueba si el bono seleccionado corresponde a una clase suelta / sesión puntual.
+ * Las clases sueltas nunca conllevan cobro de matrícula anual.
+ */
+export function isClaseSueltaBono(bonoId?: string | null): boolean {
+  if (!bonoId) return false;
+  const clean = bonoId.trim().toLowerCase();
+  return (
+    clean.includes("suelta") || 
+    clean.includes("1 clase") || 
+    clean === "clase_suelta" || 
+    clean === "clase suelta" ||
+    clean === "sesion puntual" ||
+    clean === "sesión puntual"
+  );
 }
 
 /**
@@ -459,6 +474,44 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
   const effectiveBasePrice = typeof basePrice === "number" && !isNaN(basePrice) && basePrice > 0
     ? basePrice
     : (fallbackPrices[bonoId] || 45);
+
+  const isClaseSuelta = isClaseSueltaBono(bonoId) || params.clasesCount === 1;
+
+  // 0. CLASE SUELTA (Sesión individual puntual): ¡NUNCA COBRA MATRÍCULA! (0,00 €)
+  if (isClaseSuelta) {
+    if (teacher) {
+      const discountPercentage = 10;
+      const discountAmount = Math.round(effectiveBasePrice * 0.10 * 100) / 100;
+      const bonoPrice = Math.round(effectiveBasePrice * 0.90 * 100) / 100;
+      return {
+        bonoId,
+        basePrice: effectiveBasePrice,
+        discountPercentage,
+        discountAmount,
+        bonoPrice,
+        matriculaCost: 0.00,
+        isExempt: true,
+        exemptionType: "clase_suelta",
+        exemptionLabel: "0,00€ (Sin Matrícula en Clase Suelta)",
+        totalToPay: bonoPrice,
+        isFirstBonoOfYear: false,
+      };
+    }
+
+    return {
+      bonoId,
+      basePrice: effectiveBasePrice,
+      discountPercentage: 0,
+      discountAmount: 0,
+      bonoPrice: effectiveBasePrice,
+      matriculaCost: 0.00,
+      isExempt: true,
+      exemptionType: "clase_suelta",
+      exemptionLabel: "0,00€ (Sin Matrícula en Clase Suelta)",
+      totalToPay: effectiveBasePrice,
+      isFirstBonoOfYear: false,
+    };
+  }
 
   // 0. Bono Promoción Septiembre 2026: ¡MATRÍCULA TOTALMENTE GRATUITA (0,00 €)!
   if (isPromo) {
