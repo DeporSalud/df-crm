@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase/client";
+import { isPromoSeptiembreBono, calculateBonoExpirationDate } from "@/lib/matriculaService";
 
 export const dynamic = "force-dynamic";
 
@@ -57,16 +58,16 @@ async function forwardCheckOrFallback(request: NextRequest) {
     const studentReports: any[] = [];
 
     for (const student of (students || [])) {
-      const plan = (student.plan_activo || "").toLowerCase();
-      const rawCreated = student.creado_en ? new Date(student.creado_en) : null;
-      const isPromo = plan.includes("septiembre") || plan.includes("promo") || (rawCreated !== null && !isNaN(rawCreated.getTime()) && rawCreated < new Date("2026-10-01T00:00:00Z"));
+      const isPromo = isPromoSeptiembreBono(student.plan_activo) || 
+        (student.plan_activo || "").toLowerCase().includes("promo sep") || 
+        (student.plan_activo || "").toLowerCase().includes("promoción septiembre") ||
+        (student.plan_activo || "").toLowerCase().includes("promocion septiembre");
 
       let expDate: Date;
       if (isPromo) {
         expDate = new Date("2026-09-30T20:00:00.000Z");
       } else {
-        const base = rawCreated && rawCreated >= new Date("2026-10-01T00:00:00Z") ? rawCreated : now;
-        expDate = new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
+        expDate = calculateBonoExpirationDate(student) || new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
       }
 
       const diffMs = expDate.getTime() - now.getTime();

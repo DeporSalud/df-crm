@@ -636,3 +636,94 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
     isFirstBonoOfYear: true,
   };
 }
+
+/**
+ * Calcula con precisión la fecha de caducidad oficial del bono activo del alumno.
+ * 
+ * Reglas de negocio:
+ * 1. Bonos Promo Septiembre (promo_sep_...): caducan el 30 de septiembre de 2026 (23:59h hora peninsular / 20:00 UTC).
+ * 2. Bonos Regulares (Bono 4, Bono 8, Bono 10, Pase Ilimitado, Clase Suelta):
+ *    Tienen una validez oficial de 1 mes (30 días naturales) desde la fecha de compra/activación
+ *    (Bono 8: 45 días, Bono 10: 60 días según tarifario).
+ *    NUNCA deben caducar el 30 de septiembre de 2026.
+ *    Si en localStorage existía un valor corrupto (<= 30/09/2026) fruto de una clasificación errónea previa,
+ *    se sanea automáticamente recalculando 30 días naturales desde la fecha de compra (o desde hoy).
+ */
+export function calculateBonoExpirationDate(
+  student?: any,
+  storedCaducidad?: string | null
+): Date | null {
+  if (!student) return null;
+
+  const plan = (student.plan_activo || "").toLowerCase().trim();
+  const classesRemaining = typeof student.clases_restantes === "number" ? student.clases_restantes : 0;
+  
+  // Si no tiene plan o es sin plan o no tiene clases restantes
+  const isBono = (
+    plan.includes("bono") || 
+    plan.includes("pase") || 
+    plan.includes("ilimitad") || 
+    plan.includes("suelta") || 
+    classesRemaining > 0
+  );
+  if (!isBono || classesRemaining <= 0) {
+    return null;
+  }
+
+  // 1. ¿Es un bono exclusivo de la Promoción de Septiembre?
+  const isExplicitPromo = isPromoSeptiembreBono(student.plan_activo) || 
+                          plan.includes("promo sep") || 
+                          plan.includes("septiembre") || 
+                          plan.includes("promoción septiembre") || 
+                          plan.includes("promocion septiembre");
+
+  if (isExplicitPromo) {
+    return new Date("2026-09-30T20:00:00.000Z");
+  }
+
+  // 2. Bonos Regulares (Bono 4, Bono 8, Bono 10, Pase Ilimitado, Clase Suelta):
+  // Validez de 30 días naturales (1 mes) desde la fecha de compra/activación.
+
+  // Si hay una fecha en storedCaducidad, verificar que sea legítima y NO un residuo corrupto de septiembre
+  if (storedCaducidad) {
+    const parsed = new Date(storedCaducidad);
+    // Sanación de error: un bono regular NO caduca el 30 de septiembre de 2026
+    if (!isNaN(parsed.getTime()) && parsed > new Date("2026-09-30T23:59:59.999Z")) {
+      return parsed;
+    }
+  }
+
+  // Si student tiene bono_caducidad en su objeto
+  if (student.bono_caducidad) {
+    const parsedObj = new Date(student.bono_caducidad);
+    if (!isNaN(parsedObj.getTime()) && parsedObj > new Date("2026-09-30T23:59:59.999Z")) {
+      return parsedObj;
+    }
+  }
+
+  // Comprobar fecha de compra en localStorage si está disponible en cliente
+  let purchaseDate: Date | null = null;
+  if (typeof window !== "undefined" && student.id) {
+    const pStr = localStorage.getItem(`df_bono_purchase_date_${student.id}`);
+    if (pStr) {
+      const pParsed = new Date(pStr);
+      if (!isNaN(pParsed.getTime())) {
+        purchaseDate = pParsed;
+      }
+    }
+  }
+
+  // Si no hay fecha de compra registrada, usamos la fecha actual como momento de activación
+  const baseDate = purchaseDate || new Date();
+  
+  // Días de validez según tipo de bono (Bono 8: 45 días, Bono 10: 60 días, Bono 4/Otros: 30 días)
+  let validityDays = 30;
+  if (plan.includes("bono 8")) {
+    validityDays = 45;
+  } else if (plan.includes("bono 10")) {
+    validityDays = 60;
+  }
+
+  const expDate = new Date(baseDate.getTime() + validityDays * 24 * 60 * 60 * 1000);
+  return expDate;
+}

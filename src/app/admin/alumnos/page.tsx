@@ -13,6 +13,7 @@ import { syncReservasFromSupabase } from "@/lib/openClassService";
 import { CheckCircle2 } from "lucide-react";
 
 import { getStoredIBAN, saveStoredIBAN, deleteStoredIBAN } from "@/lib/ibanStorage";
+import { isPromoSeptiembreBono, calculateBonoExpirationDate } from "@/lib/matriculaService";
 
 // Validation Helpers
 function validateDNI(dni: string): { valid: boolean; message?: string } {
@@ -890,18 +891,18 @@ export default function AlumnosPage() {
                               {student.clases_restantes} clases
                             </span>
                             {(() => {
-                              const plan = (student.plan_activo || "").toLowerCase();
-                              const rawCreated = student.creado_en ? new Date(student.creado_en) : null;
-                              const isPromo = plan.includes("septiembre") || plan.includes("promo sep") || plan.includes("promo") || (rawCreated !== null && !isNaN(rawCreated.getTime()) && rawCreated < new Date("2026-10-01T00:00:00Z"));
+                              const isPromo = isPromoSeptiembreBono(student.plan_activo) || 
+                                (student.plan_activo || "").toLowerCase().includes("promo sep") || 
+                                (student.plan_activo || "").toLowerCase().includes("promoción septiembre") ||
+                                (student.plan_activo || "").toLowerCase().includes("promocion septiembre");
                               let expDateStr = "";
                               if (isPromo) {
                                 expDateStr = "30/09/26";
-                              } else if (student.bono_caducidad) {
-                                expDateStr = new Date(student.bono_caducidad).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
-                              } else if (typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
-                                const base = rawCreated && rawCreated >= new Date("2026-10-01T00:00:00Z") ? rawCreated : new Date();
-                                const d = new Date(base.getTime() + 30 * 24 * 60 * 60 * 1000);
-                                expDateStr = d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
+                              } else {
+                                const exp = calculateBonoExpirationDate(student);
+                                if (exp) {
+                                  expDateStr = exp.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
+                                }
                               }
                               return expDateStr ? (
                                 <span className="text-[10px] text-slate-400 font-mono block mt-0.5" title={`Caducidad: ${expDateStr}`}>
