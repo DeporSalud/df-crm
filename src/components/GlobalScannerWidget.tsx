@@ -124,6 +124,12 @@ export default function GlobalScannerWidget() {
       }
     }
 
+    // Backward compatibility for Julia Santos previous OTP token 204253
+    if (cleanToken === "204253" || pureToken === "204253") {
+      const { data: julia } = await supabase.from("alumnos").select("*").ilike("email", "juliatletico12@gmail.com").limit(1).maybeSingle();
+      if (julia) return julia;
+    }
+
     // Fallback ILIKE
     if (cleanToken && cleanToken.length >= 3) {
       const { data: byLike } = await supabase

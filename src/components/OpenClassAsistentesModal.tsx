@@ -234,12 +234,23 @@ export default function OpenClassAsistentesModal({
         const hora = (clase?.hora_inicio || reserva.hora_inicio || "19:00").trim();
         const sessionDate = (activeDay?.dateISO || reserva.fecha_iso).trim();
         const classUUID = normalizeClaseId(reserva.clase_id);
+
+        const now = new Date();
+        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        let attendanceISO = now.toISOString();
+
+        if (sessionDate && sessionDate !== todayStr) {
+          const [y, m, d] = sessionDate.split("-").map(Number);
+          const [h, min] = hora.split(":").map(Number);
+          attendanceISO = new Date(y, (m || 1) - 1, d || 1, h || 0, min || 0, 0).toISOString();
+        }
+
         await supabase
           .from("asistencias")
           .insert([{
             alumno_id: reserva.alumno_id,
             clase_id: classUUID,
-            fecha_hora: `${sessionDate}T${hora}:00.000Z`
+            fecha_hora: attendanceISO
           }]);
       }
 

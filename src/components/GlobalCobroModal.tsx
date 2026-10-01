@@ -53,6 +53,7 @@ export default function GlobalCobroModal() {
   const [formMetodo, setFormMetodo] = useState<MetodoCobro>("Efectivo");
   const [formNotas, setFormNotas] = useState("");
   const [efectivoEntregado, setEfectivoEntregado] = useState<string>("");
+  const [isMatriculaExenta, setIsMatriculaExenta] = useState<boolean>(false);
 
   // Receipt Modal State
   const [receiptData, setReceiptData] = useState<PagoTransaccion | null>(null);
@@ -149,6 +150,8 @@ export default function GlobalCobroModal() {
 
     const nombrePagador = selectedStudent ? selectedStudent.nombre_completo : (searchStudentInput.trim() || "Cliente Mostrador");
 
+    const notasFinal = (isMatriculaExenta ? "[Matrícula Exenta por Dirección] " : "") + (formNotas.trim() || "");
+
     const nuevo = registrarNuevoPago({
       alumno_id: selectedStudent?.id,
       alumno_nombre: nombrePagador,
@@ -160,8 +163,30 @@ export default function GlobalCobroModal() {
       metodo_pago: formMetodo,
       sede: formSede,
       atendido_por: formSede === "tejar" ? "Recepción Studio 1" : "Recepción Studio 2",
-      notas: formNotas.trim() || undefined
+      notas: notasFinal.trim() || undefined
     });
+
+    if (selectedStudent?.id) {
+      let addClasses = 0;
+      const lower = formConcepto.toLowerCase();
+      if (lower.includes("suelta") || lower.includes("1 clase")) addClasses = 1;
+      else if (lower.includes("4")) addClasses = 4;
+      else if (lower.includes("8")) addClasses = 8;
+      else if (lower.includes("10")) addClasses = 10;
+      else if (lower.includes("ilimitad")) addClasses = 999;
+
+      if (addClasses > 0) {
+        const cur = typeof selectedStudent.clases_restantes === "number" ? selectedStudent.clases_restantes : 0;
+        supabase.from("alumnos").update({
+          clases_restantes: cur + addClasses,
+          plan_activo: formConcepto.trim()
+        }).eq("id", selectedStudent.id).then(() => {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new Event("df_reservas_updated"));
+          }
+        });
+      }
+    }
 
     logActivity({
       origen: "recepcion",
@@ -371,6 +396,37 @@ export default function GlobalCobroModal() {
                     className="w-full px-3 py-2 bg-[var(--color-bg)] border border-[var(--color-border)] rounded-xl text-white text-base font-bold font-mono text-[var(--color-secondary)] focus:outline-none focus:border-[var(--color-primary)]"
                   />
                 </div>
+              </div>
+
+              {/* Casilla de Exención Manual de Matrícula */}
+              <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isMatriculaExenta}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setIsMatriculaExenta(checked);
+                      if (checked) {
+                        setFormNotas((prev) => (prev ? prev + " • " : "") + "Matrícula exenta autorizada por Dirección (0,00€)");
+                      }
+                    }}
+                    className="w-4 h-4 rounded border-emerald-500/50 bg-[var(--color-bg)] text-emerald-500 focus:ring-emerald-400 cursor-pointer"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-white block">
+                      Eximir Matrícula (0,00 €)
+                    </span>
+                    <span className="text-[10px] text-emerald-300 block">
+                      Autorizado por Dirección: No cargar cuota de matrícula a este alumno.
+                    </span>
+                  </div>
+                </label>
+                {isMatriculaExenta && (
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/20 px-2 py-0.5 rounded border border-emerald-500/40 uppercase">
+                    Exento
+                  </span>
+                )}
               </div>
 
               {/* 4. Método de Pago */}
