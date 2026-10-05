@@ -326,9 +326,9 @@ export function recargarSesionesBono(id: string, clasesExtra: number, precioExtr
   const newTotal = target.total_clases + clasesExtra;
   const newRestantes = target.clases_restantes + clasesExtra;
   
-  // Extend expiration by 3 months from now
+  // Extend expiration by 30 days (1 month) from now
   const future = new Date();
-  future.setMonth(future.getMonth() + 3);
+  future.setDate(future.getDate() + 30);
   const newExp = future.toISOString().slice(0, 10);
 
   const updatedTarget: BonoAlumno = {
@@ -363,7 +363,7 @@ export function crearBonoAlumno(data: {
   const todayStr = today.toISOString().slice(0, 10);
 
   const expDate = new Date();
-  expDate.setDate(expDate.getDate() + (data.dias_validez || 90));
+  expDate.setDate(expDate.getDate() + (data.dias_validez || 30));
   const expStr = expDate.toISOString().slice(0, 10);
 
   const nuevoBono: BonoAlumno = {

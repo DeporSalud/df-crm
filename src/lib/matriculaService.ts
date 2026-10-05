@@ -126,6 +126,10 @@ export const TEACHER_EMAILS = [
   "nerea.olivares@dancefactory.es",
   "alejandro.rovina@dancefactory.es",
   "nil.barbera@dancefactory.es",
+  "mario.gadea@dancefactory.es",
+  "daniela.merida@dancefactory.es",
+  "marta.garci.013@gmail.com",
+  "marta.garcia@dancefactory.es",
   "ruth.dominguez@dancefactory.es",
   "admin@dancefactory.es"
 ];
@@ -139,7 +143,12 @@ export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: s
   if (student?.es_docente === true || student?.es_profesor === true) return true;
 
   const email = (student?.email || emailOrId || "").trim().toLowerCase();
-  if (email && (TEACHER_EMAILS.includes(email) || email.endsWith("@dancefactory.es"))) {
+  if (email && (TEACHER_EMAILS.includes(email) || email === "marta.garci.013@gmail.com" || email.endsWith("@dancefactory.es"))) {
+    return true;
+  }
+
+  const id = (student?.id || emailOrId || "").trim().toLowerCase();
+  if (id === "e9cc4200-aba2-4e67-8191-808c40e75621" || id === "1014") {
     return true;
   }
 
@@ -149,7 +158,12 @@ export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: s
   }
 
   const nameLower = (student?.nombre_completo || "").toLowerCase();
-  if (nameLower.includes("(docente)") || nameLower.includes("(profesor)")) {
+  if (
+    nameLower.includes("(docente)") || 
+    nameLower.includes("(profesor)") || 
+    nameLower.includes("marta garcía vázquez") ||
+    nameLower.includes("marta garcia vazquez")
+  ) {
     return true;
   }
 
@@ -716,12 +730,15 @@ export function calculateBonoExpirationDate(
   // Si no hay fecha de compra registrada, usamos la fecha actual como momento de activación
   const baseDate = purchaseDate || new Date();
   
-  // Días de validez según tipo de bono (Bono 8: 45 días, Bono 10: 60 días, Bono 4/Otros: 30 días)
+  // Días de validez según tipo de bono:
+  // Regla oficial: TODOS los bonos de profesores caducan estrictamente a los 30 días naturales (1 mes).
+  // Bonos regulares de 4, 8 y 10 clases tienen validez oficial de 30 días naturales (1 mes).
+  const isTeacher = isTeacherProfile(student);
   let validityDays = 30;
-  if (plan.includes("bono 8")) {
-    validityDays = 45;
-  } else if (plan.includes("bono 10")) {
-    validityDays = 60;
+  if (isTeacher || plan.includes("docente") || plan.includes("profesor")) {
+    validityDays = 30;
+  } else {
+    validityDays = 30;
   }
 
   const expDate = new Date(baseDate.getTime() + validityDays * 24 * 60 * 60 * 1000);

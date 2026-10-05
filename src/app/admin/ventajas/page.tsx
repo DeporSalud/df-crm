@@ -44,6 +44,7 @@ import { registrarNuevoPago } from "@/lib/pagosService";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { supabase } from "@/lib/supabase/client";
+import { calculateBonoExpirationDate } from "@/lib/matriculaService";
 
 export default function AdminVentajasPage() {
   const [items, setItems] = useState<VentajaItem[]>([]);
@@ -80,7 +81,7 @@ export default function AdminVentajasPage() {
   const [bonoFormClases, setBonoFormClases] = useState(10);
   const [bonoFormPrecio, setBonoFormPrecio] = useState(79.00);
   const [bonoFormSede, setBonoFormSede] = useState<"tejar" | "castilla">("tejar");
-  const [bonoFormDias, setBonoFormDias] = useState(90);
+  const [bonoFormDias, setBonoFormDias] = useState(30);
   const [bonoRegistrarCobro, setBonoRegistrarCobro] = useState(true);
 
   // Modal State for Recharge Bono
@@ -158,14 +159,19 @@ export default function AdminVentajasPage() {
           let fechaCaducidad = "2026-09-30";
           if (planLower.includes("promo") || planLower.includes("septiembre")) {
             fechaCaducidad = "2026-09-30";
-          } else if (s.creado_en) {
-            const expDate = new Date(s.creado_en);
-            expDate.setDate(expDate.getDate() + 90);
-            fechaCaducidad = expDate.toISOString().slice(0, 10);
           } else {
-            const expDate = new Date();
-            expDate.setDate(expDate.getDate() + 90);
-            fechaCaducidad = expDate.toISOString().slice(0, 10);
+            const calculatedExp = calculateBonoExpirationDate(s);
+            if (calculatedExp) {
+              fechaCaducidad = calculatedExp.toISOString().slice(0, 10);
+            } else if (s.creado_en) {
+              const expDate = new Date(s.creado_en);
+              expDate.setDate(expDate.getDate() + 30);
+              fechaCaducidad = expDate.toISOString().slice(0, 10);
+            } else {
+              const expDate = new Date();
+              expDate.setDate(expDate.getDate() + 30);
+              fechaCaducidad = expDate.toISOString().slice(0, 10);
+            }
           }
 
           let estado: "Activo" | "Agotado" | "Caducado" = "Activo";
@@ -676,7 +682,7 @@ export default function AdminVentajasPage() {
                 setBonoFormClases(10);
                 setBonoFormPrecio(79.00);
                 setBonoFormSede("tejar");
-                setBonoFormDias(90);
+                setBonoFormDias(30);
                 setIsBonoModalOpen(true);
               }}
               className="bg-gradient-to-r from-amber-500 to-amber-600 hover:brightness-110 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all shadow-lg shadow-amber-500/20 flex items-center gap-2 shrink-0 cursor-pointer"
@@ -1576,7 +1582,7 @@ export default function AdminVentajasPage() {
                     type="number"
                     min="1"
                     value={bonoFormDias}
-                    onChange={(e) => setBonoFormDias(parseInt(e.target.value, 10) || 90)}
+                    onChange={(e) => setBonoFormDias(parseInt(e.target.value, 10) || 30)}
                     className="w-full px-3 py-2 bg-[var(--color-bg)] border border-[var(--color-border)] rounded-xl text-white font-mono focus:outline-none focus:border-[var(--color-primary)]"
                   />
                 </div>
@@ -1659,7 +1665,7 @@ export default function AdminVentajasPage() {
                   onChange={(e) => setRecargaPrecio(parseFloat(e.target.value) || 0)}
                   className="w-full px-3 py-2 bg-[var(--color-bg)] border border-[var(--color-border)] rounded-xl text-white font-mono font-bold text-emerald-400 focus:outline-none focus:border-[var(--color-primary)]"
                 />
-                <p className="text-[10px] text-slate-400 mt-1">Se prorrogará automáticamente la fecha de caducidad por 3 meses adicionales.</p>
+                <p className="text-[10px] text-slate-400 mt-1">Se prorrogará automáticamente la fecha de caducidad por 30 días adicionales.</p>
               </div>
 
               <div className="pt-3 border-t border-[var(--color-border)] flex items-center justify-end gap-2.5">

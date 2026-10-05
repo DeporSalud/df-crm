@@ -49,7 +49,8 @@ const TEACHER_PINS: Record<string, { name: string; isAdmin?: boolean }> = {
   "1010": { name: "ALEJANDRO ROVINA" },
   "1011": { name: "NIL BARBERÁ" },
   "1012": { name: "MARIO GADEA" },
-  "1013": { name: "DANIELA MÉRIDA" }
+  "1013": { name: "DANIELA MÉRIDA" },
+  "1014": { name: "MARTA GARCÍA VÁZQUEZ" }
 };
 
 // Safe haptic feedback helper
@@ -230,6 +231,7 @@ export default function ProfesorPortal() {
     "NIL BARBERÁ",
     "MARIO GADEA",
     "DANIELA MÉRIDA",
+    "MARTA GARCÍA VÁZQUEZ",
     "RUTH DOMÍNGUEZ"
   ];
 
@@ -420,11 +422,13 @@ export default function ProfesorPortal() {
   const fetchTeacherStudentProfile = async () => {
     if (!selectedProfesor) return;
 
-    let { data: existing } = await supabase
-      .from("alumnos")
-      .select("*")
-      .ilike("nombre_completo", `%${selectedProfesor}%`)
-      .maybeSingle();
+    let query = supabase.from("alumnos").select("*");
+    if (selectedProfesor.toUpperCase().includes("MARTA")) {
+      query = query.or("id.eq.e9cc4200-aba2-4e67-8191-808c40e75621,email.eq.marta.garci.013@gmail.com,nombre_completo.ilike.%Marta García%");
+    } else {
+      query = query.ilike("nombre_completo", `%${selectedProfesor}%`);
+    }
+    let { data: existing } = await query.maybeSingle();
 
     if (!existing) {
       // Auto-provision teacher student profile with special teacher plan
