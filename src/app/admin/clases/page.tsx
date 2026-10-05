@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2 } from "lucide-react";
@@ -145,9 +145,10 @@ export default function ClasesPage() {
   const [clases, setClases] = useState<ClaseCuadrante[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // Filter for profesor, class name, or studio
+  // Filter for profesor, class name, studio, or class type
   const [profesorFilter, setProfesorFilter] = useState("");
   const [studioFilter, setStudioFilter] = useState<"all" | "studio1" | "studio2">("all");
+  const [classTypeFilter, setClassTypeFilter] = useState<"all" | "openclass" | "regular">("all");
 
   // Roster modal states
   const [isRosterOpen, setIsRosterOpen] = useState(false);
@@ -186,6 +187,28 @@ export default function ClasesPage() {
   };
 
   const [formData, setFormData] = useState(initialFormState);
+
+  // Lista consolidada de profesores para autocompletado y selección rápida
+  const profesoresDisponibles = useMemo(() => {
+    const defaults = [
+      "Andrea Soto",
+      "Lucía Zamorano",
+      "Lucía Muñoz",
+      "Eva Leiva",
+      "Lucas López",
+      "Paula Jiménez",
+      "Marta Garcia Vázquez",
+      "Abel y Nayara",
+      "Darío Humberto",
+      "Nerea Olivares",
+      "Alejandro Rovina",
+      "Nil Barberá",
+      "Mario Gadea",
+      "Carlos & Carmen"
+    ];
+    const fromClases = clases.map(c => (c.profesor || "").trim()).filter(Boolean);
+    return Array.from(new Set([...defaults, ...fromClases])).sort((a, b) => a.localeCompare(b, "es"));
+  }, [clases]);
 
   const fetchClasesAndEnrollments = async () => {
     setIsLoading(true);
@@ -241,6 +264,31 @@ export default function ClasesPage() {
     syncReservasFromSupabase();
     fetchClasesAndEnrollments();
   }, [activeSede]);
+
+  // Soporte para parámetros URL (?filter=openclass o ?edit=CLASE_ID)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const filterParam = params.get("filter");
+      if (filterParam === "openclass") {
+        setClassTypeFilter("openclass");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && clases.length > 0) {
+      const params = new URLSearchParams(window.location.search);
+      const editId = params.get("edit");
+      if (editId) {
+        const target = clases.find(c => c.id === editId);
+        if (target) {
+          handleOpenEdit(target);
+          window.history.replaceState({}, "", window.location.pathname);
+        }
+      }
+    }
+  }, [clases]);
 
   const handleOpenCreate = () => {
     setIsEditing(false);
@@ -515,8 +563,12 @@ export default function ClasesPage() {
     });
   };
 
-  // Filter the classes based on profesorFilter and studioFilter
+  // Filter the classes based on profesorFilter, studioFilter and classTypeFilter
   const filteredClases = clases.filter(c => {
+    const isOC = isClassOpenClass(c);
+    if (classTypeFilter === "openclass" && !isOC) return false;
+    if (classTypeFilter === "regular" && isOC) return false;
+
     const matchesSearch = 
       (c.profesor || "").toLowerCase().includes(profesorFilter.toLowerCase()) ||
       (c.nombre_clase || "").toLowerCase().includes(profesorFilter.toLowerCase()) ||
@@ -552,6 +604,42 @@ export default function ClasesPage() {
         </div>
 
         <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap sm:flex-nowrap">
+          {/* Quick Filter: Tipo de Clase (Todas / Open Classes / Regulares) */}
+          <div className="flex items-center gap-1 bg-[var(--color-bg-card)] border border-[var(--color-border)] p-1 rounded-xl">
+            <button
+              onClick={() => setClassTypeFilter("all")}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors ${
+                classTypeFilter === "all"
+                  ? "bg-[var(--color-primary)] text-white shadow-sm"
+                  : "text-[var(--color-text-secondary)] hover:text-white"
+              }`}
+            >
+              Todas
+            </button>
+            <button
+              onClick={() => setClassTypeFilter("openclass")}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${
+                classTypeFilter === "openclass"
+                  ? "bg-cyan-500 text-slate-950 font-black shadow-sm shadow-cyan-500/20"
+                  : "text-cyan-400 hover:text-white"
+              }`}
+              title="Filtrar exclusivamente Open Classes para editar horarios o profesores"
+            >
+              <Sparkles size={12} />
+              <span>Open Classes ({clases.filter(isClassOpenClass).length})</span>
+            </button>
+            <button
+              onClick={() => setClassTypeFilter("regular")}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors ${
+                classTypeFilter === "regular"
+                  ? "bg-slate-700 text-white shadow-sm"
+                  : "text-[var(--color-text-secondary)] hover:text-white"
+              }`}
+            >
+              Regulares
+            </button>
+          </div>
+
           {/* Studio Quick Filter */}
           <div className="flex items-center gap-1 bg-[var(--color-bg-card)] border border-[var(--color-border)] p-1 rounded-xl">
             <button
@@ -977,12 +1065,21 @@ export default function ClasesPage() {
                   <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Profesor / Docente *</label>
                   <input 
                     type="text" 
+                    list="profesores-cuadrante-list"
                     value={formData.profesor}
                     onChange={(e) => setFormData({...formData, profesor: e.target.value})}
-                    className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-xl px-3 py-2 outline-none focus:border-[var(--color-primary)]" 
-                    placeholder="Nombre del Profesor" 
+                    className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-xl px-3 py-2 outline-none focus:border-[var(--color-primary)] font-medium" 
+                    placeholder="Elige o escribe el nombre del profesor..." 
                     required 
                   />
+                  <datalist id="profesores-cuadrante-list">
+                    {profesoresDisponibles.map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
+                  <span className="text-[10px] text-slate-400 mt-1 block">
+                    Selecciona de la lista o escribe libremente un nuevo profesor o sustituto.
+                  </span>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Aforo Máximo (Plazas) *</label>

@@ -12,7 +12,7 @@ import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
 import { isRegularClassStudent, isTeacherProfile } from "@/lib/matriculaService";
 import { 
   Calendar, Users, Clock, Sparkles, CheckCircle2, ChevronRight, 
-  CalendarDays, Flame, Building2 
+  CalendarDays, Flame, Building2, Edit3 
 } from "lucide-react";
 import {
   getUpcomingCalendarDates,
@@ -1231,9 +1231,20 @@ export default function AdminDashboardRecepcion() {
                               {clase.hora_inicio}
                             </span>
                           </div>
-                          <div className="text-xs text-[var(--color-text-secondary)] flex justify-between mt-1">
-                            <span>Prof: {clase.profesor}</span>
-                            <span>Aforo: {clase.aforo_maximo} alumnos</span>
+                          <div className="text-xs text-[var(--color-text-secondary)] flex justify-between items-center mt-1">
+                            <span>Prof: <strong className="text-slate-200">{clase.profesor}</strong></span>
+                            <div className="flex items-center gap-3">
+                              <span>Aforo: {clase.aforo_maximo}</span>
+                              <a
+                                href={`/admin/clases?edit=${clase.id}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[11px] text-[var(--color-primary)] hover:underline inline-flex items-center gap-1 font-semibold"
+                                title="Editar profesor u horario de esta clase"
+                              >
+                                <Edit3 size={11} />
+                                <span>Editar</span>
+                              </a>
+                            </div>
                           </div>
 
                           {isOC && (
@@ -1447,7 +1458,7 @@ export default function AdminDashboardRecepcion() {
                           </div>
 
                           {/* Botones de Acción (Acceptance Criteria R2) */}
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-[var(--color-border)]/60">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-[var(--color-border)]/60">
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1458,11 +1469,23 @@ export default function AdminDashboardRecepcion() {
                                   calendarDay: selectedCalendarDay
                                 });
                               }}
-                              className="py-1.5 px-2.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-bold text-xs transition-all flex items-center justify-center gap-1 cursor-pointer"
+                              className="py-1.5 px-2 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-bold text-xs transition-all flex items-center justify-center gap-1 cursor-pointer truncate"
                             >
-                              <Users size={13} />
-                              <span>{reservasCount === 0 ? "0 reservas para este día" : `Ver Alumnos Apuntados (${reservasCount})`}</span>
+                              <Users size={13} className="shrink-0" />
+                              <span className="truncate">{reservasCount === 0 ? "0 reservas" : `Alumnos (${reservasCount})`}</span>
                             </button>
+
+                            <a
+                              href={`/admin/clases?edit=${clase.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                              }}
+                              className="py-1.5 px-2 rounded-lg bg-[var(--color-bg-card)] hover:bg-[var(--color-primary)]/15 text-[var(--color-primary)] hover:text-white border border-[var(--color-primary)]/30 font-bold text-xs transition-all flex items-center justify-center gap-1 cursor-pointer text-center"
+                              title="Modificar profesor, horario o aforo de esta Open Class"
+                            >
+                              <Edit3 size={13} className="shrink-0" />
+                              <span>Editar Profe / Hora</span>
+                            </a>
 
                             <button
                               type="button"
@@ -1474,13 +1497,13 @@ export default function AdminDashboardRecepcion() {
                                   text: `Clase "${clase.nombre_clase}" seleccionada para el lector de accesos QR/NFC.`
                                 });
                               }}
-                              className={`py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                              className={`py-1.5 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer ${
                                 isSelected
                                   ? "bg-emerald-500 text-slate-950 font-black shadow-md shadow-emerald-500/20"
                                   : "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
                               }`}
                             >
-                              {isSelected ? "✓ Activa para Escáner" : "Seleccionar para Escáner"}
+                              {isSelected ? "✓ En Escáner" : "Seleccionar"}
                             </button>
                           </div>
                         </div>
