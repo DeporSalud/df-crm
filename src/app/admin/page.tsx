@@ -174,9 +174,11 @@ export default function AdminDashboardRecepcion() {
     window.addEventListener("df_pending_bonos_updated", loadPendingBonoRequests);
     window.addEventListener("df_security_lock_updated", loadTeacherLockouts);
     const interval = setInterval(() => {
-      loadPendingBonoRequests();
-      loadTeacherLockouts();
-    }, 2500);
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        loadPendingBonoRequests();
+        loadTeacherLockouts();
+      }
+    }, 30000);
 
     return () => {
       window.removeEventListener("storage", loadPendingBonoRequests);

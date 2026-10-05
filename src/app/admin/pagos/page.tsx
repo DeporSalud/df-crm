@@ -451,7 +451,11 @@ export default function PagosYFacturacionPage() {
     window.addEventListener("df_pending_bonos_updated", handleUpdate);
     window.addEventListener("storage", handleUpdate);
 
-    const interval = setInterval(loadData, 3000);
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        loadData();
+      }
+    }, 30000);
 
     return () => {
       window.removeEventListener("df_pagos_updated", handleUpdate);
