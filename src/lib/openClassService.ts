@@ -606,10 +606,23 @@ export function getOpenClassSessionStatus(
 /**
  * Detecta sesiones dentro de las 5 horas previas con menos de 4 alumnos,
  * cancela la sesión y reembolsa automáticamente 1 clase al bono del alumno en Supabase.
+ * 
+ * Reglas de seguridad e idempotencia:
+ * 1. Opera ÚNICAMENTE sobre sesiones FUTURAS (horasRestantes > 0 && horasRestantes <= OPEN_CLASS_CUTOFF_HOURS).
+ * 2. Utiliza un registro persistente (df_suspended_sessions_v1) para garantizar que una sesión jamás se suspenda ni reembolse más de una vez.
+ * 3. Al reembolsar, elimina el registro en alumnos_clases en Supabase para que syncReservasFromSupabase no lo vuelva a importar.
  */
 export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ canceladasCount: number; alumnosReembolsados: string[] }> {
   if (typeof window === "undefined") return { canceladasCount: 0, alumnosReembolsados: [] };
   
+  // Conjunto de sesiones ya suspendidas previamente
+  let suspendedSessions: string[] = [];
+  try {
+    const raw = localStorage.getItem("df_suspended_sessions_v1");
+    if (raw) suspendedSessions = JSON.parse(raw);
+  } catch {}
+  const suspendedSet = new Set(suspendedSessions);
+
   const current = getOpenClassReservas();
   let updated = false;
   const reembolsados: string[] = [];
@@ -623,27 +636,43 @@ export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ cancelad
     }
   });
 
-  for (const [, reservas] of Object.entries(sessionsMap)) {
+  for (const [sessionKey, reservas] of Object.entries(sessionsMap)) {
+    // Si la sesión ya fue suspendida y reembolsada, no volver a procesar
+    if (suspendedSet.has(sessionKey)) continue;
+
     if (reservas.length > 0 && reservas.length < OPEN_CLASS_MIN_STUDENTS) {
       const sample = reservas[0];
       const horasRestantes = getHorasRestantesParaSesion(sample.fecha_iso, sample.hora_inicio);
       
-      // Si quedan menos de 5h y la clase es hoy/futura reciente
-      if (horasRestantes < OPEN_CLASS_CUTOFF_HOURS && horasRestantes > -24) {
+      // ÚNICAMENTE sesiones futuras dentro del margen de 5 horas previas
+      if (horasRestantes > 0 && horasRestantes <= OPEN_CLASS_CUTOFF_HOURS) {
+        suspendedSet.add(sessionKey);
+
         for (const r of reservas) {
           r.estado = "Cancelada";
           r.asistido = false;
           updated = true;
           reembolsados.push(r.alumno_nombre || r.alumno_id);
 
-          // Reembolsar 1 clase en Supabase si tiene saldo de bono
+          // Reembolsar 1 clase en Supabase si tiene saldo de bono y eliminar reserva de alumnos_clases
           try {
-            const { data: st } = await supabase.from("alumnos").select("id, clases_restantes, plan_activo").eq("id", r.alumno_id).maybeSingle();
+            const { data: st } = await supabase
+              .from("alumnos")
+              .select("id, clases_restantes, plan_activo")
+              .eq("id", r.alumno_id)
+              .maybeSingle();
+
             if (st && typeof st.clases_restantes === "number") {
               await supabase.from("alumnos").update({
                 clases_restantes: st.clases_restantes + 1
               }).eq("id", st.id);
             }
+
+            // Eliminar asignación de la base de datos para evitar re-lectura activa
+            await supabase.from("alumnos_clases")
+              .delete()
+              .eq("alumno_id", r.alumno_id)
+              .eq("clase_id", r.clase_id);
           } catch (e) {
             console.error("Error reembolsando saldo a alumno por aforo mínimo:", e);
           }
@@ -653,6 +682,9 @@ export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ cancelad
   }
 
   if (updated) {
+    try {
+      localStorage.setItem("df_suspended_sessions_v1", JSON.stringify(Array.from(suspendedSet)));
+    } catch {}
     saveOpenClassReservas(current);
     window.dispatchEvent(new Event("df_reservas_updated"));
   }
@@ -919,7 +951,6 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
     }
 
     saveOpenClassReservas(merged);
-    await verificarYSuspenderSesionesBajoAforo();
     return getOpenClassReservas();
   } catch (err) {
     console.error("Error in syncReservasFromSupabase:", err);
@@ -1193,7 +1224,7 @@ export async function resolveClassForCheckIn(
     } catch {}
   }
 
-  // 4. COMPROBAR CLASE ACTIVA EN LA SEDE PARA EL HORARIO ACTUAL
+  // 4. COMPROBAR CLASE REGULAR ACTIVA EN LA SEDE PARA EL HORARIO ACTUAL
   try {
     let query = supabase
       .from("clases_cuadrante")
@@ -1213,10 +1244,16 @@ export async function resolveClassForCheckIn(
       for (const c of activeClasses) {
         const startMin = parseTimeToMinutes(c.hora_inicio);
         const endMin = parseTimeToMinutes(c.hora_fin);
-        const isOpen = (c.nombre_clase || "").toUpperCase().includes("OPEN");
+        const isOpen = (c.nombre_clase || "").toUpperCase().includes("OPEN") || c.tipo_clase === "Open Class";
 
-        // Si el alumno es regular, NO le asignamos una Open Class por proximidad
-        if (isRegularOrUnlimited && isOpen) continue;
+        // CRÍTICO: NUNCA asignar Open Class en el fallback de proximidad.
+        // Las Open Classes requieren reserva previa confirmada (comprobada en el paso 2).
+        if (isOpen) continue;
+
+        // Comprobar sede del alumno si se conoce
+        if (student.sede && c.sede && normalizeSede(student.sede) !== normalizeSede(c.sede)) {
+          continue;
+        }
 
         if (currentMinutes >= (startMin - 35) && currentMinutes <= (endMin + 10)) {
           const delta = Math.abs(currentMinutes - startMin);
@@ -1228,14 +1265,13 @@ export async function resolveClassForCheckIn(
       }
 
       if (candidate) {
-        const isOpen = (candidate.nombre_clase || "").toUpperCase().includes("OPEN");
         return {
           claseId: candidate.id,
           claseNombre: candidate.nombre_clase,
           profesor: candidate.profesor,
           sede: candidate.sede,
-          isRegular: !isOpen,
-          isOpenClass: isOpen
+          isRegular: true,
+          isOpenClass: false
         };
       }
     }
@@ -1243,10 +1279,10 @@ export async function resolveClassForCheckIn(
     console.warn("[resolveClassForCheckIn] Error buscando clase activa:", err);
   }
 
-  // 5. ACCESO GENERAL (Ninguna clase asignada ni Open Class)
+  // 5. ACCESO A INSTALACIONES (Ninguna clase regular activa en este horario)
   return {
     claseId: null,
-    claseNombre: "Acceso General a Instalaciones",
+    claseNombre: "Acceso a Instalaciones",
     isRegular: isRegularOrUnlimited,
     isOpenClass: false
   };

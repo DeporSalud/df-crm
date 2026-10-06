@@ -544,7 +544,7 @@ export default function ProfesorPortal() {
   }, [selectedProfesor, isAuthenticated]);
 
   // 3. Load Roster and Attendance for Selected Class & Date
-  const loadRosterForDate = async (clase: any, dateIso: string) => {
+  const loadRosterForDate = async (clase: any, dateIso: string, isSilentRefresh = false) => {
     if (!clase?.id) {
       setRoster([]);
       setAsistenciasRegistradas([]);
@@ -552,7 +552,9 @@ export default function ProfesorPortal() {
       return;
     }
 
-    setIsRosterLoading(true);
+    if (!isSilentRefresh) {
+      setIsRosterLoading(true);
+    }
     try {
       const classUUID = normalizeClaseId(clase.id);
 
@@ -778,15 +780,20 @@ export default function ProfesorPortal() {
   };
 
   useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
     const handleReservasUpdated = () => {
       setOpenClassReservasVersion(v => v + 1);
-      if (selectedClase && selectedSessionDate) {
-        loadRosterForDate(selectedClase, selectedSessionDate);
-      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (selectedClase && selectedSessionDate) {
+          loadRosterForDate(selectedClase, selectedSessionDate, true);
+        }
+      }, 500);
     };
     window.addEventListener("df_reservas_updated", handleReservasUpdated);
     window.addEventListener("storage", handleReservasUpdated);
     return () => {
+      if (timer) clearTimeout(timer);
       window.removeEventListener("df_reservas_updated", handleReservasUpdated);
       window.removeEventListener("storage", handleReservasUpdated);
     };

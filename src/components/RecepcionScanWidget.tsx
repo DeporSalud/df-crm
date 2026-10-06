@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useScannerBridge } from '@/hooks/useScannerBridge';
 import { supabase } from '@/lib/supabase/client';
 import { logActivity } from '@/lib/activityLogger';
+import { findStudentByCodeOrText } from '@/lib/openClassService';
 
 interface ScanResult {
   status: 'idle' | 'success' | 'error';
@@ -42,94 +43,8 @@ export default function RecepcionScanWidget({
       second: '2-digit'
     });
 
-    // 1. Limpieza y extracción del token (DF-STUDENT-XXXX, UUID, DNI o Token NFC)
-    const normalized = trimmed.replace(/[/\\':_.]/g, '-').trim();
-    const cleanToken = normalized
-      .replace(/^DF-STUDENT-/i, '')
-      .replace(/^DF-ALUMNO-/i, '')
-      .replace(/^STUDENT-/i, '')
-      .replace(/^ALUMNO-/i, '')
-      .replace(/^DF-/i, '')
-      .trim();
-    const pureToken = trimmed.replace(/[^a-zA-Z0-9]/g, '').replace(/^(DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, '').trim();
-
-    const candidates = Array.from(new Set([
-      cleanToken,
-      pureToken,
-      normalized,
-      trimmed,
-      `DF-${cleanToken}`,
-      `DF-${pureToken}`
-    ])).filter(Boolean);
-
-    // 2. Consulta a Supabase en tabla alumnos de Dance Factory
-    let alumno: any = null;
-    for (const token of candidates) {
-      // Búsqueda por nfc_token
-      const { data: byNfc } = await supabase
-        .from('alumnos')
-        .select('*')
-        .eq('nfc_token', token)
-        .limit(1)
-        .maybeSingle();
-      if (byNfc) {
-        alumno = byNfc;
-        break;
-      }
-
-      // Búsqueda por DNI
-      const { data: byDni } = await supabase
-        .from('alumnos')
-        .select('*')
-        .ilike('dni', token)
-        .limit(1)
-        .maybeSingle();
-      if (byDni) {
-        alumno = byDni;
-        break;
-      }
-
-      // Búsqueda por UUID id (solo si es un UUID válido)
-      if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
-        const { data: byId } = await supabase
-          .from('alumnos')
-          .select('*')
-          .eq('id', token)
-          .limit(1)
-          .maybeSingle();
-        if (byId) {
-          alumno = byId;
-          break;
-        }
-      }
-    }
-
-    // Backward compatibility for Julia Santos previous OTP token 204253
-    if (!alumno && (cleanToken === "204253" || pureToken === "204253")) {
-      const { data: julia } = await supabase.from("alumnos").select("*").ilike("email", "juliatletico12@gmail.com").limit(1).maybeSingle();
-      if (julia) alumno = julia;
-    }
-
-    // Fallback con LIKE si no se encontró exacto (en columnas de texto)
-    if (!alumno && cleanToken && cleanToken.length >= 3) {
-      const { data: byLike } = await supabase
-        .from('alumnos')
-        .select('*')
-        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%`)
-        .limit(1)
-        .maybeSingle();
-      if (byLike) alumno = byLike;
-    }
-
-    if (!alumno && pureToken && pureToken.length >= 3 && pureToken !== cleanToken) {
-      const { data: byPure } = await supabase
-        .from('alumnos')
-        .select('*')
-        .or(`nfc_token.ilike.%${pureToken}%,dni.ilike.%${pureToken}%,email.ilike.%${pureToken}%,telefono.ilike.%${pureToken}%`)
-        .limit(1)
-        .maybeSingle();
-      if (byPure) alumno = byPure;
-    }
+    // Búsqueda ultra robusta por token NFC, QR, DNI, teléfono, email o nombre completo
+    const alumno = await findStudentByCodeOrText(trimmed);
 
     // Si no existe el alumno
     if (!alumno) {

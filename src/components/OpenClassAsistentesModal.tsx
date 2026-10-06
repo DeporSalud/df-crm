@@ -136,12 +136,19 @@ export default function OpenClassAsistentesModal({
 
   // Listen to cross-component reservation changes
   useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
     const handleUpdated = () => {
-      loadReservas();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!clase || !currentCalendarDay) return;
+        const list = getReservasPorClaseYSesion(clase.id, currentCalendarDay.dateISO);
+        setReservas(list);
+      }, 500);
     };
     window.addEventListener("df_reservas_updated", handleUpdated);
     window.addEventListener("storage", handleUpdated);
     return () => {
+      if (timer) clearTimeout(timer);
       window.removeEventListener("df_reservas_updated", handleUpdated);
       window.removeEventListener("storage", handleUpdated);
     };

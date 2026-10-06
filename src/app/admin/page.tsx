@@ -261,12 +261,17 @@ export default function AdminDashboardRecepcion() {
 
   // Listen to reservation updates across portals
   useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
     const handleReservasUpdated = () => {
-      setReservasTick(prev => prev + 1);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setReservasTick(prev => prev + 1);
+      }, 500);
     };
     window.addEventListener("df_reservas_updated", handleReservasUpdated);
     window.addEventListener("storage", handleReservasUpdated);
     return () => {
+      if (timer) clearTimeout(timer);
       window.removeEventListener("df_reservas_updated", handleReservasUpdated);
       window.removeEventListener("storage", handleReservasUpdated);
     };
