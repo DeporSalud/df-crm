@@ -30,7 +30,9 @@ import {
   marcarAsistenciaPorAlumnoYSesion,
   marcarAsistenciaPorAlumnoEnFecha,
   syncReservasFromSupabase,
-  getReservasCountForDate
+  getReservasCountForDate,
+  findStudentByCodeOrText,
+  resolveClassForCheckIn
 } from "@/lib/openClassService";
 
 const playSuccessSound = () => {
@@ -424,15 +426,12 @@ export default function AdminDashboardRecepcion() {
   };
 
   const processCheckIn = async (student: any) => {
-    if (!selectedClaseId) {
-      triggerError('Por favor, selecciona una clase primero.');
-      return;
-    }
-
     if (student.estado !== 'Activo') {
       triggerError(`El alumno ${student.nombre_completo} está Inactivo.`);
       return;
     }
+
+    const resolved = await resolveClassForCheckIn(student, activeSede, selectedClaseId);
 
     const planLower = (student.plan_activo || "").toLowerCase();
     const isRegularOrUnlimited = 
@@ -442,12 +441,12 @@ export default function AdminDashboardRecepcion() {
       planLower.includes("cuota") ||
       student.clases_restantes === null;
 
-    // 1. Register asistencia (No restamos clases aquí: ya se descontaron al apuntarse en la app)
+    // 1. Register asistencia
     const { error: assistError } = await supabase
       .from("asistencias")
       .insert([{
         alumno_id: student.id,
-        clase_id: selectedClaseId
+        ...(resolved.claseId ? { clase_id: resolved.claseId } : {})
       }]);
 
     if (assistError) {
@@ -455,17 +454,11 @@ export default function AdminDashboardRecepcion() {
       return;
     }
 
-    // 2. Si la clase seleccionada es una Open Class de hoy, sincronizar asistencia en la reserva
-    let openClassMarked = false;
-    const todayNow = new Date();
-    const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
-    if (selectedClaseId && (selectedCalendarDay?.isToday || selectedCalendarDay?.dateISO === todayISO)) {
-      openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, todayISO);
-    }
-    if (!openClassMarked) {
-      openClassMarked = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
-    }
-    if (openClassMarked) {
+    // 2. Si la clase resuelta es una Open Class de hoy, sincronizar asistencia en la reserva
+    if (resolved.isOpenClass && resolved.claseId) {
+      const todayNow = new Date();
+      const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
+      marcarAsistenciaPorAlumnoYSesion(student.id, resolved.claseId, todayISO);
       window.dispatchEvent(new Event("df_reservas_updated"));
     }
 
@@ -476,19 +469,20 @@ export default function AdminDashboardRecepcion() {
     const remainingTextStr = isRegularOrUnlimited 
       ? 'Mensualidad Regular' 
       : `Bono (${student.clases_restantes ?? 0} clases de saldo)`;
+    const classDetailStr = resolved.claseNombre ? ` • ${resolved.claseNombre}` : '';
 
     // Audit log
     logActivity({
       origen: "recepcion",
       tipo_evento: "checkin",
-      descripcion: `Validación de acceso QR/NFC en la clase seleccionada (${remainingTextStr})`,
+      descripcion: `Validación de acceso QR/NFC (${remainingTextStr}${classDetailStr})`,
       usuario_afectado: student.nombre_completo,
       sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
     });
 
     setStatusMessage({ 
       type: 'success', 
-      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr})` 
+      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr})` 
     });
 
     // Reset fields & refetch
@@ -503,93 +497,7 @@ export default function AdminDashboardRecepcion() {
   };
 
   const findStudentByScannedCode = async (rawCode: string) => {
-    const trimmed = rawCode.trim();
-    if (!trimmed) return null;
-
-    // 1. Direct UUID match
-    if (trimmed.length === 36 && (trimmed.match(/-/g) || []).length === 4) {
-      const { data } = await supabase.from("alumnos").select("*").eq("id", trimmed).maybeSingle();
-      if (data) return data;
-    }
-
-    // 2. Normalize Spanish keyboard scan anomalies (where '-' becomes '/' or '\'') and separators
-    const normalized = trimmed.replace(/[/\\':_.]/g, '-').trim();
-
-    // Extract core token without any DF / STUDENT / ALUMNO prefix
-    const cleanToken = normalized
-      .replace(/^DF-STUDENT-/i, '')
-      .replace(/^DF-ALUMNO-/i, '')
-      .replace(/^STUDENT-/i, '')
-      .replace(/^ALUMNO-/i, '')
-      .replace(/^DF-/i, '')
-      .trim();
-
-    // Extract pure alphanumeric token (e.g. "790856")
-    const pureToken = trimmed.replace(/[^a-zA-Z0-9]/g, '').replace(/^(DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, '').trim();
-
-    // Candidate tokens to test against DB
-    const candidates = Array.from(new Set([
-      cleanToken,
-      pureToken,
-      normalized,
-      trimmed,
-      `DF-${cleanToken}`,
-      `DF-${pureToken}`
-    ])).filter(Boolean);
-
-    for (const token of candidates) {
-      // Exact nfc_token match
-      const { data: byNfc } = await supabase
-        .from("alumnos")
-        .select("*")
-        .eq("nfc_token", token)
-        .limit(1)
-        .maybeSingle();
-      if (byNfc) return byNfc;
-
-      // Exact DNI match
-      const { data: byDni } = await supabase
-        .from("alumnos")
-        .select("*")
-        .ilike("dni", token)
-        .limit(1)
-        .maybeSingle();
-      if (byDni) return byDni;
-
-      // Exact ID match (only if valid UUID to avoid PostgreSQL operator errors)
-      if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
-        const { data: byId } = await supabase
-          .from("alumnos")
-          .select("*")
-          .eq("id", token)
-          .limit(1)
-          .maybeSingle();
-        if (byId) return byId;
-      }
-    }
-
-    // 3. Fallback: ILIKE search on text columns (nfc_token, dni, email, telefono, nombre_completo)
-    if (cleanToken && cleanToken.length >= 3) {
-      const { data: byIlike } = await supabase
-        .from("alumnos")
-        .select("*")
-        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%`)
-        .limit(1)
-        .maybeSingle();
-      if (byIlike) return byIlike;
-    }
-
-    if (pureToken && pureToken.length >= 3 && pureToken !== cleanToken) {
-      const { data: byPure } = await supabase
-        .from("alumnos")
-        .select("*")
-        .or(`nfc_token.ilike.%${pureToken}%,dni.ilike.%${pureToken}%,email.ilike.%${pureToken}%,telefono.ilike.%${pureToken}%`)
-        .limit(1)
-        .maybeSingle();
-      if (byPure) return byPure;
-    }
-
-    return null;
+    return await findStudentByCodeOrText(rawCode);
   };
 
   const handleQRSubmit = async (e?: React.FormEvent) => {
@@ -630,20 +538,6 @@ export default function AdminDashboardRecepcion() {
         setFlashState('success');
         setTimeout(() => setFlashState(null), 1500);
 
-        // Sincronizar asistencia en Open Class si procede (siempre para la fecha de hoy)
-        let openClassMarked = false;
-        const todayNow = new Date();
-        const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
-        if (selectedClaseId && (selectedCalendarDay?.isToday || selectedCalendarDay?.dateISO === todayISO)) {
-          openClassMarked = marcarAsistenciaPorAlumnoYSesion(student.id, selectedClaseId, todayISO);
-        }
-        if (!openClassMarked) {
-          openClassMarked = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
-        }
-        if (openClassMarked) {
-          window.dispatchEvent(new Event("df_reservas_updated"));
-        }
-
         const planLower = (student.plan_activo || "").toLowerCase();
         const isRegularOrUnlimited = 
           planLower.includes("regular") || 
@@ -653,9 +547,11 @@ export default function AdminDashboardRecepcion() {
         const remainingTextStr = isRegularOrUnlimited 
           ? 'Mensualidad Regular' 
           : `Bono (${student.clases_restantes ?? 0} clases de saldo)`;
+        const classDetailStr = student.resolvedClass?.claseNombre ? ` • ${student.resolvedClass.claseNombre}` : '';
+
         setStatusMessage({ 
           type: 'success', 
-          text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr})` 
+          text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr})` 
         });
         fetchData();
       }

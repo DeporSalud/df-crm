@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase/client";
 import { 
   UserCheck, Check, Clock, Users, ShieldAlert, Sparkles, Calendar, Search, 
   Lock, LogOut, KeyRound, ArrowLeft, ChevronRight, Flame, Ticket, GraduationCap, 
-  CreditCard, Building2, Trash2, AlertTriangle, Tag, CheckCircle2, ShieldCheck, X,
+  CreditCard, Building2, Trash2, AlertTriangle, AlertCircle, Tag, CheckCircle2, ShieldCheck, X,
   CalendarDays, BarChart3, MessageCircle, Filter
 } from "lucide-react";
 import { logActivity } from "@/lib/activityLogger";
@@ -194,6 +194,7 @@ export default function ProfesorPortal() {
   const [classAllAttendances, setClassAllAttendances] = useState<any[]>([]);
   const [isClassMonthlyModalOpen, setIsClassMonthlyModalOpen] = useState<boolean>(false);
   const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<any | null>(null);
+  const [classViewTab, setClassViewTab] = useState<"pase_lista" | "dias_asistencia">("pase_lista");
 
   // Open Classes & Calendar State
   const calendarDays = getUpcomingCalendarDates(30);
@@ -1763,6 +1764,174 @@ export default function ProfesorPortal() {
                     </div>
                   </div>
 
+                  {/* PESTAÑAS PRINCIPALES: PASE DE LISTA VS DÍAS DE ASISTENCIA POR ALUMNO */}
+                  <div className="grid grid-cols-2 gap-2 mb-4 bg-[var(--color-bg)] p-1.5 rounded-2xl border border-[var(--color-border)]">
+                    <button
+                      onClick={() => setClassViewTab("pase_lista")}
+                      className={`py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        classViewTab === "pase_lista"
+                          ? "bg-[var(--color-primary)] text-white shadow-lg shadow-[var(--color-primary)]/20"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      <Check size={15} />
+                      <span>1. Pase de Lista de Sesión</span>
+                    </button>
+                    <button
+                      onClick={() => setClassViewTab("dias_asistencia")}
+                      className={`py-2.5 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        classViewTab === "dias_asistencia"
+                          ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      <CalendarDays size={15} />
+                      <span>2. Días que ha venido cada Alumno</span>
+                      <span className="px-1.5 py-0.5 rounded-md text-[10px] bg-black/30 text-white font-mono font-bold">
+                        {roster.length}
+                      </span>
+                    </button>
+                  </div>
+
+                  {classViewTab === "dias_asistencia" ? (
+                    <div className="space-y-4 animate-in fade-in duration-200">
+                      {/* Cabecera informativa */}
+                      <div className="p-4 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] shadow-md">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                          <div>
+                            <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                              <CalendarDays size={16} className="text-emerald-400" />
+                              <span>Registro Acumulado de Asistencias por Alumno</span>
+                            </h4>
+                            <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
+                              Consulta nominal de todos los días exactos que ha venido cada alumno a {selectedClase.nombre_clase}.
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => setIsClassMonthlyModalOpen(true)}
+                            className="text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                          >
+                            <BarChart3 size={14} />
+                            <span>Ver Matriz Mensual</span>
+                          </button>
+                        </div>
+
+                        {/* Buscador dentro de días de asistencia */}
+                        <div className="relative mt-3.5">
+                          <Search className="w-4 h-4 absolute left-3 top-3 text-[var(--color-text-secondary)]" />
+                          <input
+                            type="text"
+                            placeholder="Buscar alumno en esta clase..."
+                            value={rosterSearch}
+                            onChange={(e) => setRosterSearch(e.target.value)}
+                            className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border)] text-white text-xs rounded-xl pl-9 pr-3 py-2.5 outline-none focus:border-emerald-500"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Lista nominal de alumnos con los días que han venido */}
+                      <div className="space-y-3">
+                        {roster
+                          .filter(s => {
+                            if (!rosterSearch.trim()) return true;
+                            const q = rosterSearch.toLowerCase();
+                            return (
+                              (s.nombre_completo || "").toLowerCase().includes(q) ||
+                              (s.email || "").toLowerCase().includes(q) ||
+                              (s.telefono || "").includes(q)
+                            );
+                          })
+                          .map((student) => {
+                            const attendedDates = Array.from(new Set(
+                              classAllAttendances
+                                .filter(a => a.alumno_id === student.id && a.fecha_hora)
+                                .map(a => a.fecha_hora.substring(0, 10))
+                            )).sort((a, b) => b.localeCompare(a));
+
+                            return (
+                              <div
+                                key={student.id}
+                                className="p-4 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] hover:border-emerald-500/40 transition-all flex flex-col gap-3"
+                              >
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-500 to-[var(--color-primary)] flex items-center justify-center text-white font-black text-xs shrink-0 shadow-md">
+                                      {(student.nombre_completo || "A").split(" ").slice(0, 2).map((n: string) => n[0]).join("")}
+                                    </div>
+                                    <div>
+                                      <h5 className="font-bold text-white text-sm">
+                                        {student.nombre_completo}
+                                      </h5>
+                                      <span className="text-[11px] text-[var(--color-text-secondary)]">
+                                        {student.plan_activo || "Alumno Regular"} {student.telefono ? `• ${student.telefono}` : ""}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 self-start sm:self-auto">
+                                    <span className={`px-2.5 py-1 rounded-xl text-xs font-bold font-mono border ${
+                                      attendedDates.length > 0 
+                                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                                        : "bg-slate-800 text-slate-400 border-slate-700"
+                                    }`}>
+                                      {attendedDates.length} {attendedDates.length === 1 ? "día asistido" : "días asistidos"}
+                                    </span>
+                                    <button
+                                      onClick={() => setSelectedStudentForHistory(student)}
+                                      className="p-1.5 px-2.5 rounded-lg bg-[var(--color-bg-card)] hover:bg-white/10 text-slate-300 hover:text-white border border-[var(--color-border)] text-xs font-semibold transition-colors cursor-pointer"
+                                      title="Ver ficha completa y WhatsApp"
+                                    >
+                                      Ficha
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Chips de Fechas */}
+                                <div className="pt-2 border-t border-[var(--color-border)]/60">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
+                                    Días que ha venido a esta clase:
+                                  </span>
+                                  {attendedDates.length === 0 ? (
+                                    <span className="text-xs text-slate-500 italic flex items-center gap-1.5 py-1">
+                                      <AlertTriangle size={13} className="text-amber-500/70" />
+                                      Sin asistencias registradas aún en esta clase.
+                                    </span>
+                                  ) : (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {attendedDates.map((dateISO) => {
+                                        const [y, m, d] = dateISO.split("-");
+                                        const dateObj = new Date(Number(y), Number(m) - 1, Number(d));
+                                        const diasSemana = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+                                        const meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+                                        const dayName = diasSemana[dateObj.getDay()];
+                                        const monthName = meses[dateObj.getMonth()];
+                                        const formattedDate = `${dayName} ${d} ${monthName}`;
+
+                                        return (
+                                          <button
+                                            key={dateISO}
+                                            onClick={() => {
+                                              handleChangeSessionDate(dateISO);
+                                              setClassViewTab("pase_lista");
+                                            }}
+                                            className="px-2.5 py-1 rounded-xl text-xs font-mono font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5 shadow-sm hover:bg-emerald-500/25 transition-all cursor-pointer"
+                                            title={`Ver pase de lista del ${formattedDate}`}
+                                          >
+                                            <CheckCircle2 size={12} className="text-emerald-400 shrink-0" />
+                                            <span>{formattedDate}</span>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
                   {/* UNIFIED SESSION DATE SWITCHER (PARA TODAS LAS CLASES: REGULARES Y OPEN) */}
                   <div className="space-y-2 bg-[var(--color-bg)] p-3.5 rounded-2xl border border-[var(--color-border)] shadow-md mb-4">
                     <div className="flex items-center justify-between">
@@ -2032,6 +2201,8 @@ export default function ProfesorPortal() {
                       })}
                     </div>
                   )}
+                  </>
+                )}
                 </div>
               )}
             </>

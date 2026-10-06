@@ -442,6 +442,19 @@ export function crearReservaOpenClass(data: {
   }
 
   const maxCapacity = data.clase.aforo_maximo || 20;
+
+  // Validación de aforo mínimo (4 personas) y corte de 5 horas previas
+  const sessionStatus = getOpenClassSessionStatus(
+    classUUID,
+    cleanISO,
+    data.clase.hora_inicio,
+    maxCapacity
+  );
+
+  if (!sessionStatus.puedeReservar) {
+    throw new Error(sessionStatus.motivoBloqueo || "No es posible reservar esta clase (suspendida o aforo completo).");
+  }
+
   if (isSesionCompleta(data.clase, cleanISO, maxCapacity)) {
     throw new Error(`Aforo completo para la clase ${data.clase.nombre_clase} en fecha ${cleanISO}`);
   }
@@ -499,6 +512,152 @@ export function getHorasRestantesParaSesion(fechaISO?: string, horaInicio?: stri
   const sessionDate = new Date(year, month - 1, day, isNaN(h) ? 19 : h, isNaN(m) ? 0 : m, 0, 0);
   const now = new Date();
   return (sessionDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+}
+
+export const OPEN_CLASS_MIN_STUDENTS = 4;
+export const OPEN_CLASS_CUTOFF_HOURS = 5;
+
+export interface OpenClassSessionStatus {
+  status: "abierta" | "confirmada" | "suspendida_aforo_minimo" | "finalizada";
+  horasRestantes: number;
+  reservasCount: number;
+  minimoRequerido: number;
+  puedeReservar: boolean;
+  motivoBloqueo?: string;
+  badgeText: string;
+  badgeColor: string;
+}
+
+/**
+ * Regla de negocio oficial de Dance Factory:
+ * Si quedan menos de 5 horas para la clase y hay menos de 4 personas apuntadas,
+ * la sesión queda suspendida por aforo mínimo y se bloquean nuevas reservas.
+ */
+export function getOpenClassSessionStatus(
+  claseId: string,
+  fechaISO: string,
+  horaInicio: string,
+  aforoMaximo: number = 20
+): OpenClassSessionStatus {
+  const horasRestantes = getHorasRestantesParaSesion(fechaISO, horaInicio);
+  const reservasCount = getSesionReservasCount(claseId, fechaISO);
+  const isFull = reservasCount >= aforoMaximo;
+
+  if (horasRestantes <= 0) {
+    return {
+      status: "finalizada",
+      horasRestantes,
+      reservasCount,
+      minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
+      puedeReservar: false,
+      motivoBloqueo: "La sesión ya ha comenzado o finalizado.",
+      badgeText: "Finalizada",
+      badgeColor: "bg-slate-800 text-slate-400 border border-slate-700"
+    };
+  }
+
+  // REGLA DE LAS 5 HORAS PREVIAS (CORTE DE AFORO MÍNIMO)
+  if (horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
+    if (reservasCount < OPEN_CLASS_MIN_STUDENTS) {
+      return {
+        status: "suspendida_aforo_minimo",
+        horasRestantes,
+        reservasCount,
+        minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
+        puedeReservar: false,
+        motivoBloqueo: `Clase suspendida: No se alcanzó el mínimo de ${OPEN_CLASS_MIN_STUDENTS} personas a las ${OPEN_CLASS_CUTOFF_HOURS} horas previas de la sesión. Saldo de clase reembolsado.`,
+        badgeText: `⚠️ Suspendida (mín. ${OPEN_CLASS_MIN_STUDENTS} pers.)`,
+        badgeColor: "bg-red-500/20 text-red-300 border border-red-500/40"
+      };
+    } else {
+      return {
+        status: "confirmada",
+        horasRestantes,
+        reservasCount,
+        minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
+        puedeReservar: !isFull,
+        motivoBloqueo: isFull ? "Aforo completo" : undefined,
+        badgeText: isFull ? "Aforo Completo" : "✓ Confirmada",
+        badgeColor: isFull 
+          ? "bg-red-500/20 text-red-300 border border-red-500/30" 
+          : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+      };
+    }
+  }
+
+  // Faltan 5 horas o más
+  const hasMin = reservasCount >= OPEN_CLASS_MIN_STUDENTS;
+  return {
+    status: hasMin ? "confirmada" : "abierta",
+    horasRestantes,
+    reservasCount,
+    minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
+    puedeReservar: !isFull,
+    motivoBloqueo: isFull ? "Aforo completo" : undefined,
+    badgeText: hasMin
+      ? `✓ Confirmada (${reservasCount}/${aforoMaximo})`
+      : `${reservasCount}/${OPEN_CLASS_MIN_STUDENTS} mín. (corte 5h)`,
+    badgeColor: hasMin
+      ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+      : "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+  };
+}
+
+/**
+ * Detecta sesiones dentro de las 5 horas previas con menos de 4 alumnos,
+ * cancela la sesión y reembolsa automáticamente 1 clase al bono del alumno en Supabase.
+ */
+export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ canceladasCount: number; alumnosReembolsados: string[] }> {
+  if (typeof window === "undefined") return { canceladasCount: 0, alumnosReembolsados: [] };
+  
+  const current = getOpenClassReservas();
+  let updated = false;
+  const reembolsados: string[] = [];
+
+  const sessionsMap: Record<string, OpenClassReserva[]> = {};
+  current.forEach(r => {
+    if (r.estado === "Confirmada") {
+      const key = `${normalizeClaseId(r.clase_id)}_${cleanDateISO(r.fecha_iso)}`;
+      if (!sessionsMap[key]) sessionsMap[key] = [];
+      sessionsMap[key].push(r);
+    }
+  });
+
+  for (const [, reservas] of Object.entries(sessionsMap)) {
+    if (reservas.length > 0 && reservas.length < OPEN_CLASS_MIN_STUDENTS) {
+      const sample = reservas[0];
+      const horasRestantes = getHorasRestantesParaSesion(sample.fecha_iso, sample.hora_inicio);
+      
+      // Si quedan menos de 5h y la clase es hoy/futura reciente
+      if (horasRestantes < OPEN_CLASS_CUTOFF_HOURS && horasRestantes > -24) {
+        for (const r of reservas) {
+          r.estado = "Cancelada";
+          r.asistido = false;
+          updated = true;
+          reembolsados.push(r.alumno_nombre || r.alumno_id);
+
+          // Reembolsar 1 clase en Supabase si tiene saldo de bono
+          try {
+            const { data: st } = await supabase.from("alumnos").select("id, clases_restantes, plan_activo").eq("id", r.alumno_id).maybeSingle();
+            if (st && typeof st.clases_restantes === "number") {
+              await supabase.from("alumnos").update({
+                clases_restantes: st.clases_restantes + 1
+              }).eq("id", st.id);
+            }
+          } catch (e) {
+            console.error("Error reembolsando saldo a alumno por aforo mínimo:", e);
+          }
+        }
+      }
+    }
+  }
+
+  if (updated) {
+    saveOpenClassReservas(current);
+    window.dispatchEvent(new Event("df_reservas_updated"));
+  }
+
+  return { canceladasCount: reembolsados.length, alumnosReembolsados: reembolsados };
 }
 
 /**
@@ -760,11 +919,337 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
     }
 
     saveOpenClassReservas(merged);
-    return merged;
+    await verificarYSuspenderSesionesBajoAforo();
+    return getOpenClassReservas();
   } catch (err) {
     console.error("Error in syncReservasFromSupabase:", err);
     return getOpenClassReservas();
   }
+}
+
+export interface CheckInClassResolution {
+  claseId: string | null;
+  claseNombre: string;
+  profesor?: string;
+  sede?: string;
+  isRegular: boolean;
+  isOpenClass: boolean;
+}
+
+/**
+ * Búsqueda ultra robusta de alumnos para escáner QR, RFID, NFC y búsqueda manual:
+ * Admite:
+ * - Token NFC numérico de 4 a 6 dígitos (ej. 2557)
+ * - Códigos QR con prefijos: DF-STUDENT-2557, DF-2557, STUDENT-2557
+ * - UUID de base de datos
+ * - Nombre y apellidos (ej. "Olivia Anna", "Olivia", "Hrebenyvk")
+ * - Teléfono con o sin espacios, o con prefijo +34 (ej. "608 814 341", "608814341")
+ * - DNI / NIE (ej. "54243763B")
+ * - Email
+ */
+export async function findStudentByCodeOrText(rawCode: string): Promise<any | null> {
+  const trimmed = (rawCode || "").trim();
+  if (!trimmed) return null;
+
+  // 1. UUID exacto
+  if (trimmed.length === 36 && (trimmed.match(/-/g) || []).length === 4) {
+    const { data } = await supabase.from("alumnos").select("*").eq("id", trimmed).maybeSingle();
+    if (data) return data;
+  }
+
+  // 2. Normalizar teclado español y prefijos
+  const normalized = trimmed.replace(/[/\\':_.]/g, "-").trim();
+  const cleanToken = normalized
+    .replace(/^DF-STUDENT-/i, "")
+    .replace(/^DF-ALUMNO-/i, "")
+    .replace(/^STUDENT-/i, "")
+    .replace(/^ALUMNO-/i, "")
+    .replace(/^DF-/i, "")
+    .trim();
+
+  const pureToken = trimmed
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .replace(/^(DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, "")
+    .trim();
+
+  const candidates = Array.from(new Set([
+    cleanToken,
+    pureToken,
+    normalized,
+    trimmed,
+    `DF-${cleanToken}`,
+    `DF-${pureToken}`
+  ])).filter(Boolean);
+
+  for (const token of candidates) {
+    // Exact nfc_token
+    const { data: byNfc } = await supabase.from("alumnos").select("*").eq("nfc_token", token).limit(1).maybeSingle();
+    if (byNfc) return byNfc;
+
+    // Exact DNI
+    const { data: byDni } = await supabase.from("alumnos").select("*").ilike("dni", token).limit(1).maybeSingle();
+    if (byDni) return byDni;
+
+    // Exact email
+    if (token.includes("@")) {
+      const { data: byEmail } = await supabase.from("alumnos").select("*").ilike("email", token).limit(1).maybeSingle();
+      if (byEmail) return byEmail;
+    }
+
+    // Exact ID match if UUID
+    if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
+      const { data: byId } = await supabase.from("alumnos").select("*").eq("id", token).limit(1).maybeSingle();
+      if (byId) return byId;
+    }
+  }
+
+  // 3. Teléfono normalizado (con y sin espacios)
+  const phoneDigits = trimmed.replace(/\D/g, "").replace(/^34/, "");
+  if (phoneDigits.length >= 9) {
+    const digits9 = phoneDigits.slice(-9);
+    const spaced1 = `${digits9.slice(0, 3)} ${digits9.slice(3, 6)} ${digits9.slice(6, 9)}`;
+    const spaced2 = `${digits9.slice(0, 3)} ${digits9.slice(3, 5)} ${digits9.slice(5, 7)} ${digits9.slice(7, 9)}`;
+
+    const { data: byPhone } = await supabase
+      .from("alumnos")
+      .select("*")
+      .or(`telefono.eq.${digits9},telefono.eq.${spaced1},telefono.eq.${spaced2},telefono.ilike.%${digits9.slice(3, 9)}%`)
+      .limit(1)
+      .maybeSingle();
+
+    if (byPhone) return byPhone;
+  }
+
+  // 4. Búsqueda por Nombre Completo (soporta "Olivia Anna", "Olivia", "Hrebenyvk", etc.)
+  if (cleanToken && cleanToken.length >= 3) {
+    // Intento 1: Nombre completo ilike '%cleanToken%'
+    const { data: byName } = await supabase
+      .from("alumnos")
+      .select("*")
+      .ilike("nombre_completo", `%${cleanToken}%`)
+      .limit(1)
+      .maybeSingle();
+    if (byName) return byName;
+
+    // Si tiene varios términos (ej. "Olivia Anna"), buscar por cada palabra relevante
+    const words = cleanToken.split(/\s+/).filter(w => w.length >= 3);
+    for (const w of words) {
+      const { data: byWord } = await supabase
+        .from("alumnos")
+        .select("*")
+        .ilike("nombre_completo", `%${w}%`)
+        .limit(1)
+        .maybeSingle();
+      if (byWord) return byWord;
+    }
+
+    // Intento 2: OR ampliado (nfc_token, dni, email, telefono, nombre_completo)
+    const { data: byOr } = await supabase
+      .from("alumnos")
+      .select("*")
+      .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%,nombre_completo.ilike.%${cleanToken}%`)
+      .limit(1)
+      .maybeSingle();
+    if (byOr) return byOr;
+  }
+
+  return null;
+}
+
+/**
+ * Resolución inteligente y contextual de clase para el escáner de recepción y check-in:
+ * 1. Prioriza las clases regulares matriculadas del alumno en el día de hoy dentro de la ventana de llegada (inicio - 45 min a fin + 15 min).
+ * 2. Si no tiene clase regular hoy, comprueba si tiene reserva confirmada de Open Class hoy en la ventana de llegada.
+ * 3. Si no tiene reserva de Open Class ni clase regular propia, comprueba si recepción seleccionó una clase válida para este momento o la clase activa de la sede.
+ * 4. Si ninguna coincide: Acceso General (clase_id: null). Nunca asigna Open Class indebidamente a las 21:00h a alumnos de clases regulares.
+ */
+export async function resolveClassForCheckIn(
+  student: { id: string; nombre_completo?: string; plan_activo?: string; sede?: string },
+  activeSede?: string,
+  preferredClaseId?: string | null
+): Promise<CheckInClassResolution> {
+  const planLower = (student.plan_activo || "").toLowerCase();
+  const isRegularOrUnlimited = 
+    planLower.includes("regular") || 
+    planLower.includes("mensual") || 
+    planLower.includes("ilimitad") || 
+    planLower.includes("cuota");
+
+  const dias = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
+  const now = new Date();
+  const hoyDia = dias[now.getDay()];
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const todayISO = `${y}-${m}-${d}`;
+
+  const parseTimeToMinutes = (timeStr?: string): number => {
+    if (!timeStr) return 0;
+    const [hh, mm] = timeStr.split(":").map(Number);
+    return (hh || 0) * 60 + (mm || 0);
+  };
+
+  // 1. COMPROBAR CLASES REGULARES MATRICULADAS HOY EN alumnos_clases
+  try {
+    const { data: enrollments } = await supabase
+      .from("alumnos_clases")
+      .select("clase_id, clases_cuadrante(*)")
+      .eq("alumno_id", student.id);
+
+    if (enrollments && enrollments.length > 0) {
+      const todayClasses = enrollments
+        .map((e: any) => e.clases_cuadrante)
+        .filter((c: any) => c && (c.dia_semana || "").toUpperCase() === hoyDia);
+
+      let bestRegular: any = null;
+      let minDistance = Infinity;
+
+      for (const c of todayClasses) {
+        const startMin = parseTimeToMinutes(c.hora_inicio);
+        const endMin = parseTimeToMinutes(c.hora_fin);
+
+        // Ventana de llegada [inicio - 45 min, fin + 15 min]
+        if (currentMinutes >= (startMin - 45) && currentMinutes <= (endMin + 15)) {
+          const dist = Math.abs(currentMinutes - startMin);
+          if (dist < minDistance) {
+            minDistance = dist;
+            bestRegular = c;
+          }
+        }
+      }
+
+      if (bestRegular) {
+        return {
+          claseId: bestRegular.id,
+          claseNombre: bestRegular.nombre_clase,
+          profesor: bestRegular.profesor,
+          sede: bestRegular.sede,
+          isRegular: true,
+          isOpenClass: false
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("[resolveClassForCheckIn] Error comprobando matriculas regulares:", err);
+  }
+
+  // 2. COMPROBAR SI TIENE RESERVA DE OPEN CLASS PARA HOY
+  try {
+    const localReservas = getOpenClassReservas();
+    const todayReserva = localReservas.find(r => 
+      r.alumno_id === student.id && 
+      r.fecha_iso === todayISO && 
+      (r.estado === "Confirmada" || r.estado === "Asistida")
+    );
+
+    if (todayReserva) {
+      const startMin = parseTimeToMinutes(todayReserva.hora_inicio);
+      const endMin = parseTimeToMinutes(todayReserva.hora_fin);
+
+      if (currentMinutes >= (startMin - 45) && currentMinutes <= (endMin + 15)) {
+        return {
+          claseId: todayReserva.clase_id,
+          claseNombre: todayReserva.nombre_clase,
+          profesor: todayReserva.profesor,
+          sede: todayReserva.sede,
+          isRegular: false,
+          isOpenClass: true
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("[resolveClassForCheckIn] Error comprobando reservas open class:", err);
+  }
+
+  // 3. SI EL USUARIO SELECCIONÓ EXPLÍCITAMENTE UNA CLASE EN RECEPCIÓN (preferredClaseId)
+  if (preferredClaseId) {
+    try {
+      const { data: prefClass } = await supabase
+        .from("clases_cuadrante")
+        .select("*")
+        .eq("id", preferredClaseId)
+        .maybeSingle();
+
+      if (prefClass && (prefClass.dia_semana || "").toUpperCase() === hoyDia) {
+        const startMin = parseTimeToMinutes(prefClass.hora_inicio);
+        const endMin = parseTimeToMinutes(prefClass.hora_fin);
+
+        // Solo usar la clase si estamos dentro del rango temporal (±45 min)
+        if (currentMinutes >= (startMin - 45) && currentMinutes <= (endMin + 20)) {
+          const isPrefOpen = (prefClass.nombre_clase || "").toUpperCase().includes("OPEN");
+          if (!isPrefOpen || !isRegularOrUnlimited || currentMinutes < endMin) {
+            return {
+              claseId: prefClass.id,
+              claseNombre: prefClass.nombre_clase,
+              profesor: prefClass.profesor,
+              sede: prefClass.sede,
+              isRegular: !isPrefOpen,
+              isOpenClass: isPrefOpen
+            };
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 4. COMPROBAR CLASE ACTIVA EN LA SEDE PARA EL HORARIO ACTUAL
+  try {
+    let query = supabase
+      .from("clases_cuadrante")
+      .select("*")
+      .eq("dia_semana", hoyDia);
+
+    if (activeSede && activeSede !== "consolidado") {
+      const sedeKey = activeSede.toLowerCase().includes("castilla") ? "castilla" : "tejar";
+      query = query.in("sede", sedeKey === "tejar" ? ["tejar", "studio", "mostoles"] : ["castilla", "alcorcon"]);
+    }
+
+    const { data: activeClasses } = await query;
+    if (activeClasses && activeClasses.length > 0) {
+      let candidate: any = null;
+      let minDelta = Infinity;
+
+      for (const c of activeClasses) {
+        const startMin = parseTimeToMinutes(c.hora_inicio);
+        const endMin = parseTimeToMinutes(c.hora_fin);
+        const isOpen = (c.nombre_clase || "").toUpperCase().includes("OPEN");
+
+        // Si el alumno es regular, NO le asignamos una Open Class por proximidad
+        if (isRegularOrUnlimited && isOpen) continue;
+
+        if (currentMinutes >= (startMin - 35) && currentMinutes <= (endMin + 10)) {
+          const delta = Math.abs(currentMinutes - startMin);
+          if (delta < minDelta) {
+            minDelta = delta;
+            candidate = c;
+          }
+        }
+      }
+
+      if (candidate) {
+        const isOpen = (candidate.nombre_clase || "").toUpperCase().includes("OPEN");
+        return {
+          claseId: candidate.id,
+          claseNombre: candidate.nombre_clase,
+          profesor: candidate.profesor,
+          sede: candidate.sede,
+          isRegular: !isOpen,
+          isOpenClass: isOpen
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("[resolveClassForCheckIn] Error buscando clase activa:", err);
+  }
+
+  // 5. ACCESO GENERAL (Ninguna clase asignada ni Open Class)
+  return {
+    claseId: null,
+    claseNombre: "Acceso General a Instalaciones",
+    isRegular: isRegularOrUnlimited,
+    isOpenClass: false
+  };
 }
 
 

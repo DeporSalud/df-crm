@@ -21,7 +21,11 @@ import { supabase } from "@/lib/supabase/client";
 import { logActivity } from "@/lib/activityLogger";
 import { useSede } from "@/context/SedeContext";
 import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
-import { marcarAsistenciaPorAlumnoYSesion, marcarAsistenciaPorAlumnoEnFecha } from "@/lib/openClassService";
+import { 
+  marcarAsistenciaPorAlumnoYSesion, 
+  findStudentByCodeOrText, 
+  resolveClassForCheckIn 
+} from "@/lib/openClassService";
 
 export interface ScanEntranceEvent {
   id: string;
@@ -72,86 +76,9 @@ export default function GlobalScannerWidget() {
     }
   }, [recentEntrances]);
 
-  // Función para buscar alumno con limpieza exhaustiva de tokens
+  // Función para buscar alumno con limpieza exhaustiva de tokens y soporte omnicanal
   const findStudent = async (rawCode: string) => {
-    const trimmed = rawCode.trim();
-    if (!trimmed) return null;
-
-    // 1. UUID exacto
-    if (trimmed.length === 36 && (trimmed.match(/-/g) || []).length === 4) {
-      const { data } = await supabase.from("alumnos").select("*").eq("id", trimmed).maybeSingle();
-      if (data) return data;
-    }
-
-    // 2. Normalizar separadores y anomalías de teclado español ('/' o '\'')
-    const normalized = trimmed.replace(/[/\\':_.]/g, "-").trim();
-
-    const cleanToken = normalized
-      .replace(/^DF-STUDENT-/i, "")
-      .replace(/^DF-ALUMNO-/i, "")
-      .replace(/^STUDENT-/i, "")
-      .replace(/^ALUMNO-/i, "")
-      .replace(/^DF-/i, "")
-      .trim();
-
-    const pureToken = trimmed
-      .replace(/[^a-zA-Z0-9]/g, "")
-      .replace(/^(DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, "")
-      .trim();
-
-    const candidates = Array.from(new Set([
-      cleanToken,
-      pureToken,
-      normalized,
-      trimmed,
-      `DF-${cleanToken}`,
-      `DF-${pureToken}`
-    ])).filter(Boolean);
-
-    for (const token of candidates) {
-      // nfc_token
-      const { data: byNfc } = await supabase.from("alumnos").select("*").eq("nfc_token", token).limit(1).maybeSingle();
-      if (byNfc) return byNfc;
-
-      // dni
-      const { data: byDni } = await supabase.from("alumnos").select("*").ilike("dni", token).limit(1).maybeSingle();
-      if (byDni) return byDni;
-
-      // id exacto
-      if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
-        const { data: byId } = await supabase.from("alumnos").select("*").eq("id", token).limit(1).maybeSingle();
-        if (byId) return byId;
-      }
-    }
-
-    // Backward compatibility for Julia Santos previous OTP token 204253
-    if (cleanToken === "204253" || pureToken === "204253") {
-      const { data: julia } = await supabase.from("alumnos").select("*").ilike("email", "juliatletico12@gmail.com").limit(1).maybeSingle();
-      if (julia) return julia;
-    }
-
-    // Fallback ILIKE
-    if (cleanToken && cleanToken.length >= 3) {
-      const { data: byLike } = await supabase
-        .from("alumnos")
-        .select("*")
-        .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%`)
-        .limit(1)
-        .maybeSingle();
-      if (byLike) return byLike;
-    }
-
-    if (pureToken && pureToken.length >= 3 && pureToken !== cleanToken) {
-      const { data: byPure } = await supabase
-        .from("alumnos")
-        .select("*")
-        .or(`nfc_token.ilike.%${pureToken}%,dni.ilike.%${pureToken}%,email.ilike.%${pureToken}%,telefono.ilike.%${pureToken}%`)
-        .limit(1)
-        .maybeSingle();
-      if (byPure) return byPure;
-    }
-
-    return null;
+    return await findStudentByCodeOrText(rawCode);
   };
 
   // Procesamiento central del escaneo
@@ -221,36 +148,18 @@ export default function GlobalScannerWidget() {
         return;
       }
 
-      // 3. Check-in Válido: Vincular clase activa (si la hay en recepción o por horario)
-      let targetClaseId: string | null = null;
+      // 3. Check-in Válido: Resolución inteligente de clase (prioriza clase regular matriculada hoy o reserva Open Class)
+      let preferredClaseId: string | null = null;
       if (typeof window !== "undefined") {
-        targetClaseId = sessionStorage.getItem("df_active_reception_clase_id");
+        preferredClaseId = sessionStorage.getItem("df_active_reception_clase_id");
       }
 
-      if (!targetClaseId) {
-        try {
-          const dias = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
-          const hoyDia = dias[new Date().getDay()];
-          const nowTimeStr = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-
-          const { data: currentClases } = await supabase
-            .from("clases_cuadrante")
-            .select("id, hora_inicio, hora_fin")
-            .eq("dia_semana", hoyDia)
-            .lte("hora_inicio", nowTimeStr)
-            .gte("hora_fin", nowTimeStr)
-            .limit(1);
-
-          if (currentClases && currentClases.length > 0) {
-            targetClaseId = currentClases[0].id;
-          }
-        } catch {}
-      }
+      const resolved = await resolveClassForCheckIn(student, activeSede, preferredClaseId);
 
       const asistenciaPayload: any = {
         alumno_id: student.id,
         fecha_hora: new Date().toISOString(),
-        ...(targetClaseId ? { clase_id: targetClaseId } : {})
+        ...(resolved.claseId ? { clase_id: resolved.claseId } : {})
       };
 
       const { error: assistError } = await supabase.from("asistencias").insert([asistenciaPayload]);
@@ -259,24 +168,20 @@ export default function GlobalScannerWidget() {
         console.warn("[GlobalScanner] Nota de inserción asistencia:", assistError.message);
       }
 
-      // Sincronizar asistencia en Open Class si el alumno tiene reserva para hoy o para la clase activa
-      try {
-        const todayNow = new Date();
-        const y = todayNow.getFullYear();
-        const m = String(todayNow.getMonth() + 1).padStart(2, "0");
-        const d = String(todayNow.getDate()).padStart(2, "0");
-        const todayISO = `${y}-${m}-${d}`;
-        let markedOpenClass = false;
-        if (targetClaseId) {
-          markedOpenClass = marcarAsistenciaPorAlumnoYSesion(student.id, targetClaseId, todayISO);
-        }
-        if (!markedOpenClass) {
-          markedOpenClass = marcarAsistenciaPorAlumnoEnFecha(student.id, todayISO);
-        }
-        if (markedOpenClass && typeof window !== "undefined") {
-          window.dispatchEvent(new Event("df_reservas_updated"));
-        }
-      } catch (e) {}
+      // Sincronizar asistencia en Open Class ÚNICAMENTE si la clase resuelta es una Open Class
+      if (resolved.isOpenClass && resolved.claseId) {
+        try {
+          const todayNow = new Date();
+          const y = todayNow.getFullYear();
+          const m = String(todayNow.getMonth() + 1).padStart(2, "0");
+          const d = String(todayNow.getDate()).padStart(2, "0");
+          const todayISO = `${y}-${m}-${d}`;
+          marcarAsistenciaPorAlumnoYSesion(student.id, resolved.claseId, todayISO);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new Event("df_reservas_updated"));
+          }
+        } catch (e) {}
+      }
 
       // 4. Feedback Sonoro y Notificación Visual
       playFeedbackSound("success");
@@ -286,19 +191,20 @@ export default function GlobalScannerWidget() {
       const saldoInfo = !isRegular 
         ? `Bono (${student.clases_restantes ?? 0} clases de saldo)` 
         : "Cuota Regular Mensual";
+      const notificationDetail = `${saldoInfo} • ${resolved.claseNombre}`;
 
       // Log en auditoría
       await logActivity({
         origen: "recepcion",
         tipo_evento: "checkin",
-        descripcion: `Validación automática escáner QR/NFC (${saldoInfo})`,
+        descripcion: `Validación automática escáner QR/NFC (${notificationDetail})`,
         usuario_afectado: student.nombre_completo,
         sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
       });
 
       // Disparar evento para que páginas abiertas se enteren
       if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("df_checkin_success", { detail: student }));
+        window.dispatchEvent(new CustomEvent("df_checkin_success", { detail: { ...student, resolvedClass: resolved } }));
       }
 
       const successEvt: ScanEntranceEvent = {
@@ -311,7 +217,7 @@ export default function GlobalScannerWidget() {
         hora: horaActual,
         fecha: fechaActual,
         status: "success",
-        mensaje: saldoInfo
+        mensaje: notificationDetail
       };
 
       showNotification(successEvt);

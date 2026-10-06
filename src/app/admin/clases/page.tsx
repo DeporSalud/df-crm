@@ -156,6 +156,8 @@ export default function ClasesPage() {
   const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
   const [rosterSearch, setRosterSearch] = useState("");
   const [isRosterLoading, setIsRosterLoading] = useState(false);
+  const [rosterTab, setRosterTab] = useState<"matriculados" | "dias_asistencia">("matriculados");
+  const [rosterAttendances, setRosterAttendances] = useState<any[]>([]);
   
   // Class enrollment counts map: { [clase_id]: count }
   const [classEnrollmentCounts, setClassEnrollmentCounts] = useState<Record<string, number>>({});
@@ -489,6 +491,19 @@ export default function ClasesPage() {
       .filter((a: any) => a != null && a.id) as RosterStudent[];
     students.sort((a, b) => (a.nombre_completo || "").localeCompare(b.nombre_completo || "", "es"));
     setRosterStudents(students);
+
+    // Cargar asistencias acumuladas de esta clase para consultar los días de asistencia por alumno
+    try {
+      const { data: attData } = await supabase
+        .from("asistencias")
+        .select("id, alumno_id, fecha_hora")
+        .eq("clase_id", clase.id);
+      setRosterAttendances(attData || []);
+    } catch (attErr) {
+      console.warn("Aviso al consultar asistencias para la clase:", attErr);
+      setRosterAttendances([]);
+    }
+
     setIsRosterLoading(false);
   };
 
@@ -510,6 +525,7 @@ export default function ClasesPage() {
 
     setRosterClass(clase);
     setRosterSearch("");
+    setRosterTab("matriculados");
     setIsRosterOpen(true);
     fetchRoster(clase);
   };
@@ -885,6 +901,34 @@ export default function ClasesPage() {
                  </svg>
                </button>
              </div>
+              {/* Selector de Pestañas: [1. Alumnos Matriculados] vs [2. Días de Asistencia por Alumno] */}
+              <div className="flex border-b border-[var(--color-border)] bg-[var(--color-bg)] px-5 pt-3 gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setRosterTab("matriculados")}
+                  className={`pb-3 text-xs font-bold uppercase tracking-wider border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+                    rosterTab === "matriculados"
+                      ? "border-[var(--color-primary)] text-[var(--color-primary)]"
+                      : "border-transparent text-[var(--color-text-secondary)] hover:text-white"
+                  }`}
+                >
+                  <Users className="w-4 h-4" />
+                  Alumnos Matriculados ({rosterStudents.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRosterTab("dias_asistencia")}
+                  className={`pb-3 text-xs font-bold uppercase tracking-wider border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+                    rosterTab === "dias_asistencia"
+                      ? "border-[var(--color-primary)] text-[var(--color-primary)]"
+                      : "border-transparent text-[var(--color-text-secondary)] hover:text-white"
+                  }`}
+                >
+                  <Calendar className="w-4 h-4" />
+                  Días que ha venido cada Alumno ({rosterStudents.length})
+                </button>
+              </div>
+
 
              {/* Buscador dentro del modal */}
              {rosterStudents.length > 0 && (
@@ -911,7 +955,77 @@ export default function ClasesPage() {
                    <Users className="w-8 h-8 text-[var(--color-text-secondary)]/50 mx-auto" />
                    <p>No hay alumnos matriculados en esta clase actualmente.</p>
                  </div>
-               ) : (
+               ) : rosterTab === "dias_asistencia" ? (
+                  <div className="divide-y divide-[var(--color-border)]">
+                    {filteredRosterStudents.map(student => {
+                      const studentAttendances = rosterAttendances.filter((a: any) => a.alumno_id === student.id);
+                      const attendedDates = Array.from(
+                        new Set(
+                          studentAttendances
+                            .map((a: any) => a.fecha_hora ? a.fecha_hora.split("T")[0] : "")
+                            .filter(Boolean)
+                        )
+                      ).sort((a: any, b: any) => b.localeCompare(a));
+
+                      return (
+                        <div key={student.id} className="p-4 sm:p-5 hover:bg-[var(--color-bg-hover)] transition-colors">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                            <div className="flex items-center gap-3">
+                              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[var(--color-secondary)] to-[var(--color-primary)] flex items-center justify-center text-white text-xs font-bold shrink-0">
+                                {student.nombre_completo.split(" ").slice(0, 2).map((n: string) => n[0]).join("")}
+                              </div>
+                              <div>
+                                <h4 className="font-semibold text-[var(--color-text-title)] text-sm flex items-center gap-2">
+                                  <span>{student.nombre_completo}</span>
+                                  <span className="text-[10px] text-[var(--color-text-secondary)] uppercase font-mono">{student.dni || "Sin DNI"}</span>
+                                </h4>
+                                <p className="text-xs text-[var(--color-text-secondary)]">
+                                  {student.telefono || "Sin tel"} • {student.email || "Sin email"} • <span className="text-slate-300 font-medium">{student.plan_activo || "Clases Regulares"}</span>
+                                </p>
+                              </div>
+                            </div>
+                            <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full shrink-0 self-start sm:self-auto">
+                              {attendedDates.length} {attendedDates.length === 1 ? "día asistido" : "días asistidos"}
+                            </span>
+                          </div>
+
+                          <div className="mt-2 pl-0 sm:pl-12">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1.5">
+                              Fechas de Asistencia Registradas en esta Clase:
+                            </span>
+                            {attendedDates.length === 0 ? (
+                              <p className="text-xs text-slate-500 italic">
+                                Sin asistencias presenciales registradas aún en esta clase.
+                              </p>
+                            ) : (
+                              <div className="flex flex-wrap gap-1.5">
+                                {attendedDates.map((dateISO: any) => {
+                                  const [y, m, d] = dateISO.split("-");
+                                  const dateObj = new Date(Number(y), Number(m) - 1, Number(d));
+                                  const diasSemana = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+                                  const meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+                                  const dayName = diasSemana[dateObj.getDay()] || "";
+                                  const monthName = meses[dateObj.getMonth()] || "";
+                                  const formattedDate = `${dayName} ${d} ${monthName}`;
+
+                                  return (
+                                    <span
+                                      key={dateISO}
+                                      className="px-2.5 py-1 rounded-xl text-xs font-mono font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5 shadow-sm"
+                                    >
+                                      <CheckCircle2 size={12} className="text-emerald-400 shrink-0" />
+                                      <span>{formattedDate}</span>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
                  <table className="w-full text-left border-collapse">
                    <thead>
                      <tr className="bg-[var(--color-bg-hover)] border-y border-[var(--color-border)]">
