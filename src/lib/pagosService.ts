@@ -1,4 +1,5 @@
 import studentFeesData from "@/data/student_fees.json";
+import { publishSyncEvent } from "@/lib/syncEventBus";
 
 export type MetodoCobro = "Efectivo" | "TPV" | "Bizum" | "Transferencia" | "Stripe" | "SEPA" | "Pendiente Recepción";
 export type SedePago = "tejar" | "castilla";
@@ -330,7 +331,7 @@ export function eliminarPagosDeAlumno(nombreOrEmail: string): void {
       !p.concepto.toLowerCase().includes(search)
     );
     localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
-    window.dispatchEvent(new Event("df_pagos_updated"));
+    publishSyncEvent("df_pagos_updated", { count: filtered.length, timestamp: Date.now() });
   } catch (e) {
     console.error("Error eliminando pagos de alumno:", e);
   }
@@ -340,10 +341,14 @@ export function saveHistorialPagos(pagos: PagoTransaccion[]): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(pagos));
-    window.dispatchEvent(new Event("df_pagos_updated"));
+    publishSyncEvent("df_pagos_updated", { count: pagos.length, timestamp: Date.now() });
   } catch (e) {
     console.error("Error saving historial pagos:", e);
   }
+}
+
+export function generarNumeroRecibo(seq: number, year: number = 2026): string {
+  return `REC-${year}-${String(seq).padStart(4, "0")}`;
 }
 
 export function registrarNuevoPago(data: {
@@ -363,7 +368,7 @@ export function registrarNuevoPago(data: {
   const all = getHistorialPagos();
   const today = new Date();
   const nextNum = all.length + 1;
-  const numero_recibo = "REC-2026-" + String(nextNum).padStart(4, "0");
+  const numero_recibo = generarNumeroRecibo(nextNum, 2026);
 
   const nuevoPago: PagoTransaccion = {
     id: "pago_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),

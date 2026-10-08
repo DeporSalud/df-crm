@@ -23,11 +23,39 @@ interface FeeEntry {
 const feeMap = studentFeesData as Record<string, FeeEntry>;
 
 /**
+ * Calculates duration in decimal hours from start and end times or minutes.
+ * e.g. "17:30" to "19:00" -> 1.5, "17:00" to "17:45" -> 0.75
+ */
+export function calculateClassDurationHours(
+  horaInicio?: string | null, 
+  horaFin?: string | null, 
+  duracionMinutos?: number | null
+): number {
+  if (duracionMinutos && duracionMinutos > 0) {
+    return Number((duracionMinutos / 60).toFixed(2));
+  }
+  if (horaInicio && horaFin) {
+    const startMatch = String(horaInicio).match(/(\d{1,2}):(\d{2})/);
+    const endMatch = String(horaFin).match(/(\d{1,2}):(\d{2})/);
+    if (startMatch && endMatch) {
+      const startMins = parseInt(startMatch[1], 10) * 60 + parseInt(startMatch[2], 10);
+      const endMins = parseInt(endMatch[1], 10) * 60 + parseInt(endMatch[2], 10);
+      const diff = endMins - startMins;
+      if (diff > 0) return Number((diff / 60).toFixed(2));
+    }
+  }
+  return 1.0;
+}
+
+/**
  * Calculates class duration in hours from class object or time string (e.g. "17:30 - 18:30" -> 1.0h, "18:30 - 20:00" -> 1.5h)
  */
 export function getClassDurationHours(cls: any): number {
   if (!cls) return 1.0;
   if (cls.duracion_minutos) return cls.duracion_minutos / 60;
+  if (cls.hora_inicio && cls.hora_fin) {
+    return calculateClassDurationHours(cls.hora_inicio, cls.hora_fin, cls.duracion_minutos);
+  }
   
   const horario = cls.horario || "";
   const match = horario.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
@@ -49,6 +77,51 @@ export function getClassDurationHours(cls: any): number {
   }
 
   return 1.0; // Default 1 hour
+}
+
+/**
+ * Calculates total weekly hours across an array of enrolled classes.
+ */
+export function calculateStudentWeeklyHours(classes: any[]): number {
+  if (!classes || !Array.isArray(classes)) return 0;
+  const total = classes.reduce((sum, c) => sum + getClassDurationHours(c), 0);
+  return Number(total.toFixed(2));
+}
+
+/**
+ * Calculates exact calendar age in years from birth date and optional reference date.
+ * Accurately accounts for whether the birthday has occurred yet in the calendar year.
+ */
+export function calculateExactAge(
+  birthDateInput: string | Date | null | undefined, 
+  referenceDateInput: string | Date = new Date()
+): number | null {
+  if (!birthDateInput) return null;
+  const birthDate = typeof birthDateInput === "string" ? new Date(birthDateInput) : birthDateInput;
+  if (isNaN(birthDate.getTime())) return null;
+
+  const refDate = typeof referenceDateInput === "string" ? new Date(referenceDateInput) : referenceDateInput;
+  if (isNaN(refDate.getTime())) return null;
+
+  let age = refDate.getFullYear() - birthDate.getFullYear();
+  const m = refDate.getMonth() - birthDate.getMonth();
+  if (m < 0 || (m === 0 && refDate.getDate() < birthDate.getDate())) {
+    age--;
+  }
+  return age >= 0 ? age : 0;
+}
+
+/**
+ * Determines whether student is "infantil" (<= 14 years) or "adulto" (> 14 years) based on exact calendar age.
+ */
+export function getTipoAlumnoFromBirthDate(
+  birthDate?: string | Date | null,
+  referenceDate?: string | Date
+): "adulto" | "infantil" {
+  if (!birthDate) return "adulto";
+  const age = calculateExactAge(birthDate, referenceDate);
+  if (age === null) return "adulto";
+  return age <= 14 ? "infantil" : "adulto";
 }
 
 /**
@@ -80,7 +153,7 @@ export function calculateFeeFromClasses(
   });
 
   // Calculate total weekly hours across all enrolled classes
-  const totalHours = classes.reduce((sum, c) => sum + getClassDurationHours(c), 0);
+  const totalHours = calculateStudentWeeklyHours(classes);
 
   // Si solo asiste a esta clase (1 hora semanal), se aplica la tarifa especial de 25€
   if (isSpecialAntiguosBaby && totalHours <= 1.0) {
@@ -130,15 +203,10 @@ export function getStudentFee(student: {
 }): StudentFeeInfo {
   const adelanto = 20; // Todos los alumnos regulares tienen 20€ abonados de matrícula/reserva
 
-  // Determine if student is child/infantil (<= 14 years)
-  let tipoAlumno: "adulto" | "infantil" = student.tipo_alumno || "adulto";
-  if (!student.tipo_alumno && student.fecha_nacimiento) {
-    const birthYear = new Date(student.fecha_nacimiento).getFullYear();
-    const currentYear = new Date().getFullYear();
-    if (birthYear && (currentYear - birthYear) <= 14) {
-      tipoAlumno = "infantil";
-    }
-  }
+  // Determine if student is child/infantil (<= 14 years) using exact calendar age
+  let tipoAlumno: "adulto" | "infantil" = student.tipo_alumno || (
+    student.fecha_nacimiento ? getTipoAlumnoFromBirthDate(student.fecha_nacimiento) : "adulto"
+  );
 
   // 1. PRIORITY: Check local manual overrides set by administrator
   const overrides = getStudentFeeOverrides();

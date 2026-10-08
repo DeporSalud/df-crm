@@ -1,10 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useScannerBridge } from '@/hooks/useScannerBridge';
 import { supabase } from '@/lib/supabase/client';
 import { logActivity } from '@/lib/activityLogger';
-import { findStudentByCodeOrText } from '@/lib/openClassService';
+import { useSede } from '@/context/SedeContext';
+import AccessDeniedOverlay from '@/components/AccessDeniedOverlay';
+import { HardwareScannerDebouncer } from '@/lib/scannerDebounce';
+import { evaluateReceptionAccess, dispatchAccessDenied } from '@/lib/accessControlService';
+import { 
+  findStudentByCodeOrText, 
+  resolveClassForCheckIn, 
+  marcarAsistenciaPorAlumnoYSesion,
+  formatSedeName
+} from '@/lib/openClassService';
 
 interface ScanResult {
   status: 'idle' | 'success' | 'error';
@@ -18,14 +27,25 @@ interface ScanResult {
 interface RecepcionScanWidgetProps {
   selectedClaseId?: string | null;
   sedeName?: string;
+  activeSede?: 'consolidado' | 'tejar' | 'castilla';
   onCheckInSuccess?: () => void;
 }
 
 export default function RecepcionScanWidget({
   selectedClaseId,
   sedeName = 'Paseo Castilla',
+  activeSede: propActiveSede,
   onCheckInSuccess
 }: RecepcionScanWidgetProps) {
+  // Read active branch safely from context or props
+  let contextSede: 'consolidado' | 'tejar' | 'castilla' | undefined;
+  try {
+    const sedeCtx = useSede();
+    contextSede = sedeCtx?.activeSede;
+  } catch {}
+
+  const effectiveSede = propActiveSede || contextSede || (sedeName.toLowerCase().includes('tejar') ? 'tejar' : 'castilla');
+
   const [lastScan, setLastScan] = useState<ScanResult>({
     status: 'idle',
     mensaje: 'Esperando lectura del lector OBZ RF-70 o código QR...',
@@ -33,9 +53,58 @@ export default function RecepcionScanWidget({
   });
   const [historialReciente, setHistorialReciente] = useState<ScanResult[]>([]);
 
+  // Hardware Scanner Debouncer (>= 2.5s) (R1.3)
+  const debouncerRef = useRef(new HardwareScannerDebouncer(2500));
+
+  // Access Denied Overlay State (R1.2)
+  const [accessDeniedState, setAccessDeniedState] = useState<{
+    isOpen: boolean;
+    studentName?: string;
+    motivo?: string;
+    rawCode?: string;
+  }>({
+    isOpen: false
+  });
+
+  // Multi-channel sync for df_checkin_denied
+  useEffect(() => {
+    const handleDenied = (e: any) => {
+      const detail = e.detail || e;
+      setAccessDeniedState({
+        isOpen: true,
+        studentName: detail.student?.nombre_completo || detail.studentName,
+        motivo: detail.motivo || detail.message,
+        rawCode: detail.rawCode
+      });
+    };
+
+    window.addEventListener("df_checkin_denied" as any, handleDenied);
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("dance_factory_sync");
+      bc.onmessage = (evt) => {
+        if (evt.data?.type === "df_checkin_denied") {
+          handleDenied(evt.data);
+        }
+      };
+    } catch {}
+
+    return () => {
+      window.removeEventListener("df_checkin_denied" as any, handleDenied);
+      if (bc) bc.close();
+    };
+  }, []);
+
   const procesarLecturaQR = async (rawCode: string) => {
     const trimmed = rawCode.trim();
     if (!trimmed) return;
+
+    // 1. Hardware Debounce Protection (>= 2.5s)
+    const debounceRes = debouncerRef.current.processScan(trimmed);
+    if (!debounceRes.accepted) {
+      return;
+    }
 
     const horaActual = new Date().toLocaleTimeString('es-ES', {
       hour: '2-digit',
@@ -43,12 +112,22 @@ export default function RecepcionScanWidget({
       second: '2-digit'
     });
 
-    // Búsqueda ultra robusta por token NFC, QR, DNI, teléfono, email o nombre completo
+    // 2. Student Lookup across token NFC, QR, DNI, phone, email, full name
     const alumno = await findStudentByCodeOrText(trimmed);
 
-    // Si no existe el alumno
     if (!alumno) {
       playFeedbackSound('error');
+      setAccessDeniedState({
+        isOpen: true,
+        studentName: undefined,
+        motivo: 'Código escaneado no reconocido o alumno inexistente',
+        rawCode: trimmed
+      });
+      dispatchAccessDenied({
+        reason: 'ALUMNO_NO_ENCONTRADO',
+        message: '⛔ ACCESO DENEGADO: Código no reconocido o alumno inexistente. Pasar por mostrador de recepción',
+        rawCode: trimmed
+      });
       const resultado: ScanResult = {
         status: 'error',
         mensaje: 'Alumno no reconocido',
@@ -60,41 +139,28 @@ export default function RecepcionScanWidget({
       return;
     }
 
-    // 3. Validación de estado (solo "Activo")
-    if (alumno.estado !== 'Activo') {
+    // 3. Canonical Access Evaluation via evaluateReceptionAccess (R1.1)
+    const evalResult = evaluateReceptionAccess(alumno);
+
+    if (!evalResult.granted) {
       playFeedbackSound('error');
+      setAccessDeniedState({
+        isOpen: true,
+        studentName: alumno.nombre_completo,
+        motivo: evalResult.motivoDetallado || evalResult.message,
+        rawCode: trimmed
+      });
+      dispatchAccessDenied({
+        student: alumno,
+        reason: evalResult.reason,
+        message: evalResult.message,
+        rawCode: trimmed
+      });
+
       const resultado: ScanResult = {
         status: 'error',
         nombre: alumno.nombre_completo,
-        mensaje: `Acceso denegado: Alumno ${alumno.estado}`,
-        detalle: `Plan: ${alumno.plan_activo || 'Sin plan activo'}`,
-        timestamp: horaActual
-      };
-      setLastScan(resultado);
-      setHistorialReciente((prev) => [resultado, ...prev.slice(0, 9)]);
-      return;
-    }
-
-    // 4. Validación de Plan Activo y Saldo de Bono
-    const planLower = (alumno.plan_activo || '').toLowerCase().trim();
-    const sinPlan = !alumno.plan_activo || 
-      planLower === '' || 
-      planLower.includes('sin plan') || 
-      planLower.includes('ningun') || 
-      planLower.includes('pendiente');
-
-    const isBono = planLower.includes('bono') || planLower.includes('suelta') || (!planLower.includes('regular') && !planLower.includes('mensual') && !planLower.includes('ilimitad') && !planLower.includes('cuota') && alumno.clases_restantes !== null && alumno.clases_restantes !== undefined);
-    const bonoAgotado = isBono && (alumno.clases_restantes === null || alumno.clases_restantes === undefined || alumno.clases_restantes <= 0);
-
-    if (sinPlan || bonoAgotado) {
-      playFeedbackSound('error');
-      const motivo = sinPlan 
-        ? 'SIN PLAN ACTIVO (No matriculado ni con bono)' 
-        : `BONO AGOTADO (0 clases restantes en ${alumno.plan_activo || 'Bono'})`;
-      const resultado: ScanResult = {
-        status: 'error',
-        nombre: alumno.nombre_completo,
-        mensaje: `⛔ ACCESO DENEGADO: ${motivo}`,
+        mensaje: evalResult.message,
         detalle: 'Debe pasar por el mostrador de recepción para regularizar su cuota o bono.',
         timestamp: horaActual
       };
@@ -104,20 +170,23 @@ export default function RecepcionScanWidget({
       logActivity({
         origen: 'recepcion',
         tipo_evento: 'checkin_denegado',
-        descripcion: `Acceso denegado en recepción: ${alumno.nombre_completo} está ${motivo}`,
+        descripcion: `Acceso denegado en recepción: ${alumno.nombre_completo} está ${evalResult.motivoDetallado || evalResult.reason}`,
         usuario_afectado: alumno.nombre_completo,
-        sede: sedeName
+        sede: formatSedeName(effectiveSede)
       });
       return;
     }
 
-    // 4. Inserción de asistencia en tabla asistencias de Dance Factory
-    const asistenciaPayload: { alumno_id: string; clase_id?: string; fecha_hora?: string } = {
+    // 4. Intelligent Class Resolution via resolveClassForCheckIn (R1.4)
+    const resolved = await resolveClassForCheckIn(alumno, effectiveSede, selectedClaseId);
+
+    // 5. Inserción de asistencia en tabla asistencias de Dance Factory
+    const asistenciaPayload: { alumno_id: string; clase_id?: string; fecha_hora: string } = {
       alumno_id: alumno.id,
       fecha_hora: new Date().toISOString()
     };
-    if (selectedClaseId) {
-      asistenciaPayload.clase_id = selectedClaseId;
+    if (resolved.claseId) {
+      asistenciaPayload.clase_id = resolved.claseId;
     }
 
     const { error: errorAsistencia } = await supabase
@@ -136,8 +205,30 @@ export default function RecepcionScanWidget({
       return;
     }
 
-    // 5. Check-in Exitoso
+    // 6. Sincronizar asistencia en Open Class si la clase resuelta es una Open Class
+    if (resolved.isOpenClass && resolved.claseId) {
+      try {
+        const todayNow = new Date();
+        const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, '0')}-${String(todayNow.getDate()).padStart(2, '0')}`;
+        marcarAsistenciaPorAlumnoYSesion(alumno.id, resolved.claseId, todayISO);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('df_reservas_updated'));
+        }
+      } catch (e) {
+        console.warn('[RecepcionScanWidget] Error sincronizando asistencia open class:', e);
+      }
+    }
+
+    // 7. Disparar evento global de checkin
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('df_checkin_success', {
+        detail: { alumno, resolved }
+      }));
+    }
+
+    // 8. Check-in Exitoso: Feedback Sonoro y Notificación Visual
     playFeedbackSound('success');
+    const planLower = (alumno.plan_activo || '').toLowerCase().trim();
     const isRegular =
       planLower.includes('regular') ||
       planLower.includes('mensual') ||
@@ -148,19 +239,24 @@ export default function RecepcionScanWidget({
       ? `(Bono: ${alumno.clases_restantes ?? 0} clases de saldo)`
       : '(Cuota Regular Mensual)';
 
+    const classDetailStr = resolved.claseNombre ? ` • ${resolved.claseNombre}` : '';
+
     logActivity({
       origen: 'recepcion',
       tipo_evento: 'checkin',
-      descripcion: `Validación automática vía WebSocket Lector OBZ RF-70 (${saldoInfo})`,
+      descripcion: `Validación automática vía WebSocket Lector OBZ RF-70 (${saldoInfo}${classDetailStr})`,
       usuario_afectado: alumno.nombre_completo,
-      sede: sedeName
+      sede: resolved.sede ? formatSedeName(resolved.sede) : formatSedeName(effectiveSede)
     });
 
     const resultado: ScanResult = {
       status: 'success',
       nombre: alumno.nombre_completo,
       plan: `${alumno.plan_activo || 'Cuota Activa'} ${saldoInfo}`.trim(),
-      mensaje: 'Entrada autorizada',
+      mensaje: resolved.claseNombre ? `Entrada autorizada: ${resolved.claseNombre}` : 'Entrada autorizada',
+      detalle: resolved.profesor 
+        ? `Prof: ${resolved.profesor} • ${formatSedeName(resolved.sede || effectiveSede)}`
+        : resolved.claseNombre || 'Acceso general a instalaciones',
       timestamp: horaActual
     };
 
@@ -274,6 +370,15 @@ export default function RecepcionScanWidget({
           </div>
         </div>
       )}
+
+      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2) */}
+      <AccessDeniedOverlay
+        isOpen={accessDeniedState.isOpen}
+        studentName={accessDeniedState.studentName}
+        motivo={accessDeniedState.motivo}
+        rawCode={accessDeniedState.rawCode}
+        onClose={() => setAccessDeniedState(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

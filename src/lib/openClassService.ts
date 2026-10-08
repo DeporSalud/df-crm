@@ -1,4 +1,6 @@
 import { supabase } from "@/lib/supabase/client";
+import { getMadridHoursRemaining, getMadridDayRangeUTC, toMadridDate } from "@/lib/timezones";
+import { publishSyncEvent } from "./syncEventBus";
 
 export interface OpenClassReserva {
   id: string;
@@ -136,8 +138,8 @@ export function cleanDateISO(fechaISO: string | null | undefined): string {
   const normalized = raw.replace(/[\/\.]/g, "-");
   const parts = normalized.split("-").map(Number);
   if (parts.length === 3 && parts.every(n => !isNaN(n))) {
-    if (parts[0] > 31) {
-      // YYYY-MM-DD
+    if (parts[0] > 31 || /^\d{2}-\d{2}-\d{2}$/.test(normalized)) {
+      // YYYY-MM-DD or YY-MM-DD
       const y = parts[0] < 100 ? 2000 + parts[0] : parts[0];
       const m = String(parts[1]).padStart(2, "0");
       const d = String(parts[2]).padStart(2, "0");
@@ -387,6 +389,7 @@ export function saveOpenClassReservas(reservas: OpenClassReserva[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(reservas));
     window.dispatchEvent(new Event("df_reservas_updated"));
+    publishSyncEvent("df_reservas_updated");
   } catch (e) {
     console.error("Error saving openclass reservas:", e);
   }
@@ -501,17 +504,13 @@ export function getReservasPorClaseYSesion(claseId: string, fechaISO: string): O
 }
 
 /**
- * Calculates hours remaining until session start.
+ * Calculates hours remaining until session start in Europe/Madrid.
  * Negative number if already started/past.
  */
 export function getHorasRestantesParaSesion(fechaISO?: string, horaInicio?: string): number {
   const cleanISO = cleanDateISO(fechaISO || "");
   if (!cleanISO) return 0;
-  const [year, month, day] = cleanISO.split("-").map(Number);
-  const [h, m] = (horaInicio || "19:00").split(":").map(Number);
-  const sessionDate = new Date(year, month - 1, day, isNaN(h) ? 19 : h, isNaN(m) ? 0 : m, 0, 0);
-  const now = new Date();
-  return (sessionDate.getTime() - now.getTime()) / (1000 * 60 * 60);
+  return getMadridHoursRemaining(cleanISO, horaInicio || "19:00");
 }
 
 export const OPEN_CLASS_MIN_STUDENTS = 4;
@@ -523,9 +522,56 @@ export interface OpenClassSessionStatus {
   reservasCount: number;
   minimoRequerido: number;
   puedeReservar: boolean;
+  refundRequired?: boolean;
   motivoBloqueo?: string;
   badgeText: string;
   badgeColor: string;
+}
+
+/**
+ * Helper canonical evaluator for Open Class cutoff rules.
+ */
+export function evaluateOpenClassCutoff(hoursRemaining: number, studentCount: number, maxCapacity: number = 20) {
+  if (hoursRemaining <= 0) {
+    return {
+      status: "finalizada" as const,
+      puedeReservar: false,
+      refundRequired: false,
+      badgeText: "Finalizada",
+      reason: "La sesión ya ha comenzado o finalizado."
+    };
+  }
+
+  // Under 5 hours strict rule
+  if (hoursRemaining < OPEN_CLASS_CUTOFF_HOURS) {
+    if (studentCount < OPEN_CLASS_MIN_STUDENTS) {
+      return {
+        status: "suspendida_aforo_minimo" as const,
+        puedeReservar: false,
+        refundRequired: true,
+        badgeText: `⚠️ Suspendida (mín. ${OPEN_CLASS_MIN_STUDENTS} pers.)`,
+        reason: `Clase suspendida: No se alcanzó el mínimo de ${OPEN_CLASS_MIN_STUDENTS} personas a las ${OPEN_CLASS_CUTOFF_HOURS}h previas.`
+      };
+    } else {
+      return {
+        status: "confirmada" as const,
+        puedeReservar: false,
+        refundRequired: false,
+        badgeText: "✓ Confirmada (Plazo cerrado)",
+        reason: `Plazo de reserva cerrado estrictamente ${OPEN_CLASS_CUTOFF_HOURS}h antes.`
+      };
+    }
+  }
+
+  // 5 hours or more remaining
+  const isFull = studentCount >= maxCapacity;
+  return {
+    status: studentCount >= OPEN_CLASS_MIN_STUDENTS ? ("confirmada" as const) : ("abierta" as const),
+    puedeReservar: !isFull,
+    refundRequired: false,
+    badgeText: studentCount >= OPEN_CLASS_MIN_STUDENTS ? `✓ Confirmada (${studentCount}/${maxCapacity})` : `${studentCount}/${OPEN_CLASS_MIN_STUDENTS} mín. (corte 5h)`,
+    reason: isFull ? "Aforo completo" : "Abierta para reservas"
+  };
 }
 
 /**
@@ -550,6 +596,7 @@ export function getOpenClassSessionStatus(
       reservasCount,
       minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
       puedeReservar: false,
+      refundRequired: false,
       motivoBloqueo: "La sesión ya ha comenzado o finalizado.",
       badgeText: "Finalizada",
       badgeColor: "bg-slate-800 text-slate-400 border border-slate-700"
@@ -565,6 +612,7 @@ export function getOpenClassSessionStatus(
         reservasCount,
         minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
         puedeReservar: false,
+        refundRequired: true,
         motivoBloqueo: `Clase suspendida: No se alcanzó el mínimo de ${OPEN_CLASS_MIN_STUDENTS} personas a las ${OPEN_CLASS_CUTOFF_HOURS}h previas de la sesión. Saldo devuelto a tu bono.`,
         badgeText: `⚠️ Suspendida (mín. ${OPEN_CLASS_MIN_STUDENTS} pers.)`,
         badgeColor: "bg-red-500/20 text-red-300 border border-red-500/40"
@@ -576,6 +624,7 @@ export function getOpenClassSessionStatus(
         reservasCount,
         minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
         puedeReservar: false,
+        refundRequired: false,
         motivoBloqueo: `Plazo de reserva cerrado: según la normativa oficial de Dance Factory, las reservas cierran estrictamente ${OPEN_CLASS_CUTOFF_HOURS}h antes del inicio de la clase.`,
         badgeText: "✓ Confirmada (Plazo cerrado)",
         badgeColor: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
@@ -591,6 +640,7 @@ export function getOpenClassSessionStatus(
     reservasCount,
     minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
     puedeReservar: !isFull,
+    refundRequired: false,
     motivoBloqueo: isFull ? "Aforo completo" : undefined,
     badgeText: hasMin
       ? `✓ Confirmada (${reservasCount}/${aforoMaximo})`
@@ -602,92 +652,164 @@ export function getOpenClassSessionStatus(
 }
 
 /**
+ * Safely deletes a specific Open Class reservation from alumnos_clases,
+ * guaranteed to NEVER delete reservations for different dates or subsequent weeks.
+ */
+export async function deleteAlumnosClasesBySessionDate(
+  alumnoId: string,
+  claseId: string,
+  sessionDateISO: string
+): Promise<{ success: boolean; count: number; error?: any }> {
+  if (!alumnoId || !claseId || !sessionDateISO) {
+    return { success: false, count: 0, error: "Missing required parameters (alumnoId, claseId, sessionDateISO)" };
+  }
+
+  const cleanISO = cleanDateISO(sessionDateISO);
+  const normClassId = normalizeClaseId(claseId);
+  if (!cleanISO || !normClassId) {
+    return { success: false, count: 0, error: "Invalid date or class UUID" };
+  }
+
+  // 1. Calculate the Madrid day boundaries in UTC (CET: UTC+1, CEST: UTC+2)
+  const { startISO, endISO } = getMadridDayRangeUTC(cleanISO);
+
+  // 2. Expand slightly to accommodate literal UTC strings (e.g. "2026-09-21T00:00:00.000Z")
+  const literalStart = `${cleanISO}T00:00:00.000Z`;
+  const literalEnd = `${cleanISO}T23:59:59.999Z`;
+  const minBound = startISO < literalStart ? startISO : literalStart;
+  const maxBound = endISO > literalEnd ? endISO : literalEnd;
+
+  // 3. Perform strict scoped deletion
+  const { error, count } = await supabase
+    .from("alumnos_clases")
+    .delete({ count: "exact" })
+    .eq("alumno_id", alumnoId)
+    .eq("clase_id", normClassId)
+    .gte("asignado_en", minBound)
+    .lte("asignado_en", maxBound);
+
+  if (error) {
+    console.error(`[deleteAlumnosClasesBySessionDate] Error deleting for student ${alumnoId}:`, error);
+    return { success: false, count: 0, error };
+  }
+
+  // 4. Secondary fallback if count is 0: match string prefix if stored without timezone
+  if (count === 0) {
+    const { error: errFallback, count: countFallback } = await supabase
+      .from("alumnos_clases")
+      .delete({ count: "exact" })
+      .eq("alumno_id", alumnoId)
+      .eq("clase_id", normClassId)
+      .ilike("asignado_en", `${cleanISO}%`);
+
+    if (!errFallback && countFallback && countFallback > 0) {
+      return { success: true, count: countFallback };
+    }
+  }
+
+  return { success: true, count: count || 0 };
+}
+
+let isAutoSuspensionProcessing = false;
+
+/**
  * Detecta sesiones dentro de las 5 horas previas con menos de 4 alumnos,
  * cancela la sesión y reembolsa automáticamente 1 clase al bono del alumno en Supabase.
  * 
  * Reglas de seguridad e idempotencia:
  * 1. Opera ÚNICAMENTE sobre sesiones FUTURAS (horasRestantes > 0 && horasRestantes <= OPEN_CLASS_CUTOFF_HOURS).
  * 2. Utiliza un registro persistente (df_suspended_sessions_v1) para garantizar que una sesión jamás se suspenda ni reembolse más de una vez.
- * 3. Al reembolsar, elimina el registro en alumnos_clases en Supabase para que syncReservasFromSupabase no lo vuelva a importar.
+ * 3. Al reembolsar, elimina el registro en alumnos_clases en Supabase de forma segura por fecha (deleteAlumnosClasesBySessionDate).
  */
 export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ canceladasCount: number; alumnosReembolsados: string[] }> {
   if (typeof window === "undefined") return { canceladasCount: 0, alumnosReembolsados: [] };
   
-  // Conjunto de sesiones ya suspendidas previamente
-  let suspendedSessions: string[] = [];
+  if (isAutoSuspensionProcessing) {
+    return { canceladasCount: 0, alumnosReembolsados: [] };
+  }
+  isAutoSuspensionProcessing = true;
+
   try {
-    const raw = localStorage.getItem("df_suspended_sessions_v1");
-    if (raw) suspendedSessions = JSON.parse(raw);
-  } catch {}
-  const suspendedSet = new Set(suspendedSessions);
+    // Conjunto de sesiones ya suspendidas previamente
+    let suspendedSessions: string[] = [];
+    try {
+      const raw = localStorage.getItem("df_suspended_sessions_v1");
+      if (raw) suspendedSessions = JSON.parse(raw);
+    } catch {}
+    const suspendedSet = new Set(suspendedSessions);
 
-  const current = getOpenClassReservas();
-  let updated = false;
-  const reembolsados: string[] = [];
+    const current = getOpenClassReservas();
+    let updated = false;
+    const reembolsados: string[] = [];
 
-  const sessionsMap: Record<string, OpenClassReserva[]> = {};
-  current.forEach(r => {
-    if (r.estado === "Confirmada") {
-      const key = `${normalizeClaseId(r.clase_id)}_${cleanDateISO(r.fecha_iso)}`;
-      if (!sessionsMap[key]) sessionsMap[key] = [];
-      sessionsMap[key].push(r);
-    }
-  });
+    const sessionsMap: Record<string, OpenClassReserva[]> = {};
+    current.forEach(r => {
+      if (r.estado === "Confirmada") {
+        const key = `${normalizeClaseId(r.clase_id)}_${cleanDateISO(r.fecha_iso)}`;
+        if (!sessionsMap[key]) sessionsMap[key] = [];
+        sessionsMap[key].push(r);
+      }
+    });
 
-  for (const [sessionKey, reservas] of Object.entries(sessionsMap)) {
-    // Si la sesión ya fue suspendida y reembolsada, no volver a procesar
-    if (suspendedSet.has(sessionKey)) continue;
+    for (const [sessionKey, reservas] of Object.entries(sessionsMap)) {
+      // Si la sesión ya fue suspendida y reembolsada, no volver a procesar
+      if (suspendedSet.has(sessionKey)) continue;
 
-    if (reservas.length > 0 && reservas.length < OPEN_CLASS_MIN_STUDENTS) {
-      const sample = reservas[0];
-      const horasRestantes = getHorasRestantesParaSesion(sample.fecha_iso, sample.hora_inicio);
-      
-      // ÚNICAMENTE sesiones futuras dentro del margen de 5 horas previas
-      if (horasRestantes > 0 && horasRestantes <= OPEN_CLASS_CUTOFF_HOURS) {
-        suspendedSet.add(sessionKey);
+      if (reservas.length > 0 && reservas.length < OPEN_CLASS_MIN_STUDENTS) {
+        const sample = reservas[0];
+        const horasRestantes = getHorasRestantesParaSesion(sample.fecha_iso, sample.hora_inicio);
+        
+        // ÚNICAMENTE sesiones futuras dentro del margen de 5 horas previas
+        if (horasRestantes > 0 && horasRestantes <= OPEN_CLASS_CUTOFF_HOURS) {
+          suspendedSet.add(sessionKey);
 
-        for (const r of reservas) {
-          r.estado = "Cancelada";
-          r.asistido = false;
-          updated = true;
-          reembolsados.push(r.alumno_nombre || r.alumno_id);
+          for (const r of reservas) {
+            r.estado = "Cancelada";
+            r.asistido = false;
+            updated = true;
+            reembolsados.push(r.alumno_nombre || r.alumno_id);
 
-          // Reembolsar 1 clase en Supabase si tiene saldo de bono y eliminar reserva de alumnos_clases
-          try {
-            const { data: st } = await supabase
-              .from("alumnos")
-              .select("id, clases_restantes, plan_activo")
-              .eq("id", r.alumno_id)
-              .maybeSingle();
+            // Reembolsar 1 clase en Supabase si tiene saldo de bono y eliminar reserva de alumnos_clases de forma segura
+            try {
+              const { data: st } = await supabase
+                .from("alumnos")
+                .select("id, clases_restantes, plan_activo")
+                .eq("id", r.alumno_id)
+                .maybeSingle();
 
-            if (st && typeof st.clases_restantes === "number") {
-              await supabase.from("alumnos").update({
-                clases_restantes: st.clases_restantes + 1
-              }).eq("id", st.id);
+              // Safe deletion in alumnos_clases filtered strictly by session date
+              await deleteAlumnosClasesBySessionDate(r.alumno_id, r.clase_id, sample.fecha_iso);
+
+              if (st && typeof st.clases_restantes === "number") {
+                const planLower = (st.plan_activo || "").toLowerCase();
+                const isUnlimited = planLower.includes("ilimitad");
+                if (!isUnlimited) {
+                  await supabase.from("alumnos").update({
+                    clases_restantes: st.clases_restantes + 1
+                  }).eq("id", st.id);
+                }
+              }
+            } catch (e) {
+              console.error("Error reembolsando saldo a alumno por aforo mínimo:", e);
             }
-
-            // Eliminar asignación de la base de datos para evitar re-lectura activa
-            await supabase.from("alumnos_clases")
-              .delete()
-              .eq("alumno_id", r.alumno_id)
-              .eq("clase_id", r.clase_id);
-          } catch (e) {
-            console.error("Error reembolsando saldo a alumno por aforo mínimo:", e);
           }
         }
       }
     }
-  }
 
-  if (updated) {
-    try {
-      localStorage.setItem("df_suspended_sessions_v1", JSON.stringify(Array.from(suspendedSet)));
-    } catch {}
-    saveOpenClassReservas(current);
-    window.dispatchEvent(new Event("df_reservas_updated"));
-  }
+    if (updated) {
+      try {
+        localStorage.setItem("df_suspended_sessions_v1", JSON.stringify(Array.from(suspendedSet)));
+      } catch {}
+      saveOpenClassReservas(current);
+      window.dispatchEvent(new Event("df_reservas_updated"));
+      publishSyncEvent("df_reservas_updated");
+    }
 
-  return { canceladasCount: reembolsados.length, alumnosReembolsados: reembolsados };
+    return { canceladasCount: reembolsados.length, alumnosReembolsados: reembolsados };
+  } finally {
+    isAutoSuspensionProcessing = false;
+  }
 }
 
 /**
@@ -1149,13 +1271,14 @@ export async function resolveClassForCheckIn(
       }
 
       if (bestRegular) {
+        const isOpen = (bestRegular.nombre_clase || "").toUpperCase().includes("OPEN") || bestRegular.tipo_clase === "Open Class";
         return {
           claseId: bestRegular.id,
           claseNombre: bestRegular.nombre_clase,
           profesor: bestRegular.profesor,
           sede: bestRegular.sede,
-          isRegular: true,
-          isOpenClass: false
+          isRegular: !isOpen,
+          isOpenClass: isOpen
         };
       }
     }
@@ -1285,5 +1408,8 @@ export async function resolveClassForCheckIn(
     isOpenClass: false
   };
 }
+
+export { evaluateReceptionAccess, isCuotaImpagada, dispatchAccessDenied } from "./accessControlService";
+export type { AccessEvaluationResult, AccessDenialReason, StudentAccessCandidate } from "./accessControlService";
 
 

@@ -22,8 +22,10 @@ import {
   getSesionReservasCount,
   syncReservasFromSupabase,
   isReservaCancelable,
-  getTodayISO
+  getTodayISO,
+  deleteAlumnosClasesBySessionDate
 } from "@/lib/openClassService";
+import { publishSyncEvent } from "@/lib/syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
 
 interface OpenClassAsistentesModalProps {
@@ -341,26 +343,20 @@ export default function OpenClassAsistentesModal({
           }
         }
 
-        // Clean up specific session enrollment in alumnos_clases
+        // Clean up specific session enrollment in alumnos_clases safely
         try {
-          const targetClassId = normalizeClaseId(reserva.clase_id);
-          const sessionDate = reserva.fecha_iso;
-          if (sessionDate) {
-            await supabase
-              .from("alumnos_clases")
-              .delete()
-              .eq("alumno_id", reserva.alumno_id)
-              .eq("clase_id", targetClassId)
-              .gte("asignado_en", `${sessionDate}T00:00:00`)
-              .lte("asignado_en", `${sessionDate}T23:59:59`);
-          } else {
-            await supabase
-              .from("alumnos_clases")
-              .delete()
-              .eq("alumno_id", reserva.alumno_id)
-              .eq("clase_id", targetClassId);
+          if (reserva.alumno_id && reserva.clase_id && reserva.fecha_iso) {
+            await deleteAlumnosClasesBySessionDate(
+              reserva.alumno_id,
+              reserva.clase_id,
+              reserva.fecha_iso
+            );
           }
-        } catch (e) {}
+        } catch (e) {
+          console.warn("Could not delete from alumnos_clases:", e);
+        }
+
+        publishSyncEvent("df_reservas_updated");
       }
 
       // 3. Log activity

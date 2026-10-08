@@ -11,6 +11,8 @@
  *    - Compras posteriores: 0,00 € (ya abonada en compra anterior o saldo activo).
  */
 
+export const PRECIO_MATRICULA_ANUAL = 15;
+
 export interface BonoItemDefinition {
   id: string;
   nombre: string;
@@ -96,6 +98,7 @@ export interface BonoCalculationInput {
   isFirstBonoOfYearExplicit?: boolean;
   isPromoSeptiembre?: boolean;
   clasesCount?: number;
+  currentDate?: Date;
 }
 
 export type ExemptionType = "regular" | "teacher" | "repeat_buyer" | "promo_septiembre" | "october_renewal_50" | "clase_suelta" | "none";
@@ -112,6 +115,7 @@ export interface BonoCalculationResult {
   exemptionLabel: string;
   totalToPay: number;
   isFirstBonoOfYear: boolean;
+  temporada?: string;
 }
 
 export const TEACHER_EMAILS = [
@@ -300,8 +304,86 @@ export function isRegularClassStudent(
 }
 
 /**
+ * Determines the official Dance Factory academic season for any given date.
+ * Sept 1 to June 30:
+ * - Months 7..11 (Aug..Dec): Year Y / Year Y+1 (e.g. Aug 2026 -> "2026-2027", Oct 2026 -> "2026-2027")
+ * - Months 0..6 (Jan..July): Year Y-1 / Year Y (e.g. Feb 2027 -> "2026-2027")
+ */
+export function getCurrentSeason(date: Date = new Date()): string {
+  const d = date instanceof Date && !isNaN(date.getTime()) ? date : new Date(date || Date.now());
+  const year = d.getFullYear();
+  const month = d.getMonth(); // 0 = Jan, 7 = Aug, 8 = Sept
+
+  if (month >= 7) {
+    return `${year}-${year + 1}`;
+  } else {
+    return `${year - 1}-${year}`;
+  }
+}
+
+/**
+ * Returns UTC Date boundaries for a season string (e.g. "2026-2027").
+ */
+export function getSeasonDateRange(seasonStr: string): { start: Date; end: Date } {
+  const parts = (seasonStr || "").split("-");
+  const startYear = parseInt(parts[0], 10) || 2026;
+  const endYear = parseInt(parts[1], 10) || (startYear + 1);
+
+  // Pre-season opens August 1st, official season ends June 30th (summer buffer July 31st)
+  const start = new Date(Date.UTC(startYear, 7, 1, 0, 0, 0, 0)); // Aug 1
+  const end = new Date(Date.UTC(endYear, 6, 31, 23, 59, 59, 999)); // July 31
+
+  return { start, end };
+}
+
+/**
+ * Evaluates whether student has paid the registration fee for the active season.
+ * ZERO localStorage! Reads directly from student entity fetched from Supabase.
+ */
+export function isMatriculaValidForCurrentSeason(
+  student?: any,
+  date: Date = new Date()
+): boolean {
+  if (!student) return false;
+
+  const currentSeason = getCurrentSeason(date);
+
+  // 1. Explicit database season string match
+  if (student.temporada_matricula && typeof student.temporada_matricula === "string") {
+    const cleanSeason = student.temporada_matricula.trim();
+    if (cleanSeason === currentSeason) {
+      return student.matricula_pagada === true;
+    }
+    // If season is explicitly recorded and does NOT match, it is EXPIRED for the new season!
+    return false;
+  }
+
+  // 2. Date-based verification if matricula_fecha is present
+  if (student.matricula_fecha && typeof student.matricula_fecha === "string") {
+    const paymentDate = new Date(student.matricula_fecha);
+    if (!isNaN(paymentDate.getTime())) {
+      const { start, end } = getSeasonDateRange(currentSeason);
+      if (paymentDate >= start && paymentDate <= end) {
+        return student.matricula_pagada !== false;
+      } else {
+        // Outside current season range -> expired!
+        return false;
+      }
+    }
+  }
+
+  // 3. Boolean flag fallback (if season/date columns not yet backfilled or present)
+  if (student.matricula_pagada === true) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Comprueba si el alumno adquirió un bono de Open Class en el mes de septiembre de 2026.
  * Estos alumnos disfrutan de un 50% de descuento en la matrícula al renovar en octubre (7,50 € en vez de 15,00 €).
+ * ZERO localStorage!
  */
 export function hasPurchasedSeptemberBono(student?: any): boolean {
   if (!student) return false;
@@ -311,14 +393,7 @@ export function hasPurchasedSeptemberBono(student?: any): boolean {
     return true;
   }
 
-  // 2. localStorage si está disponible
-  if (typeof window !== "undefined" && student.id) {
-    if (localStorage.getItem(`df_has_september_bono_${student.id}`) === "true") {
-      return true;
-    }
-  }
-
-  // 3. Inspección de plan_activo: debe contener específicamente la promoción o bono de septiembre
+  // 2. Inspección de plan_activo: debe contener específicamente la promoción o bono de septiembre
   const plan = (student.plan_activo || "").trim().toLowerCase();
   if (
     plan.includes("septiembre") || 
@@ -357,6 +432,7 @@ export function hasPurchasedSeptemberBono(student?: any): boolean {
 /**
  * Comprueba si el alumno que compró bono en septiembre ya ha abonado la matrícula reducida de octubre (7,50 €)
  * o la matrícula anual de la temporada.
+ * ZERO localStorage!
  */
 export function hasPaidOctoberRenewal(student?: any): boolean {
   if (!student) return false;
@@ -370,32 +446,40 @@ export function hasPaidOctoberRenewal(student?: any): boolean {
     return true;
   }
 
-  if (typeof window !== "undefined" && student.id) {
-    if (localStorage.getItem(`df_matricula_octubre_paid_${student.id}`) === "true") {
-      return true;
-    }
-    if (localStorage.getItem(`df_matricula_paid_${student.id}`) === "true") {
-      return true;
-    }
-  }
-
   return false;
 }
 
 /**
- * Comprueba si el alumno ya ha abonado la matrícula de temporada 2026/2027
- * (por ejemplo en una compra anterior de bono o registro previo).
+ * Comprueba si el alumno ya ha abonado la matrícula de temporada activa.
+ * ZERO localStorage!
  */
-export function hasPaidSeasonMatricula(student?: any): boolean {
+export function hasPaidSeasonMatricula(student?: any, date: Date = new Date()): boolean {
   if (!student) return false;
 
-  // 1. Flag explícito
-  if (student.matricula_pagada === true || student.matricula_bonos_pagada === true) {
+  // 1. Direct season validity
+  if (isMatriculaValidForCurrentSeason(student, date)) {
     return true;
   }
 
-  // 2. Fecha de matrícula de temporada registrada
-  if (student.matricula_fecha && typeof student.matricula_fecha === "string" && student.matricula_fecha.trim() !== "") {
+  // If student has explicit season or payment date that did NOT match current season, it is expired!
+  const currentSeason = getCurrentSeason(date);
+  if (student.temporada_matricula && typeof student.temporada_matricula === "string") {
+    if (student.temporada_matricula.trim() !== currentSeason) {
+      return false;
+    }
+  }
+  if (student.matricula_fecha && typeof student.matricula_fecha === "string") {
+    const paymentDate = new Date(student.matricula_fecha);
+    if (!isNaN(paymentDate.getTime())) {
+      const { start, end } = getSeasonDateRange(currentSeason);
+      if (paymentDate < start || paymentDate > end) {
+        return false;
+      }
+    }
+  }
+
+  // 2. Flag explícito alternativo
+  if (student.matricula_bonos_pagada === true) {
     return true;
   }
 
@@ -415,8 +499,6 @@ export function hasPaidSeasonMatricula(student?: any): boolean {
   }
 
   // 5. Plan activo consolidado previo de bono específico adquirido
-  // NOTA: NO incluir 'open class' genérico aquí, porque los alumnos exclusivos de Open Class
-  // tienen la etiqueta/categoría 'Open Class' pero deben abonar la matrícula en su 1ª compra.
   const plan = (student.plan_activo || "").trim().toLowerCase();
   if (
     plan && 
@@ -468,12 +550,15 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
     assignedClassIds,
     userRole,
     isTeacher: explicitIsTeacher,
-    isFirstBonoOfYearExplicit
+    isFirstBonoOfYearExplicit,
+    currentDate
   } = params;
 
+  const calcDate = currentDate ? new Date(currentDate) : new Date();
+  const currentSeason = getCurrentSeason(calcDate);
   const teacher = explicitIsTeacher ?? isTeacherProfile(student, undefined, userRole);
   const regular = isRegularClassStudent(student, { assignedClassIds });
-  const alreadyPaid = hasPaidSeasonMatricula(student);
+  const alreadyPaid = hasPaidSeasonMatricula(student, calcDate);
   const isPromo = isPromoSeptiembreBono(bonoId) || Boolean(params.isPromoSeptiembre);
   const isSeptemberBuyer = hasPurchasedSeptemberBono(student);
   const alreadyPaidRenewal = hasPaidOctoberRenewal(student);
@@ -509,6 +594,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
         exemptionLabel: "0,00€ (Sin Matrícula en Clase Suelta)",
         totalToPay: bonoPrice,
         isFirstBonoOfYear: false,
+        temporada: currentSeason,
       };
     }
 
@@ -524,6 +610,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
       exemptionLabel: "0,00€ (Sin Matrícula en Clase Suelta)",
       totalToPay: effectiveBasePrice,
       isFirstBonoOfYear: false,
+      temporada: currentSeason,
     };
   }
 
@@ -545,6 +632,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
         exemptionLabel: "0,00€ (Matrícula Gratuita Promo Septiembre)",
         totalToPay: bonoPrice,
         isFirstBonoOfYear: false,
+        temporada: currentSeason,
       };
     }
 
@@ -560,6 +648,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
       exemptionLabel: "0,00€ (Matrícula Gratuita Promo Septiembre)",
       totalToPay: effectiveBasePrice,
       isFirstBonoOfYear: false,
+      temporada: currentSeason,
     };
   }
 
@@ -580,6 +669,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
       exemptionLabel: "0,00€ (Exenta por perfil Docente)",
       totalToPay: bonoPrice,
       isFirstBonoOfYear: false,
+      temporada: currentSeason,
     };
   }
 
@@ -597,6 +687,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
       exemptionLabel: "0,00€ (Exenta por ser alumno de Clases Regulares)",
       totalToPay: effectiveBasePrice,
       isFirstBonoOfYear: false,
+      temporada: currentSeason,
     };
   }
 
@@ -614,11 +705,11 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
       exemptionLabel: "0,00€ (Abonada previamente)",
       totalToPay: effectiveBasePrice,
       isFirstBonoOfYear: false,
+      temporada: currentSeason,
     };
   }
 
-  // 4. NUEVA REGLA: Alumno que cogió un bono en Septiembre -> 50% de matrícula en Octubre (7,50 €)
-  // No requiere selector 'Soy alumno / No soy alumno', se aplica directamente.
+  // 4. Alumno que cogió un bono en Septiembre -> 50% de matrícula en Octubre (7,50 €)
   if (isSeptemberBuyer && !alreadyPaidRenewal) {
     return {
       bonoId,
@@ -632,6 +723,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
       exemptionLabel: "7,50 € (50% Dto. Renovación Octubre)",
       totalToPay: Math.round((effectiveBasePrice + 7.50) * 100) / 100,
       isFirstBonoOfYear: true,
+      temporada: currentSeason,
     };
   }
 
@@ -648,6 +740,7 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
     exemptionLabel: "+15,00 € (Matrícula Anual)",
     totalToPay: Math.round((effectiveBasePrice + 15.00) * 100) / 100,
     isFirstBonoOfYear: true,
+    temporada: currentSeason,
   };
 }
 
@@ -657,11 +750,8 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
  * Reglas de negocio:
  * 1. Bonos Promo Septiembre (promo_sep_...): caducan el 30 de septiembre de 2026 (23:59h hora peninsular / 20:00 UTC).
  * 2. Bonos Regulares (Bono 4, Bono 8, Bono 10, Pase Ilimitado, Clase Suelta):
- *    Tienen una validez oficial de 1 mes (30 días naturales) desde la fecha de compra/activación
- *    (Bono 8: 45 días, Bono 10: 60 días según tarifario).
- *    NUNCA deben caducar el 30 de septiembre de 2026.
- *    Si en localStorage existía un valor corrupto (<= 30/09/2026) fruto de una clasificación errónea previa,
- *    se sanea automáticamente recalculando 30 días naturales desde la fecha de compra (o desde hoy).
+ *    Tienen una validez oficial de 1 mes (30 días naturales) desde la fecha de compra/activación.
+ *    ZERO localStorage!
  */
 export function calculateBonoExpirationDate(
   student?: any,
@@ -672,7 +762,6 @@ export function calculateBonoExpirationDate(
   const plan = (student.plan_activo || "").toLowerCase().trim();
   const classesRemaining = typeof student.clases_restantes === "number" ? student.clases_restantes : 0;
   
-  // Si no tiene plan o es sin plan o no tiene clases restantes
   const isBono = (
     plan.includes("bono") || 
     plan.includes("pase") || 
@@ -695,19 +784,14 @@ export function calculateBonoExpirationDate(
     return new Date("2026-09-30T20:00:00.000Z");
   }
 
-  // 2. Bonos Regulares (Bono 4, Bono 8, Bono 10, Pase Ilimitado, Clase Suelta):
-  // Validez de 30 días naturales (1 mes) desde la fecha de compra/activación.
-
-  // Si hay una fecha en storedCaducidad, verificar que sea legítima y NO un residuo corrupto de septiembre
+  // 2. Bonos Regulares: Validez de 30 días naturales (1 mes) desde la fecha de compra/activación.
   if (storedCaducidad) {
     const parsed = new Date(storedCaducidad);
-    // Sanación de error: un bono regular NO caduca el 30 de septiembre de 2026
     if (!isNaN(parsed.getTime()) && parsed > new Date("2026-09-30T23:59:59.999Z")) {
       return parsed;
     }
   }
 
-  // Si student tiene bono_caducidad en su objeto
   if (student.bono_caducidad) {
     const parsedObj = new Date(student.bono_caducidad);
     if (!isNaN(parsedObj.getTime()) && parsedObj > new Date("2026-09-30T23:59:59.999Z")) {
@@ -715,32 +799,18 @@ export function calculateBonoExpirationDate(
     }
   }
 
-  // Comprobar fecha de compra en localStorage si está disponible en cliente
+  // Fecha de compra desde student properties (ZERO localStorage)
   let purchaseDate: Date | null = null;
-  if (typeof window !== "undefined" && student.id) {
-    const pStr = localStorage.getItem(`df_bono_purchase_date_${student.id}`);
-    if (pStr) {
-      const pParsed = new Date(pStr);
-      if (!isNaN(pParsed.getTime())) {
-        purchaseDate = pParsed;
-      }
+  if (student.bono_compra_fecha || student.fecha_compra || student.creado_en) {
+    const pStr = student.bono_compra_fecha || student.fecha_compra || student.creado_en;
+    const pParsed = new Date(pStr);
+    if (!isNaN(pParsed.getTime())) {
+      purchaseDate = pParsed;
     }
   }
 
-  // Si no hay fecha de compra registrada, usamos la fecha actual como momento de activación
   const baseDate = purchaseDate || new Date();
-  
-  // Días de validez según tipo de bono:
-  // Regla oficial: TODOS los bonos de profesores caducan estrictamente a los 30 días naturales (1 mes).
-  // Bonos regulares de 4, 8 y 10 clases tienen validez oficial de 30 días naturales (1 mes).
-  const isTeacher = isTeacherProfile(student);
-  let validityDays = 30;
-  if (isTeacher || plan.includes("docente") || plan.includes("profesor")) {
-    validityDays = 30;
-  } else {
-    validityDays = 30;
-  }
-
+  const validityDays = 30;
   const expDate = new Date(baseDate.getTime() + validityDays * 24 * 60 * 60 * 1000);
   return expDate;
 }

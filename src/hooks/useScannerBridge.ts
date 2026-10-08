@@ -1,56 +1,35 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { HardwareScannerDebouncer } from '@/lib/scannerDebounce';
+import { playSawtoothAlarm, playSuccessChime } from '@/lib/soundUtils';
 
 interface UseScannerBridgeOptions {
   onScan: (code: string) => void | Promise<void>;
   wsUrl?: string;
+  debounceMs?: number;
 }
 
-export function useScannerBridge({ onScan, wsUrl = 'ws://localhost:8080' }: UseScannerBridgeOptions) {
+export function useScannerBridge({ 
+  onScan, 
+  wsUrl = 'ws://localhost:8080',
+  debounceMs = 2500
+}: UseScannerBridgeOptions) {
   const [isConnected, setIsConnected] = useState(false);
   const onScanRef = useRef(onScan);
+  const debouncerRef = useRef<HardwareScannerDebouncer>(new HardwareScannerDebouncer(debounceMs));
 
   // Mantenemos la referencia más reciente sin forzar reinicios del WebSocket
   useEffect(() => {
     onScanRef.current = onScan;
   }, [onScan]);
 
-  // Sonidos inmediatos generados vía Web Audio API (cero dependencias de archivos de audio)
+  // Sonidos inmediatos generados vía Web Audio API canónicos
   const playFeedbackSound = useCallback((type: 'success' | 'error') => {
-    try {
-      if (typeof window === 'undefined') return;
-      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioContextClass) return;
-
-      const audioCtx = new AudioContextClass();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-
-      if (type === 'success') {
-        // Tono doble de confirmación rápido y armónico
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, audioCtx.currentTime); // La5
-        osc.frequency.exponentialRampToValueAtTime(1760, audioCtx.currentTime + 0.1); // La6
-        gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.18);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.18);
-      } else {
-        // Tono grave disuasorio
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(220, audioCtx.currentTime); // La3
-        osc.frequency.exponentialRampToValueAtTime(110, audioCtx.currentTime + 0.22);
-        gain.gain.setValueAtTime(0.35, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.3);
-      }
-    } catch (e) {
-      console.warn('AudioContext no disponible o bloqueado por el navegador:', e);
+    if (type === 'success') {
+      playSuccessChime();
+    } else {
+      playSawtoothAlarm();
     }
   }, []);
 
@@ -105,7 +84,10 @@ export function useScannerBridge({ onScan, wsUrl = 'ws://localhost:8080' }: UseS
             }
 
             if (code && typeof code === 'string' && code.trim()) {
-              await onScanRef.current(code.trim());
+              const debounceResult = debouncerRef.current.processScan(code.trim());
+              if (debounceResult.accepted) {
+                await onScanRef.current(code.trim());
+              }
             }
           } catch (err) {
             console.error('Error procesando lectura del escáner en WebSocket:', err);

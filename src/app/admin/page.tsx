@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import TopHeader from "@/components/layout/TopHeader";
 import { useSede } from "@/context/SedeContext";
 import { supabase } from "@/lib/supabase/client";
+import { subscribeSyncEvent, publishSyncEvent } from "@/lib/syncEventBus";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
 import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
@@ -34,43 +35,17 @@ import {
   findStudentByCodeOrText,
   resolveClassForCheckIn
 } from "@/lib/openClassService";
+import AccessDeniedOverlay from "@/components/AccessDeniedOverlay";
+import { HardwareScannerDebouncer } from "@/lib/scannerDebounce";
+import { evaluateReceptionAccess, dispatchAccessDenied } from "@/lib/accessControlService";
+import { playSawtoothAlarm, playSuccessChime } from "@/lib/soundUtils";
 
 const playSuccessSound = () => {
-  try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
-    gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.3);
-  } catch (e) {
-    console.log("Audio error", e);
-  }
+  playSuccessChime();
 };
 
 const playErrorSound = () => {
-  try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(220, ctx.currentTime); // A3
-    osc.frequency.setValueAtTime(140, ctx.currentTime + 0.15);
-    gain.gain.setValueAtTime(0.4, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.4);
-  } catch (e) {
-    console.log("Audio error", e);
-  }
+  playSawtoothAlarm();
 };
 
 export default function AdminDashboardRecepcion() {
@@ -82,117 +57,86 @@ export default function AdminDashboardRecepcion() {
 
   // State for pending bono requests in reception
   const [pendingBonoRequests, setPendingBonoRequests] = useState<any[]>([]);
-
-  useEffect(() => {
-    const loadPendingBonoRequests = async () => {
-      try {
-        // 1. Fetch pending requests from Supabase database
-        const { data: dbPending } = await supabase
-          .from("alumnos")
-          .select("*")
-          .ilike("plan_activo", "Pendiente:%");
-
-        const dbMapped = (dbPending || []).map(student => {
-          const raw = student.plan_activo || "";
-          const match = raw.match(/Pendiente:\s*([^(]+)(?:\(([^)]+)\))?/);
-          const bonoNombre = match ? match[1].trim() : raw.replace(/^Pendiente:\s*/i, "").trim();
-          const extraInfo = match && match[2] ? match[2].trim() : "";
-          const isTransfer = raw.toLowerCase().includes("transferencia");
-
-          return {
-            id: student.id,
-            student_id: student.id,
-            student_name: student.nombre_completo,
-            student_email: student.email,
-            bono_nombre: bonoNombre,
-            bono_precio: extraInfo || "En recepción",
-            metodo_pago: isTransfer ? "Transferencia Bancaria" : "Recepción",
-            fecha: "Hoy",
-            estado: isTransfer ? "Pendiente de verificación bancaria" : "Pendiente de cobro en Recepción"
-          };
-        });
-
-        // 2. Combine with localStorage
-        const storedLocal = JSON.parse(localStorage.getItem("pending_bono_requests") || "[]");
-        const combined = [...dbMapped];
-
-        storedLocal.forEach((lReq: any) => {
-          if (!combined.some(c => c.id === lReq.id || (c.student_email && c.student_email === lReq.student_email))) {
-            combined.push(lReq);
-          }
-        });
-
-        setPendingBonoRequests(combined);
-      } catch (e) {
-        setPendingBonoRequests([]);
-      }
-    };
-
-    // Teacher Security Lockouts Loader
-    const loadTeacherLockouts = async () => {
-      try {
-        const { data } = await supabase
-          .from("alumnos")
-          .select("id, nombre_completo, email, estado, sede, plan_activo")
-          .ilike("estado", "%Bloqueado%");
-
-        const dbLocked = [...(data || [])];
-
-        // Also check localStorage for local teacher locks
-        if (typeof window !== "undefined") {
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && key.startsWith("df_sec_lockout_teacher_")) {
-              const teacherId = key.replace("df_sec_lockout_teacher_", "");
-              try {
-                const parsed = JSON.parse(localStorage.getItem(key) || "{}");
-                if (parsed.failedCount >= 3 || parsed.isPermanentLock) {
-                  if (!dbLocked.some(d => d.id === `docente_${teacherId}` || d.id === teacherId)) {
-                    dbLocked.push({
-                      id: `docente_${teacherId}`,
-                      nombre_completo: `Profesor (${teacherId})`,
-                      email: `${teacherId}@dancefactory.es`,
-                      estado: "Bloqueado por 3 fallos de PIN",
-                      sede: "castilla",
-                      plan_activo: "Docente Dance Factory"
-                    });
-                  }
-                }
-              } catch (e) {}
-            }
-          }
-        }
-
-        setLockedTeachers(dbLocked);
-      } catch (e) {
-        setLockedTeachers([]);
-      }
-    };
-
-    loadPendingBonoRequests();
-    loadTeacherLockouts();
-
-    window.addEventListener("storage", loadPendingBonoRequests);
-    window.addEventListener("df_pending_bonos_updated", loadPendingBonoRequests);
-    window.addEventListener("df_security_lock_updated", loadTeacherLockouts);
-    const interval = setInterval(() => {
-      if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        loadPendingBonoRequests();
-        loadTeacherLockouts();
-      }
-    }, 30000);
-
-    return () => {
-      window.removeEventListener("storage", loadPendingBonoRequests);
-      window.removeEventListener("df_pending_bonos_updated", loadPendingBonoRequests);
-      window.removeEventListener("df_security_lock_updated", loadTeacherLockouts);
-      clearInterval(interval);
-    };
-  }, []);
-
   // State for locked teachers requiring Reception unlock
   const [lockedTeachers, setLockedTeachers] = useState<any[]>([]);
   const [tareaFiltro, setTareaFiltro] = useState<"todas" | "seguridad" | "pagos">("todas");
+
+  // 1. Pending Bono Requests Loader
+  const loadPendingBonoRequests = useCallback(async () => {
+    try {
+      // Fetch pending requests from Supabase database
+      const { data: dbPending } = await supabase
+        .from("alumnos")
+        .select("*")
+        .ilike("plan_activo", "Pendiente:%");
+
+      const dbMapped = (dbPending || []).map(student => {
+        const raw = student.plan_activo || "";
+        const match = raw.match(/Pendiente:\s*([^(]+)(?:\(([^)]+)\))?/);
+        const bonoNombre = match ? match[1].trim() : raw.replace(/^Pendiente:\s*/i, "").trim();
+        const extraInfo = match && match[2] ? match[2].trim() : "";
+        const isTransfer = raw.toLowerCase().includes("transferencia");
+
+        return {
+          id: student.id,
+          student_id: student.id,
+          student_name: student.nombre_completo,
+          student_email: student.email,
+          bono_nombre: bonoNombre,
+          bono_precio: extraInfo || "En recepción",
+          metodo_pago: isTransfer ? "Transferencia Bancaria" : "Recepción",
+          fecha: "Hoy",
+          estado: isTransfer ? "Pendiente de verificación bancaria" : "Pendiente de cobro en Recepción"
+        };
+      });
+
+      // Pure Supabase Cloud State: ZERO localStorage reliance
+      setPendingBonoRequests(dbMapped);
+    } catch (e) {
+      setPendingBonoRequests([]);
+    }
+  }, []);
+
+  // 2. Teacher Security Lockouts Loader
+  const loadTeacherLockouts = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from("alumnos")
+        .select("id, nombre_completo, email, estado, sede, plan_activo")
+        .ilike("estado", "%Bloqueado%");
+
+      const dbLocked = [...(data || [])];
+
+      // Also check localStorage for local teacher locks
+      if (typeof window !== "undefined") {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith("df_sec_lockout_teacher_")) {
+            const teacherId = key.replace("df_sec_lockout_teacher_", "");
+            try {
+              const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+              if (parsed.failedCount >= 3 || parsed.isPermanentLock) {
+                if (!dbLocked.some(d => d.id === `docente_${teacherId}` || d.id === teacherId)) {
+                  dbLocked.push({
+                    id: `docente_${teacherId}`,
+                    nombre_completo: `Profesor (${teacherId})`,
+                    email: `${teacherId}@dancefactory.es`,
+                    estado: "Bloqueado por 3 fallos de PIN",
+                    sede: "castilla",
+                    plan_activo: "Docente Dance Factory"
+                  });
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      }
+
+      setLockedTeachers(dbLocked);
+    } catch (e) {
+      setLockedTeachers([]);
+    }
+  }, []);
 
   const totalTareasPendientes = lockedTeachers.length + pendingBonoRequests.length;
 
@@ -257,32 +201,25 @@ export default function AdminDashboardRecepcion() {
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const qrInputRef = useRef<HTMLInputElement>(null);
+  // Access Denied Overlay State (R1.2)
+  const [accessDeniedState, setAccessDeniedState] = useState<{
+    isOpen: boolean;
+    studentName?: string;
+    motivo?: string;
+    rawCode?: string;
+  }>({
+    isOpen: false
+  });
 
-  // Listen to reservation updates across portals
-  useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
-    const handleReservasUpdated = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        setReservasTick(prev => prev + 1);
-      }, 500);
-    };
-    window.addEventListener("df_reservas_updated", handleReservasUpdated);
-    window.addEventListener("storage", handleReservasUpdated);
-    return () => {
-      if (timer) clearTimeout(timer);
-      window.removeEventListener("df_reservas_updated", handleReservasUpdated);
-      window.removeEventListener("storage", handleReservasUpdated);
-    };
-  }, []);
+  const qrInputRef = useRef<HTMLInputElement>(null);
+  const debouncerRef = useRef<HardwareScannerDebouncer>(new HardwareScannerDebouncer(2500));
 
   // Today's day name in Spanish
   const days = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
   const todayStr = days[new Date().getDay()];
 
   // Fetch today's classes and metrics
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setIsLoading(true);
 
     // 1. Fetch Today's Classes
@@ -302,28 +239,65 @@ export default function AdminDashboardRecepcion() {
       setSelectedClaseId(clasesData[0].id);
     }
 
-    // 2. Fetch Today's Check-ins (Asistencias)
+    // 2. Fetch Today's Check-ins (Asistencias) strictly filtered by activeSede
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
 
-    const { count: realCheckinsCount } = await supabase
-      .from("asistencias")
-      .select("id", { count: "exact" })
-      .gte("fecha_hora", startOfDay.toISOString());
-
-    const { data: asistenciasData } = await supabase
+    const { data: allAsistenciasToday, error: asistError } = await supabase
       .from("asistencias")
       .select(`
         id,
         fecha_hora,
-        alumnos (nombre_completo, plan_activo, dni),
-        clases_cuadrante (nombre_clase, profesor)
+        clase_id,
+        alumno_id,
+        alumnos (
+          id,
+          nombre_completo,
+          plan_activo,
+          dni,
+          sede
+        ),
+        clases_cuadrante (
+          id,
+          nombre_clase,
+          profesor,
+          sede
+        )
       `)
       .gte("fecha_hora", startOfDay.toISOString())
-      .order("fecha_hora", { ascending: false })
-      .limit(10);
+      .order("fecha_hora", { ascending: false });
 
-    setTodayCheckins(asistenciasData || []);
+    if (asistError) {
+      console.warn("[AdminPage] Error querying asistencias:", asistError);
+    }
+
+    // Filter check-ins strictly according to activeSede
+    const filteredCheckins = (allAsistenciasToday || []).filter((item: any) => {
+      if (activeSede === "consolidado") return true;
+
+      const itemAlumno = Array.isArray(item.alumnos) ? item.alumnos[0] : item.alumnos;
+      const itemClase = Array.isArray(item.clases_cuadrante) ? item.clases_cuadrante[0] : item.clases_cuadrante;
+
+      // Primary check: if check-in is linked to a class, evaluate the class sede
+      const sedeClase = (itemClase?.sede || "").toLowerCase();
+      if (sedeClase) {
+        if (activeSede === "tejar") {
+          return sedeClase.includes("tejar") || sedeClase.includes("studio 1") || sedeClase.includes("mostoles");
+        } else {
+          return sedeClase.includes("castilla") || sedeClase.includes("studio 2") || sedeClase.includes("alcorcon");
+        }
+      }
+
+      // Fallback for general facility check-ins (clase_id is null): evaluate student's home branch
+      const sedeAlumno = (itemAlumno?.sede || "").toLowerCase();
+      if (activeSede === "tejar") {
+        return sedeAlumno.includes("tejar") || sedeAlumno.includes("studio 1") || sedeAlumno.includes("mostoles");
+      } else {
+        return sedeAlumno.includes("castilla") || sedeAlumno.includes("studio 2") || sedeAlumno.includes("alcorcon");
+      }
+    });
+
+    setTodayCheckins(filteredCheckins.slice(0, 10));
 
     // 3. Fetch Active Students Count
     let queryAlumnos = supabase.from("alumnos").select("id", { count: "exact" }).eq("estado", "Activo");
@@ -336,7 +310,7 @@ export default function AdminDashboardRecepcion() {
     }
     const { count: alumnosCount } = await queryAlumnos;
 
-    const checkinsCount = realCheckinsCount !== null && realCheckinsCount !== undefined ? realCheckinsCount : (asistenciasData || []).length;
+    const checkinsCount = filteredCheckins.length;
     const totalCapacidad = (clasesData || []).reduce((acc: number, c: any) => acc + (c.aforo_maximo || 15), 0);
     const ocupacionPorcentaje = totalCapacidad > 0 ? Math.min(100, Math.round((checkinsCount / totalCapacidad) * 100)) : 0;
 
@@ -381,14 +355,87 @@ export default function AdminDashboardRecepcion() {
     }
 
     setIsLoading(false);
-  };
+  }, [activeSede, selectedClaseId, todayStr]);
+
+  // 350ms debounced live reactivity refresh (R7.1 & R7.2)
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const debouncedRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      fetchData();
+      loadPendingBonoRequests();
+      setReservasTick(prev => prev + 1);
+    }, 350);
+  }, [fetchData, loadPendingBonoRequests]);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    };
+  }, []);
+
+  // Multi-channel real-time reactivity via syncEventBus (R7.1 & R7.2)
+  useEffect(() => {
+    const unsubCheckin = subscribeSyncEvent("df_checkin_success", (detail) => {
+      if (detail?.nombre_completo) {
+        setFlashState('success');
+        setTimeout(() => setFlashState(null), 1500);
+
+        const planLower = (detail.plan_activo || "").toLowerCase();
+        const isRegularOrUnlimited = 
+          planLower.includes("regular") || 
+          planLower.includes("mensual") || 
+          planLower.includes("ilimitad") || 
+          detail.clases_restantes === null;
+        const remainingTextStr = isRegularOrUnlimited 
+          ? 'Mensualidad Regular' 
+          : `Bono (${detail.clases_restantes ?? 0} clases de saldo)`;
+        const classDetailStr = detail.resolvedClass?.claseNombre ? ` • ${detail.resolvedClass.claseNombre}` : '';
+
+        setStatusMessage({ 
+          type: 'success', 
+          text: `✅ Entrada validada para ${detail.nombre_completo}. (${remainingTextStr}${classDetailStr})` 
+        });
+      }
+      debouncedRefresh();
+    });
+
+    const unsubReservas = subscribeSyncEvent("df_reservas_updated", () => {
+      debouncedRefresh();
+    });
+
+    const unsubPagos = subscribeSyncEvent("df_pagos_updated", () => {
+      debouncedRefresh();
+    });
+
+    const unsubBonos = subscribeSyncEvent("df_pending_bonos_updated", () => {
+      debouncedRefresh();
+    });
+
+    const unsubDenied = subscribeSyncEvent("df_checkin_denied", (detail) => {
+      setAccessDeniedState({
+        isOpen: true,
+        studentName: detail?.student?.nombre_completo || detail?.studentName,
+        motivo: detail?.motivo || detail?.message,
+        rawCode: detail?.rawCode
+      });
+    });
+
+    return () => {
+      unsubCheckin();
+      unsubReservas();
+      unsubPagos();
+      unsubBonos();
+      unsubDenied();
+    };
+  }, [debouncedRefresh]);
 
   useEffect(() => {
     fetchData();
     if (qrInputRef.current) {
       qrInputRef.current.focus();
     }
-  }, [activeSede]);
+  }, [fetchData]);
 
   // Handle manual student search
   useEffect(() => {
@@ -431,32 +478,33 @@ export default function AdminDashboardRecepcion() {
   };
 
   const processCheckIn = async (student: any) => {
-    if (student.estado !== 'Activo') {
-      triggerError(`⛔ ACCESO DENEGADO: El alumno ${student.nombre_completo} está ${student.estado || "Inactivo"}.`);
-      return;
-    }
+    // Canonical Access Evaluation via evaluateReceptionAccess (R1.1)
+    const evalResult = evaluateReceptionAccess(student);
 
-    // Validación estricta de Plan Activo y Saldo de Bono
-    const planLower = (student.plan_activo || "").toLowerCase().trim();
-    const sinPlan = !student.plan_activo || 
-      planLower === "" || 
-      planLower.includes("sin plan") || 
-      planLower.includes("ningun") || 
-      planLower.includes("pendiente");
+    if (!evalResult.granted) {
+      playErrorSound();
+      setFlashState('error');
+      setStatusMessage({ type: 'error', text: evalResult.message });
+      setTimeout(() => setFlashState(null), 3500);
 
-    const isBono = planLower.includes("bono") || planLower.includes("suelta") || (!planLower.includes("regular") && !planLower.includes("mensual") && !planLower.includes("ilimitad") && !planLower.includes("cuota") && student.clases_restantes !== null && student.clases_restantes !== undefined);
-    const bonoAgotado = isBono && (student.clases_restantes === null || student.clases_restantes === undefined || student.clases_restantes <= 0);
+      setAccessDeniedState({
+        isOpen: true,
+        studentName: student.nombre_completo,
+        motivo: evalResult.motivoDetallado || evalResult.message,
+        rawCode: student.dni || student.id
+      });
 
-    if (sinPlan || bonoAgotado) {
-      const motivo = sinPlan 
-        ? "SIN PLAN ACTIVO (No matriculado ni con bono)" 
-        : `BONO AGOTADO (0 clases restantes en ${student.plan_activo || "Bono"})`;
-      triggerError(`⛔ ACCESO DENEGADO: ${student.nombre_completo} está ${motivo}. Debe pasar por el mostrador de recepción.`);
-      
+      dispatchAccessDenied({
+        student,
+        reason: evalResult.reason,
+        message: evalResult.message,
+        rawCode: student.dni || student.id
+      });
+
       logActivity({
         origen: "recepcion",
         tipo_evento: "checkin_denegado",
-        descripcion: `Acceso QR denegado en recepción: ${student.nombre_completo} está ${motivo}`,
+        descripcion: `Acceso QR denegado en recepción: ${student.nombre_completo} está ${evalResult.motivoDetallado || evalResult.reason}`,
         usuario_afectado: student.nombre_completo,
         sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
       });
@@ -465,6 +513,7 @@ export default function AdminDashboardRecepcion() {
 
     const resolved = await resolveClassForCheckIn(student, activeSede, selectedClaseId);
 
+    const planLower = (student.plan_activo || "").toLowerCase().trim();
     const isRegularOrUnlimited = 
       planLower.includes("regular") || 
       planLower.includes("mensual") || 
@@ -490,7 +539,7 @@ export default function AdminDashboardRecepcion() {
       const todayNow = new Date();
       const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
       marcarAsistenciaPorAlumnoYSesion(student.id, resolved.claseId, todayISO);
-      window.dispatchEvent(new Event("df_reservas_updated"));
+      publishSyncEvent("df_reservas_updated", { alumnoId: student.id, claseId: resolved.claseId, sessionDate: todayISO });
     }
 
     playSuccessSound();
@@ -516,6 +565,8 @@ export default function AdminDashboardRecepcion() {
       text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr})` 
     });
 
+    publishSyncEvent("df_checkin_success", { ...student, resolvedClass: resolved });
+
     // Reset fields & refetch
     setManualSearch("");
     setSearchResults([]);
@@ -536,10 +587,28 @@ export default function AdminDashboardRecepcion() {
     const rawCode = qrCode.trim();
     if (!rawCode) return;
 
+    // R1.3 Debounce check (>= 2.5s)
+    const debounceRes = debouncerRef.current.processScan(rawCode);
+    if (!debounceRes.accepted) {
+      return;
+    }
+
     const student = await findStudentByScannedCode(rawCode);
 
     if (!student) {
-      triggerError(`Código QR/NFC no reconocido ("${rawCode}"). Alumno no encontrado.`);
+      playErrorSound();
+      setAccessDeniedState({
+        isOpen: true,
+        studentName: undefined,
+        motivo: "Código escaneado no reconocido o alumno inexistente",
+        rawCode: rawCode
+      });
+      dispatchAccessDenied({
+        reason: "ALUMNO_NO_ENCONTRADO",
+        message: `⛔ ACCESO DENEGADO: Código QR/NFC no reconocido ("${rawCode}"). Pasar por mostrador de recepción`,
+        rawCode: rawCode
+      });
+      triggerError(`⛔ ACCESO DENEGADO: Código QR/NFC no reconocido ("${rawCode}"). Pasar por mostrador de recepción`);
       setQrCode("");
       return;
     }
@@ -555,7 +624,7 @@ export default function AdminDashboardRecepcion() {
     return false;
   });
 
-  // Escuchar eventos globales de validación de acceso y estado del lector
+  // Escuchar estado del lector de hardware
   useEffect(() => {
     const handleBridgeStatus = (e: any) => {
       if (e.detail && typeof e.detail.isConnected === "boolean") {
@@ -563,37 +632,9 @@ export default function AdminDashboardRecepcion() {
       }
     };
 
-    const handleCheckinEvent = (e: any) => {
-      const student = e.detail;
-      if (student) {
-        setFlashState('success');
-        setTimeout(() => setFlashState(null), 1500);
-
-        const planLower = (student.plan_activo || "").toLowerCase();
-        const isRegularOrUnlimited = 
-          planLower.includes("regular") || 
-          planLower.includes("mensual") || 
-          planLower.includes("ilimitad") || 
-          student.clases_restantes === null;
-        const remainingTextStr = isRegularOrUnlimited 
-          ? 'Mensualidad Regular' 
-          : `Bono (${student.clases_restantes ?? 0} clases de saldo)`;
-        const classDetailStr = student.resolvedClass?.claseNombre ? ` • ${student.resolvedClass.claseNombre}` : '';
-
-        setStatusMessage({ 
-          type: 'success', 
-          text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr})` 
-        });
-        fetchData();
-      }
-    };
-
     window.addEventListener("df_bridge_status" as any, handleBridgeStatus);
-    window.addEventListener("df_checkin_success" as any, handleCheckinEvent);
-
     return () => {
       window.removeEventListener("df_bridge_status" as any, handleBridgeStatus);
-      window.removeEventListener("df_checkin_success" as any, handleCheckinEvent);
     };
   }, []);
 
@@ -650,14 +691,9 @@ export default function AdminDashboardRecepcion() {
       }
     }
 
-    // 3. Remove from local storage & pending list
-    setPendingBonoRequests(prev => {
-      const updated = prev.filter(r => r.id !== req.id && r.student_id !== req.student_id);
-      if (typeof window !== "undefined") {
-        localStorage.setItem("pending_bono_requests", JSON.stringify(updated));
-      }
-      return updated;
-    });
+    // 3. Remove from pending list & broadcast (Zero localStorage)
+    setPendingBonoRequests(prev => prev.filter(r => r.id !== req.id && r.student_id !== req.student_id));
+    publishSyncEvent("df_pending_bonos_updated", { studentId: req.student_id, bonoNombre: req.bono_nombre });
 
     // 4. Register payment in central financial book (reconcile existing pending transaction or create new)
     let importeNum = 45;
@@ -720,6 +756,7 @@ export default function AdminDashboardRecepcion() {
       confirmText: "¡Excelente!"
     });
 
+    publishSyncEvent("df_pagos_updated", { studentId, importe: importeNum });
     fetchData();
   };
 
@@ -1484,11 +1521,28 @@ export default function AdminDashboardRecepcion() {
                     const cleanVal = val.replace(/[\r\n]/g, '').trim();
                     setQrCode(cleanVal);
                     if (cleanVal) {
+                      const debounceRes = debouncerRef.current.processScan(cleanVal);
+                      if (!debounceRes.accepted) {
+                        setQrCode("");
+                        return;
+                      }
                       findStudentByScannedCode(cleanVal).then(student => {
                         if (student) {
                           processCheckIn(student);
                         } else {
-                          triggerError(`Código QR/NFC no reconocido ("${cleanVal}"). Alumno no encontrado.`);
+                          playErrorSound();
+                          setAccessDeniedState({
+                            isOpen: true,
+                            studentName: undefined,
+                            motivo: "Código escaneado no reconocido o alumno inexistente",
+                            rawCode: cleanVal
+                          });
+                          dispatchAccessDenied({
+                            reason: "ALUMNO_NO_ENCONTRADO",
+                            message: `⛔ ACCESO DENEGADO: Código QR/NFC no reconocido ("${cleanVal}"). Pasar por mostrador de recepción`,
+                            rawCode: cleanVal
+                          });
+                          triggerError(`⛔ ACCESO DENEGADO: Código QR/NFC no reconocido ("${cleanVal}"). Pasar por mostrador de recepción`);
                           setQrCode("");
                         }
                       });
@@ -1570,7 +1624,7 @@ export default function AdminDashboardRecepcion() {
                   <span>Últimas Entradas Registradas Hoy</span>
                 </h3>
                 <span className="text-[11px] font-normal text-[var(--color-text-secondary)]">
-                  Registro en tiempo real ({todayCheckins.length} accesos hoy)
+                  Registro en tiempo real ({metrics.checkinsCount} accesos hoy)
                 </span>
               </div>
               <button
@@ -1637,6 +1691,15 @@ export default function AdminDashboardRecepcion() {
           setReservasTick(prev => prev + 1);
           fetchData();
         }}
+      />
+
+      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2) */}
+      <AccessDeniedOverlay
+        isOpen={accessDeniedState.isOpen}
+        studentName={accessDeniedState.studentName}
+        motivo={accessDeniedState.motivo}
+        rawCode={accessDeniedState.rawCode}
+        onClose={() => setAccessDeniedState(prev => ({ ...prev, isOpen: false }))}
       />
     </div>
   );

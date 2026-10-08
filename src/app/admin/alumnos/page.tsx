@@ -6,7 +6,17 @@ import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { logActivity } from "@/lib/activityLogger";
-import { getStudentFee, calculateFeeFromClasses, saveStudentFeeOverride } from "@/lib/studentFees";
+import { 
+  getStudentFee, 
+  calculateFeeFromClasses, 
+  saveStudentFeeOverride,
+  calculateClassDurationHours,
+  getClassDurationHours,
+  calculateStudentWeeklyHours,
+  calculateExactAge,
+  getTipoAlumnoFromBirthDate
+} from "@/lib/studentFees";
+import { exportAlumnosCSV, parseAlumnosCSV } from "@/lib/csvUtils";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
 import { syncReservasFromSupabase } from "@/lib/openClassService";
@@ -300,7 +310,7 @@ export default function AlumnosPage() {
       direccion: student.direccion || "",
       iban: studentIban || "",
       fecha_nacimiento: student.fecha_nacimiento || "",
-      tipo_alumno: (student.tipo_alumno || (student.fecha_nacimiento && (new Date().getFullYear() - new Date(student.fecha_nacimiento).getFullYear() <= 14) ? "infantil" : "adulto")) as "adulto" | "infantil",
+      tipo_alumno: (student.tipo_alumno || (student.fecha_nacimiento ? getTipoAlumnoFromBirthDate(student.fecha_nacimiento) : "adulto")) as "adulto" | "infantil",
       plan_activo: student.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`,
       cuota_mensual: feeInfo.cuotaBase,
       nfc_token: student.nfc_token || "",
@@ -583,25 +593,6 @@ export default function AlumnosPage() {
     });
   };
 
-  const parseCSVLine = (text: string): string[] => {
-    const result: string[] = [];
-    let cur = "";
-    let inQuotes = false;
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      if (c === '"') {
-        inQuotes = !inQuotes;
-      } else if (c === ',' && !inQuotes) {
-        result.push(cur.trim());
-        cur = "";
-      } else {
-        cur += c;
-      }
-    }
-    result.push(cur.trim());
-    return result.map(s => s.replace(/^["']|["']$/g, "").trim());
-  };
-
   const handleProcessCsv = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!csvFile) return;
@@ -616,98 +607,30 @@ export default function AlumnosPage() {
         return;
       }
 
-      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-      if (lines.length <= 1) {
-        alert("El archivo CSV está vacío o solo contiene cabeceras.");
+      const { valid: newStudents, errors } = parseAlumnosCSV(text);
+
+      if (errors.length > 0 && newStudents.length === 0) {
+        alert(`Error al procesar CSV:\n${errors.slice(0, 5).join("\n")}`);
         setCsvLoading(false);
         return;
       }
 
-      // Skip header
-      const dataRows = lines.slice(1);
-      const newStudents = [];
-
-      for (const row of dataRows) {
-        const columns = parseCSVLine(row);
-        if (columns.length >= 2) {
-          // Detect 10-column Dance Factory official layout vs simple 5-column layout
-          if (columns.length >= 7) {
-            // [0] Nombre Completo, [1] Número Tarjeta, [2] Teléfono, [3] Email, [4] Sede, [5] Plan Activo, [6] Clase, [7] Pago, [8] DNI, [9] Dirección
-            const nombre_completo = columns[0] || "Sin Nombre";
-            const rawNfc = columns[1];
-            const nfc_token = rawNfc && rawNfc !== "-" ? rawNfc : null;
-            const telefono = columns[2] || "600000000";
-            const rawEmail = columns[3];
-            const email = rawEmail && rawEmail.includes("@") ? rawEmail : null;
-            const rawSede = (columns[4] || "").toLowerCase();
-            const sede = (rawSede.includes("2") || rawSede.includes("castilla") || rawSede.includes("alcorcon")) ? "castilla" : "tejar";
-            const plan_activo = columns[5] || "Clases Regulares";
-            const rawDni = columns[8];
-            const dni = rawDni && rawDni !== "-" ? rawDni : null;
-            const rawDir = columns[9];
-            const direccion = rawDir && rawDir !== "-" ? rawDir : null;
-
-            let clases_restantes = 0;
-            const planLower = plan_activo.toLowerCase();
-            if (planLower.includes("bono 4")) clases_restantes = 4;
-            else if (planLower.includes("bono 8")) clases_restantes = 8;
-            else if (planLower.includes("bono 10")) clases_restantes = 10;
-            else if (planLower.includes("ilimitad")) clases_restantes = 999;
-            else if (planLower.includes("suelta")) clases_restantes = 1;
-
-            newStudents.push({
-              nombre_completo,
-              nfc_token,
-              telefono,
-              email,
-              sede,
-              plan_activo,
-              dni,
-              direccion,
-              clases_restantes,
-              estado: "Activo"
-            });
-          } else {
-            // Simplified 5-column fallback: [Nombre, Telefono, Email, Sede, Plan]
-            const nombre_completo = columns[0] || "Sin Nombre";
-            const telefono = columns[1] || "600000000";
-            const email = columns[2] || null;
-            const rawSede = (columns[3] || "").toLowerCase();
-            const sede = (rawSede.includes("2") || rawSede.includes("castilla") || rawSede.includes("alcorcon")) ? "castilla" : "tejar";
-            const plan_activo = columns[4] || "Clases Regulares";
-
-            let clases_restantes = 0;
-            const planLower = plan_activo.toLowerCase();
-            if (planLower.includes("bono 4")) clases_restantes = 4;
-            else if (planLower.includes("bono 8")) clases_restantes = 8;
-            else if (planLower.includes("bono 10")) clases_restantes = 10;
-            else if (planLower.includes("ilimitad")) clases_restantes = 999;
-            else if (planLower.includes("suelta")) clases_restantes = 1;
-
-            newStudents.push({
-              nombre_completo,
-              telefono,
-              email,
-              sede,
-              plan_activo,
-              clases_restantes,
-              estado: "Activo"
-            });
-          }
-        }
+      if (newStudents.length === 0) {
+        alert("El archivo CSV está vacío o no contiene registros válidos para importar.");
+        setCsvLoading(false);
+        return;
       }
 
-      if (newStudents.length > 0) {
-        const { error } = await supabase.from("alumnos").insert(newStudents);
-        if (error) {
-          console.error("Error volcando CSV:", error);
-          alert("Hubo un error al importar los alumnos.");
-        } else {
-          alert(`¡Éxito! Se han importado ${newStudents.length} alumnos correctamente.`);
-          setIsCsvModalOpen(false);
-          setCsvFile(null);
-          fetchData();
-        }
+      const { error } = await supabase.from("alumnos").insert(newStudents);
+      if (error) {
+        console.error("Error volcando CSV:", error);
+        alert(`Hubo un error al importar los alumnos: ${error.message}`);
+      } else {
+        const warningsNotice = errors.length > 0 ? ` (${errors.length} avisos)` : "";
+        alert(`¡Éxito! Se han importado ${newStudents.length} alumnos correctamente${warningsNotice}.`);
+        setIsCsvModalOpen(false);
+        setCsvFile(null);
+        fetchData();
       }
       setCsvLoading(false);
     };
@@ -782,6 +705,16 @@ export default function AlumnosPage() {
           >
             <span>⏰</span>
             <span>{isCheckingExpirations ? "Comprobando..." : "Avisar Caducidades"}</span>
+          </button>
+          <button 
+            onClick={() => exportAlumnosCSV(filteredStudents)}
+            className="bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-title)] border border-[var(--color-border)] px-3.5 py-2.5 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2 cursor-pointer shadow-sm"
+            title="Exportar listado de alumnos filtrados a CSV (formato Excel con UTF-8 BOM)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-emerald-400">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+            Exportar CSV
           </button>
           <button 
             onClick={() => setIsCsvModalOpen(true)}
@@ -1416,7 +1349,14 @@ export default function AlumnosPage() {
                      <input 
                        type="date" 
                        value={formData.fecha_nacimiento}
-                       onChange={(e) => setFormData({...formData, fecha_nacimiento: e.target.value})}
+                       onChange={(e) => {
+                         const bdate = e.target.value;
+                         setFormData(prev => ({
+                           ...prev,
+                           fecha_nacimiento: bdate,
+                           tipo_alumno: bdate ? getTipoAlumnoFromBirthDate(bdate) : prev.tipo_alumno
+                         }));
+                       }}
                        className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors" 
                      />
                    </div>
@@ -1645,9 +1585,15 @@ export default function AlumnosPage() {
                      <h4 className="text-xs font-bold text-[var(--color-primary)] uppercase tracking-wider">Inscripción en Cursos / Clases</h4>
                      <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">Clases matriculadas para este alumno en el cuadrante oficial:</p>
                    </div>
-                   <span className="text-xs font-semibold text-[var(--color-primary)] bg-[var(--color-primary)]/10 px-2.5 py-0.5 rounded-full border border-[var(--color-primary)]/20 shrink-0">
-                     {formData.clases_asignadas.length} {formData.clases_asignadas.length === 1 ? 'clase asignada' : 'clases asignadas'}
-                   </span>
+                   {(() => {
+                     const enrolledClasses = availableClasses.filter(c => formData.clases_asignadas.includes(c.id));
+                     const totalWeeklyHours = calculateStudentWeeklyHours(enrolledClasses);
+                     return (
+                       <span className="text-xs font-semibold text-[var(--color-primary)] bg-[var(--color-primary)]/10 px-2.5 py-0.5 rounded-full border border-[var(--color-primary)]/20 shrink-0">
+                         {formData.clases_asignadas.length} {formData.clases_asignadas.length === 1 ? 'clase asignada' : 'clases asignadas'} ({totalWeeklyHours}h/sem)
+                       </span>
+                     );
+                   })()}
                  </div>
 
                  {/* Selector de Estudio / Sede dentro del modal */}
@@ -1717,7 +1663,7 @@ export default function AlumnosPage() {
                                  </span>
                                </div>
                                <span className="text-[11px] text-[var(--color-text-secondary)] mt-0.5">
-                                 {clase.dia_semana} {clase.hora_inicio}-{clase.hora_fin} • Prof: {clase.profesor}
+                                 {clase.dia_semana} {clase.hora_inicio}-{clase.hora_fin} ({getClassDurationHours(clase)}h) • Prof: {clase.profesor}
                                </span>
                             </div>
                          </label>

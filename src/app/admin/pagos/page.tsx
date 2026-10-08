@@ -33,7 +33,12 @@ import {
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { getStudentFee, getStudentMonthlyRemittanceFee } from "@/lib/studentFees";
-import { isRegularClassStudent, isTeacherProfile } from "@/lib/matriculaService";
+import { 
+  isRegularClassStudent, 
+  isTeacherProfile, 
+  getCurrentSeason, 
+  isMatriculaValidForCurrentSeason 
+} from "@/lib/matriculaService";
 import { 
   PagoTransaccion, 
   MetodoCobro, 
@@ -50,155 +55,10 @@ import {
 } from "@/lib/pagosService";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getStoredIBAN } from "@/lib/ibanStorage";
+import { generateSEPAXml } from "@/lib/sepaGenerator";
+import { publishSyncEvent, subscribeSyncEvent } from "@/lib/syncEventBus";
 
 export type MetodoPagoRemesa = "SEPA" | "Stripe" | "Efectivo" | "TPV" | "Transferencia";
-
-/**
- * Generates official Spanish Banking Standard ISO 20022 Direct Debit XML (pain.008.001.02 / Norma 19).
- */
-function generateSEPAXml(
-  studentsList: any[],
-  monthStr: string,
-  paymentMethodsMap: Record<string, MetodoPagoRemesa>,
-  assignedClasses: Record<string, string[]>
-): string {
-  const isSepMonth = monthStr === "2026-09" || monthStr.toLowerCase().includes("sep");
-  const sepaStudents = studentsList.filter(s => (paymentMethodsMap[s.id] || "SEPA") === "SEPA");
-  const targetStudents = sepaStudents.length > 0 ? sepaStudents : studentsList;
-
-  const now = new Date();
-  const msgId = `DF-MSG-${monthStr.replace(/-/g, "")}-${Date.now().toString().slice(-6)}`;
-  const pmtInfId = `DF-PMT-${monthStr.replace(/-/g, "")}-01`;
-  const creDtTm = now.toISOString().split(".")[0];
-  const reqdColltnDt = `${monthStr}-01`;
-
-  let totalAmount = 0;
-  targetStudents.forEach(s => {
-    const fee = getStudentFee(s);
-    const amount = isSepMonth ? fee.netoSep : fee.cuotaBase;
-    totalAmount += amount;
-  });
-
-  const escapeXml = (str: string = "") => {
-    return str
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&apos;")
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // strip diacritics
-  };
-
-  const sanitizeIBAN = (iban?: string, dni?: string) => {
-    if (iban && iban.trim()) {
-      return iban.replace(/[\s\-]/g, "").toUpperCase();
-    }
-    const cleanDni = (dni || "00000000").replace(/[^0-9]/g, "").padStart(8, "0");
-    return `ES91210004184502${cleanDni.slice(0, 8)}`;
-  };
-
-  const txXml = targetStudents.map((s, idx) => {
-    const fee = getStudentFee(s);
-    const amount = isSepMonth ? fee.netoSep : fee.cuotaBase;
-    const endToEndId = `DF-REC-${monthStr.replace(/-/g, "")}-${String(idx + 1).padStart(4, "0")}`;
-    const mandateId = `MND-${(s.dni || s.id || `STU${idx + 1}`).replace(/[^a-zA-Z0-9]/g, "")}`;
-    const studentName = escapeXml(s.nombre_completo || "ALUMNO DANCE FACTORY");
-    const iban = sanitizeIBAN(s.iban || getStoredIBAN(s.id), s.dni);
-    const classInfo = escapeXml((assignedClasses[s.id] || []).join(" / ") || fee.claseNombre || "Cuota Regular");
-
-    return `      <DrctDbtTxInf>
-        <PmtId>
-          <EndToEndId>${endToEndId}</EndToEndId>
-        </PmtId>
-        <InstdAmt Ccy="EUR">${amount.toFixed(2)}</InstdAmt>
-        <DrctDbtTx>
-          <MndtRltdInf>
-            <MndtId>${mandateId}</MndtId>
-            <DtOfSgntr>${monthStr}-01</DtOfSgntr>
-          </MndtRltdInf>
-        </DrctDbtTx>
-        <DbtrAgt>
-          <FinInstnId>
-            <Othr>
-              <Id>NOTPROVIDED</Id>
-            </Othr>
-          </FinInstnId>
-        </DbtrAgt>
-        <Dbtr>
-          <Nm>${studentName}</Nm>
-        </Dbtr>
-        <DbtrAcct>
-          <Id>
-            <IBAN>${iban}</IBAN>
-          </Id>
-        </DbtrAcct>
-        <RmtInf>
-          <Ustrd>Cuota Mensual Dance Factory - ${monthStr} - ${classInfo}</Ustrd>
-        </RmtInf>
-      </DrctDbtTxInf>`;
-  }).join("\n");
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.008.001.02" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <CstmrDrctDbtInitn>
-    <GrpHdr>
-      <MsgId>${msgId}</MsgId>
-      <CreDtTm>${creDtTm}</CreDtTm>
-      <NbOfTxs>${targetStudents.length}</NbOfTxs>
-      <CtrlSum>${totalAmount.toFixed(2)}</CtrlSum>
-      <InitgPty>
-        <Nm>DANCE FACTORY SL</Nm>
-        <Id>
-          <OrgId>
-            <Othr>
-              <Id>B88888888</Id>
-            </Othr>
-          </OrgId>
-        </Id>
-      </InitgPty>
-    </GrpHdr>
-    <PmtInf>
-      <PmtInfId>${pmtInfId}</PmtInfId>
-      <PmtMtd>DD</PmtMtd>
-      <NbOfTxs>${targetStudents.length}</NbOfTxs>
-      <CtrlSum>${totalAmount.toFixed(2)}</CtrlSum>
-      <PmtTpInf>
-        <SvcLvl>
-          <Cd>SEPA</Cd>
-        </SvcLvl>
-        <LclInstrm>
-          <Cd>CORE</Cd>
-        </LclInstrm>
-        <SeqTp>RCUR</SeqTp>
-      </PmtTpInf>
-      <ReqdColltnDt>${reqdColltnDt}</ReqdColltnDt>
-      <Cdtr>
-        <Nm>DANCE FACTORY SL</Nm>
-      </Cdtr>
-      <CdtrAcct>
-        <Id>
-          <IBAN>ES9121000418450200051332</IBAN>
-        </Id>
-      </CdtrAcct>
-      <CdtrAgt>
-        <FinInstnId>
-          <BIC>CAIXESBBXXX</BIC>
-        </FinInstnId>
-      </CdtrAgt>
-      <CdtrSchmeId>
-        <Id>
-          <PrvtId>
-            <Othr>
-              <Id>ES02000B88888888</Id>
-            </Othr>
-          </PrvtId>
-        </Id>
-      </CdtrSchmeId>
-${txXml}
-    </PmtInf>
-  </CstmrDrctDbtInitn>
-</Document>`;
-}
 
 export default function PagosYFacturacionPage() {
   const { activeSede } = useSede();
@@ -305,15 +165,8 @@ export default function PagosYFacturacionPage() {
         };
       });
 
-      const storedLocal = typeof window !== "undefined" ? JSON.parse(localStorage.getItem("pending_bono_requests") || "[]") : [];
-      const combined = [...dbMapped];
-      storedLocal.forEach((lReq: any) => {
-        if (!combined.some(c => c.id === lReq.id || (c.student_email && c.student_email === lReq.student_email))) {
-          combined.push(lReq);
-        }
-      });
-
-      setPendingRequests(combined);
+      // Pure Supabase Cloud State: ZERO localStorage reliance
+      setPendingRequests(dbMapped);
     } catch (e) {
       setPendingRequests([]);
     }
@@ -380,16 +233,30 @@ export default function PagosYFacturacionPage() {
         req.bono_nombre?.includes("Matrícula") || 
         req.bono_nombre?.includes("Matricula") || 
         req.is_first_bono || 
-        !studentDB.matricula_pagada
+        !isMatriculaValidForCurrentSeason(studentDB)
       );
 
       const updateData: Record<string, any> = {
         plan_activo: cleanPlan || req.bono_nombre,
         clases_restantes: currentClasses + clasesToAdd
       };
+      if (isFirstPurchase) {
+        updateData.matricula_pagada = true;
+        updateData.matricula_fecha = new Date().toISOString();
+        updateData.temporada_matricula = getCurrentSeason();
+      }
 
-      const { error: updateErr } = await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
-      if (updateErr) {
+      let { error: updateErr } = await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);
+      if (updateErr && (updateErr.code === "42703" || updateErr.message?.includes("column"))) {
+        console.warn("[Pagos] Supabase table doesn't have matricula columns yet, falling back:", updateErr.message);
+        const { error: fallbackErr } = await supabase.from("alumnos").update({
+          plan_activo: cleanPlan || req.bono_nombre,
+          clases_restantes: currentClasses + clasesToAdd
+        }).eq("id", studentDB.id);
+        if (fallbackErr) {
+          console.warn("[Pagos] Error in fallback update:", fallbackErr.message);
+        }
+      } else if (updateErr) {
         console.warn("[Pagos] Error actualizando plan de alumno en Supabase:", updateErr.message);
       }
     }
@@ -428,28 +295,26 @@ export default function PagosYFacturacionPage() {
       notas: "Solicitud validada y clases activadas en el sistema"
     });
 
-    setPendingRequests(prev => {
-      const updated = prev.filter(r => r.id !== req.id && r.student_id !== req.student_id);
-      if (typeof window !== "undefined") {
-        localStorage.setItem("pending_bono_requests", JSON.stringify(updated));
-        window.dispatchEvent(new Event("df_pending_bonos_updated"));
-      }
-      return updated;
-    });
-
+    setPendingRequests(prev => prev.filter(r => r.id !== req.id && r.student_id !== req.student_id));
+    publishSyncEvent("df_pending_bonos_updated");
     loadData();
   };
 
   useEffect(() => {
     loadData();
 
-    // Listen to real-time payment & pending updates
-    const handleUpdate = () => {
+    // Subscribe to real-time events across tabs & devices via canonical syncEventBus
+    const unsubscribe = subscribeSyncEvent(
+      ["df_pagos_updated", "df_pending_bonos_updated"],
+      () => {
+        loadData();
+      }
+    );
+
+    const handleStorage = () => {
       loadData();
     };
-    window.addEventListener("df_pagos_updated", handleUpdate);
-    window.addEventListener("df_pending_bonos_updated", handleUpdate);
-    window.addEventListener("storage", handleUpdate);
+    window.addEventListener("storage", handleStorage);
 
     const interval = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
@@ -458,9 +323,8 @@ export default function PagosYFacturacionPage() {
     }, 30000);
 
     return () => {
-      window.removeEventListener("df_pagos_updated", handleUpdate);
-      window.removeEventListener("df_pending_bonos_updated", handleUpdate);
-      window.removeEventListener("storage", handleUpdate);
+      unsubscribe();
+      window.removeEventListener("storage", handleStorage);
       clearInterval(interval);
     };
   }, [activeSede]);
@@ -558,7 +422,8 @@ export default function PagosYFacturacionPage() {
   };
 
   const handleExportSEPAXML = () => {
-    const xmlContent = generateSEPAXml(filteredRemesaStudents, selectedMonth, paymentMethods, assignedClassesMap);
+    const sepaResult = generateSEPAXml(filteredRemesaStudents, selectedMonth, paymentMethods, assignedClassesMap);
+    const xmlContent = typeof sepaResult === "string" ? sepaResult : sepaResult.xml;
     const blob = new Blob([xmlContent], { type: "application/xml;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");

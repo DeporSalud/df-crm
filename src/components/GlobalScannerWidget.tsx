@@ -21,6 +21,10 @@ import { supabase } from "@/lib/supabase/client";
 import { logActivity } from "@/lib/activityLogger";
 import { useSede } from "@/context/SedeContext";
 import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
+import AccessDeniedOverlay from "@/components/AccessDeniedOverlay";
+import { HardwareScannerDebouncer } from "@/lib/scannerDebounce";
+import { evaluateReceptionAccess, dispatchAccessDenied } from "@/lib/accessControlService";
+import { playSawtoothAlarm, playSuccessChime } from "@/lib/soundUtils";
 import { 
   marcarAsistenciaPorAlumnoYSesion, 
   findStudentByCodeOrText, 
@@ -48,6 +52,16 @@ export default function GlobalScannerWidget() {
   const [manualInput, setManualInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   
+  // Access Denied Overlay State (R1.2)
+  const [accessDeniedState, setAccessDeniedState] = useState<{
+    isOpen: boolean;
+    studentName?: string;
+    motivo?: string;
+    rawCode?: string;
+  }>({
+    isOpen: false
+  });
+
   // Floating Entrance Toast Notification state
   const [currentNotification, setCurrentNotification] = useState<ScanEntranceEvent | null>(null);
   const notificationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -63,9 +77,38 @@ export default function GlobalScannerWidget() {
     return [];
   });
 
-  // Antirepetición rápida (evitar dobles lecturas en menos de 3s)
-  const lastScanCodeRef = useRef<string>("");
-  const lastScanTimeRef = useRef<number>(0);
+  // Hardware Scanner Debouncer (>= 2.5s) (R1.3)
+  const debouncerRef = useRef(new HardwareScannerDebouncer(2500));
+
+  // Sync df_checkin_denied across windows and BroadcastChannel
+  useEffect(() => {
+    const handleDenied = (e: any) => {
+      const detail = e.detail || e;
+      setAccessDeniedState({
+        isOpen: true,
+        studentName: detail.student?.nombre_completo || detail.studentName,
+        motivo: detail.motivo || detail.message,
+        rawCode: detail.rawCode
+      });
+    };
+
+    window.addEventListener("df_checkin_denied" as any, handleDenied);
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel("dance_factory_sync");
+      bc.onmessage = (evt) => {
+        if (evt.data?.type === "df_checkin_denied") {
+          handleDenied(evt.data);
+        }
+      };
+    } catch {}
+
+    return () => {
+      window.removeEventListener("df_checkin_denied" as any, handleDenied);
+      if (bc) bc.close();
+    };
+  }, []);
 
   // Guardar en sessionStorage
   useEffect(() => {
@@ -81,18 +124,19 @@ export default function GlobalScannerWidget() {
     return await findStudentByCodeOrText(rawCode);
   };
 
-  // Procesamiento central del escaneo
+  // Procesamiento central del escaneo con Debounce >= 2.5s y Evaluación Canónica de Accesos
   const handleGlobalScan = useCallback(async (rawScannedCode: string) => {
     const raw = rawScannedCode.trim();
     if (!raw) return;
 
-    const nowTime = Date.now();
-    // Bloquear duplicado idéntico en menos de 2.5s
-    if (raw === lastScanCodeRef.current && (nowTime - lastScanTimeRef.current) < 2500) {
+    // Concurrency lock: impedir escaneos simultáneos en curso
+    if (isProcessing) return;
+
+    // R1.3: Debounce robusto >= 2.5s vía HardwareScannerDebouncer
+    const debounceRes = debouncerRef.current.processScan(raw);
+    if (!debounceRes.accepted) {
       return;
     }
-    lastScanCodeRef.current = raw;
-    lastScanTimeRef.current = nowTime;
 
     setIsProcessing(true);
 
@@ -112,6 +156,18 @@ export default function GlobalScannerWidget() {
 
       if (!student) {
         playFeedbackSound("error");
+        setAccessDeniedState({
+          isOpen: true,
+          studentName: undefined,
+          motivo: "Código escaneado no reconocido o alumno inexistente",
+          rawCode: raw
+        });
+        dispatchAccessDenied({
+          reason: "ALUMNO_NO_ENCONTRADO",
+          message: "⛔ ACCESO DENEGADO: Código no reconocido o alumno inexistente. Pasar por mostrador de recepción",
+          rawCode: raw
+        });
+
         const errorEvt: ScanEntranceEvent = {
           id: "scan_" + Date.now(),
           studentId: "",
@@ -126,57 +182,39 @@ export default function GlobalScannerWidget() {
           nfcToken: raw
         };
         showNotification(errorEvt);
+        setRecentEntrances(prev => [errorEvt, ...prev.slice(0, 29)]);
         return;
       }
 
-      // Validar si está Activo
-      if (student.estado !== "Activo") {
+      // R1.1: Evaluación canónica unificada de acceso
+      const evalResult = evaluateReceptionAccess(student);
+
+      if (!evalResult.granted) {
         playFeedbackSound("error");
-        const deniedEvt: ScanEntranceEvent = {
-          id: "scan_" + Date.now(),
-          studentId: student.id,
-          nombreCompleto: student.nombre_completo,
-          planActivo: student.plan_activo || "Sin plan",
-          clasesRestantes: student.clases_restantes,
-          estado: student.estado || "Inactivo",
-          hora: horaActual,
-          fecha: fechaActual,
-          status: "denied",
-          mensaje: `Acceso denegado: Alumno ${student.estado || "Inactivo"}`
-        };
-        showNotification(deniedEvt);
-        setRecentEntrances(prev => [deniedEvt, ...prev.slice(0, 29)]);
-        return;
-      }
+        setAccessDeniedState({
+          isOpen: true,
+          studentName: student.nombre_completo,
+          motivo: evalResult.motivoDetallado || evalResult.message,
+          rawCode: raw
+        });
+        dispatchAccessDenied({
+          student,
+          reason: evalResult.reason,
+          message: evalResult.message,
+          rawCode: raw
+        });
 
-      // Validar si tiene Plan Activo y Saldo de Bono
-      const planLower = (student.plan_activo || "").toLowerCase().trim();
-      const sinPlan = !student.plan_activo || 
-        planLower === "" || 
-        planLower.includes("sin plan") || 
-        planLower.includes("ningun") || 
-        planLower.includes("pendiente");
-
-      const isBono = planLower.includes("bono") || planLower.includes("suelta") || (!planLower.includes("regular") && !planLower.includes("mensual") && !planLower.includes("ilimitad") && !planLower.includes("cuota") && student.clases_restantes !== null && student.clases_restantes !== undefined);
-      const bonoAgotado = isBono && (student.clases_restantes === null || student.clases_restantes === undefined || student.clases_restantes <= 0);
-
-      if (sinPlan || bonoAgotado) {
-        playFeedbackSound("error");
-        const motivo = sinPlan 
-          ? "SIN PLAN ACTIVO (No matriculado ni con bono)" 
-          : `BONO AGOTADO (0 clases restantes en ${student.plan_activo || "Bono"})`;
-        
         const deniedEvt: ScanEntranceEvent = {
           id: "scan_" + Date.now(),
           studentId: student.id,
           nombreCompleto: student.nombre_completo,
           planActivo: student.plan_activo || "Sin plan activo",
           clasesRestantes: student.clases_restantes ?? 0,
-          estado: student.estado || "Activo",
+          estado: student.estado || "Inactivo",
           hora: horaActual,
           fecha: fechaActual,
           status: "denied",
-          mensaje: `⚠️ ACCESO DENEGADO: ${motivo}. Acudir a recepción.`
+          mensaje: evalResult.message
         };
         showNotification(deniedEvt);
         setRecentEntrances(prev => [deniedEvt, ...prev.slice(0, 29)]);
@@ -184,7 +222,7 @@ export default function GlobalScannerWidget() {
         logActivity({
           origen: "recepcion",
           tipo_evento: "checkin_denegado",
-          descripcion: `Acceso QR denegado: ${student.nombre_completo} está ${motivo}`,
+          descripcion: `Acceso denegado: ${student.nombre_completo} está ${evalResult.motivoDetallado || evalResult.reason}`,
           usuario_afectado: student.nombre_completo,
           sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
         });
@@ -229,6 +267,7 @@ export default function GlobalScannerWidget() {
       // 4. Feedback Sonoro y Notificación Visual
       playFeedbackSound("success");
 
+      const planLower = (student.plan_activo || "").toLowerCase().trim();
       const isRegular = planLower.includes("regular") || planLower.includes("mensual") || planLower.includes("ilimitad") || student.clases_restantes === null;
       const saldoInfo = !isRegular 
         ? `Bono (${student.clases_restantes ?? 0} clases de saldo)` 
@@ -640,6 +679,15 @@ export default function GlobalScannerWidget() {
       <HistoricoEntradasModal
         isOpen={isHistoricoModalOpen}
         onClose={() => setIsHistoricoModalOpen(false)}
+      />
+
+      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2) */}
+      <AccessDeniedOverlay
+        isOpen={accessDeniedState.isOpen}
+        studentName={accessDeniedState.studentName}
+        motivo={accessDeniedState.motivo}
+        rawCode={accessDeniedState.rawCode}
+        onClose={() => setAccessDeniedState(prev => ({ ...prev, isOpen: false }))}
       />
     </>
   );

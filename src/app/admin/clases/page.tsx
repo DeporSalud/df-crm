@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
+import { subscribeSyncEvent, publishSyncEvent } from "@/lib/syncEventBus";
 import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2 } from "lucide-react";
 import AppModal, { ModalState } from "@/components/AppModal";
 import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
@@ -212,7 +213,7 @@ export default function ClasesPage() {
     return Array.from(new Set([...defaults, ...fromClases])).sort((a, b) => a.localeCompare(b, "es"));
   }, [clases]);
 
-  const fetchClasesAndEnrollments = async () => {
+  const fetchClasesAndEnrollments = useCallback(async () => {
     setIsLoading(true);
     
     // 1. Fetch Classes
@@ -260,12 +261,43 @@ export default function ClasesPage() {
     }
 
     setIsLoading(false);
-  };
+  }, [activeSede]);
+
+  // 350ms debounced live reactivity refresh (R7.1 & R7.2)
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const debouncedRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      syncReservasFromSupabase();
+      fetchClasesAndEnrollments();
+    }, 350);
+  }, [fetchClasesAndEnrollments]);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    };
+  }, []);
+
+  // Multi-channel real-time reactivity via syncEventBus (R7.1 & R7.2)
+  useEffect(() => {
+    const unsubReservas = subscribeSyncEvent("df_reservas_updated", () => {
+      debouncedRefresh();
+    });
+    const unsubCheckin = subscribeSyncEvent("df_checkin_success", () => {
+      debouncedRefresh();
+    });
+
+    return () => {
+      unsubReservas();
+      unsubCheckin();
+    };
+  }, [debouncedRefresh]);
 
   useEffect(() => {
     syncReservasFromSupabase();
     fetchClasesAndEnrollments();
-  }, [activeSede]);
+  }, [fetchClasesAndEnrollments]);
 
   // Soporte para parámetros URL (?filter=openclass o ?edit=CLASE_ID)
   useEffect(() => {
@@ -567,6 +599,7 @@ export default function ClasesPage() {
 
           fetchRoster(rosterClass);
           fetchClasesAndEnrollments();
+          publishSyncEvent("df_reservas_updated", { alumnoId: studentId, claseId: rosterClass.id });
           setModal({
             isOpen: true,
             title: "Alumno Desmatriculado",

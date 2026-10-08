@@ -29,7 +29,14 @@ import {
   CONCEPTOS_RAPIDOS, 
   registrarNuevoPago 
 } from "@/lib/pagosService";
-import { isPromoSeptiembreActive } from "@/lib/matriculaService";
+import { 
+  isPromoSeptiembreActive, 
+  getCurrentSeason, 
+  isRegularClassStudent, 
+  isTeacherProfile, 
+  isMatriculaValidForCurrentSeason 
+} from "@/lib/matriculaService";
+import { publishSyncEvent } from "@/lib/syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
 
 export function openGlobalCobro(student?: any) {
@@ -175,17 +182,42 @@ export default function GlobalCobroModal() {
       else if (lower.includes("10")) addClasses = 10;
       else if (lower.includes("ilimitad")) addClasses = 999;
 
+      const isTeacher = isTeacherProfile(selectedStudent) || lower.includes("docente") || (nombrePagador || "").toLowerCase().includes("docente");
+      const isRegular = isRegularClassStudent(selectedStudent);
+      const isMatriculaPayment = formCategoria === "matricula" || lower.includes("matrícula") || lower.includes("matricula");
+      const needsMatriculaActivation = !isTeacher && !isRegular && (isMatriculaPayment || !isMatriculaValidForCurrentSeason(selectedStudent));
+
+      const updatePayload: Record<string, any> = {};
       if (addClasses > 0) {
         const cur = typeof selectedStudent.clases_restantes === "number" ? selectedStudent.clases_restantes : 0;
-        supabase.from("alumnos").update({
-          clases_restantes: cur + addClasses,
-          plan_activo: formConcepto.trim()
-        }).eq("id", selectedStudent.id).then(() => {
-          if (typeof window !== "undefined") {
-            window.dispatchEvent(new Event("df_reservas_updated"));
-          }
-        });
+        updatePayload.clases_restantes = cur + addClasses;
+        updatePayload.plan_activo = formConcepto.trim();
       }
+
+      if (needsMatriculaActivation || isMatriculaPayment) {
+        updatePayload.matricula_pagada = true;
+        updatePayload.matricula_fecha = new Date().toISOString();
+        updatePayload.temporada_matricula = getCurrentSeason();
+      }
+
+      if (Object.keys(updatePayload).length > 0) {
+        supabase.from("alumnos").update(updatePayload).eq("id", selectedStudent.id).then(({ error }) => {
+          if (error && (error.code === "42703" || error.message?.includes("column"))) {
+            const fallbackPayload: Record<string, any> = {};
+            if (updatePayload.clases_restantes !== undefined) fallbackPayload.clases_restantes = updatePayload.clases_restantes;
+            if (updatePayload.plan_activo !== undefined) fallbackPayload.plan_activo = updatePayload.plan_activo;
+            if (Object.keys(fallbackPayload).length > 0) {
+              supabase.from("alumnos").update(fallbackPayload).eq("id", selectedStudent.id);
+            }
+          }
+          publishSyncEvent("df_reservas_updated");
+          publishSyncEvent("df_pagos_updated");
+        });
+      } else {
+        publishSyncEvent("df_pagos_updated");
+      }
+    } else {
+      publishSyncEvent("df_pagos_updated");
     }
 
     logActivity({
