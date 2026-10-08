@@ -427,18 +427,44 @@ export default function AdminDashboardRecepcion() {
     playErrorSound();
     setFlashState('error');
     setStatusMessage({ type: 'error', text: msg });
-    setTimeout(() => setFlashState(null), 1500);
+    setTimeout(() => setFlashState(null), 3500);
   };
 
   const processCheckIn = async (student: any) => {
     if (student.estado !== 'Activo') {
-      triggerError(`El alumno ${student.nombre_completo} está Inactivo.`);
+      triggerError(`⛔ ACCESO DENEGADO: El alumno ${student.nombre_completo} está ${student.estado || "Inactivo"}.`);
+      return;
+    }
+
+    // Validación estricta de Plan Activo y Saldo de Bono
+    const planLower = (student.plan_activo || "").toLowerCase().trim();
+    const sinPlan = !student.plan_activo || 
+      planLower === "" || 
+      planLower.includes("sin plan") || 
+      planLower.includes("ningun") || 
+      planLower.includes("pendiente");
+
+    const isBono = planLower.includes("bono") || planLower.includes("suelta") || (!planLower.includes("regular") && !planLower.includes("mensual") && !planLower.includes("ilimitad") && !planLower.includes("cuota") && student.clases_restantes !== null && student.clases_restantes !== undefined);
+    const bonoAgotado = isBono && (student.clases_restantes === null || student.clases_restantes === undefined || student.clases_restantes <= 0);
+
+    if (sinPlan || bonoAgotado) {
+      const motivo = sinPlan 
+        ? "SIN PLAN ACTIVO (No matriculado ni con bono)" 
+        : `BONO AGOTADO (0 clases restantes en ${student.plan_activo || "Bono"})`;
+      triggerError(`⛔ ACCESO DENEGADO: ${student.nombre_completo} está ${motivo}. Debe pasar por el mostrador de recepción.`);
+      
+      logActivity({
+        origen: "recepcion",
+        tipo_evento: "checkin_denegado",
+        descripcion: `Acceso QR denegado en recepción: ${student.nombre_completo} está ${motivo}`,
+        usuario_afectado: student.nombre_completo,
+        sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+      });
       return;
     }
 
     const resolved = await resolveClassForCheckIn(student, activeSede, selectedClaseId);
 
-    const planLower = (student.plan_activo || "").toLowerCase();
     const isRegularOrUnlimited = 
       planLower.includes("regular") || 
       planLower.includes("mensual") || 
@@ -1426,9 +1452,12 @@ export default function AdminDashboardRecepcion() {
             <div className={`p-4 rounded-xl border transition-all ${
               statusMessage.type === 'success' 
                 ? 'bg-[var(--color-success)]/15 border-[var(--color-success)] text-[var(--color-success)] shadow-lg shadow-[var(--color-success)]/10' 
-                : 'bg-[var(--color-danger)]/15 border-[var(--color-danger)] text-[var(--color-danger)] shadow-lg shadow-[var(--color-danger)]/10'
+                : 'bg-red-500/25 border-red-500 text-red-200 shadow-2xl shadow-red-500/30 ring-2 ring-red-500/50 animate-pulse'
             }`}>
-              <p className="font-semibold text-center text-lg">{statusMessage.text}</p>
+              <div className="flex items-center justify-center gap-3">
+                <span className="text-2xl shrink-0">{statusMessage.type === 'success' ? '✅' : '🚨'}</span>
+                <p className="font-bold text-center text-base sm:text-lg">{statusMessage.text}</p>
+              </div>
             </div>
           )}
 

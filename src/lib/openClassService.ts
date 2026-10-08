@@ -556,7 +556,7 @@ export function getOpenClassSessionStatus(
     };
   }
 
-  // REGLA DE LAS 5 HORAS PREVIAS (CORTE DE AFORO MÍNIMO)
+  // REGLA DE LAS 5 HORAS PREVIAS (COMUNICADO OFICIAL DANCE FACTORY: CORTE Y CIERRE DE RESERVAS)
   if (horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
     if (reservasCount < OPEN_CLASS_MIN_STUDENTS) {
       return {
@@ -565,7 +565,7 @@ export function getOpenClassSessionStatus(
         reservasCount,
         minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
         puedeReservar: false,
-        motivoBloqueo: `Clase suspendida: No se alcanzó el mínimo de ${OPEN_CLASS_MIN_STUDENTS} personas a las ${OPEN_CLASS_CUTOFF_HOURS} horas previas de la sesión. Saldo de clase reembolsado.`,
+        motivoBloqueo: `Clase suspendida: No se alcanzó el mínimo de ${OPEN_CLASS_MIN_STUDENTS} personas a las ${OPEN_CLASS_CUTOFF_HOURS}h previas de la sesión. Saldo devuelto a tu bono.`,
         badgeText: `⚠️ Suspendida (mín. ${OPEN_CLASS_MIN_STUDENTS} pers.)`,
         badgeColor: "bg-red-500/20 text-red-300 border border-red-500/40"
       };
@@ -575,12 +575,10 @@ export function getOpenClassSessionStatus(
         horasRestantes,
         reservasCount,
         minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
-        puedeReservar: !isFull,
-        motivoBloqueo: isFull ? "Aforo completo" : undefined,
-        badgeText: isFull ? "Aforo Completo" : "✓ Confirmada",
-        badgeColor: isFull 
-          ? "bg-red-500/20 text-red-300 border border-red-500/30" 
-          : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+        puedeReservar: false,
+        motivoBloqueo: `Plazo de reserva cerrado: según la normativa oficial de Dance Factory, las reservas cierran estrictamente ${OPEN_CLASS_CUTOFF_HOURS}h antes del inicio de la clase.`,
+        badgeText: "✓ Confirmada (Plazo cerrado)",
+        badgeColor: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
       };
     }
   }

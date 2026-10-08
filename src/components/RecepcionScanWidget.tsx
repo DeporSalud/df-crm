@@ -75,6 +75,42 @@ export default function RecepcionScanWidget({
       return;
     }
 
+    // 4. Validación de Plan Activo y Saldo de Bono
+    const planLower = (alumno.plan_activo || '').toLowerCase().trim();
+    const sinPlan = !alumno.plan_activo || 
+      planLower === '' || 
+      planLower.includes('sin plan') || 
+      planLower.includes('ningun') || 
+      planLower.includes('pendiente');
+
+    const isBono = planLower.includes('bono') || planLower.includes('suelta') || (!planLower.includes('regular') && !planLower.includes('mensual') && !planLower.includes('ilimitad') && !planLower.includes('cuota') && alumno.clases_restantes !== null && alumno.clases_restantes !== undefined);
+    const bonoAgotado = isBono && (alumno.clases_restantes === null || alumno.clases_restantes === undefined || alumno.clases_restantes <= 0);
+
+    if (sinPlan || bonoAgotado) {
+      playFeedbackSound('error');
+      const motivo = sinPlan 
+        ? 'SIN PLAN ACTIVO (No matriculado ni con bono)' 
+        : `BONO AGOTADO (0 clases restantes en ${alumno.plan_activo || 'Bono'})`;
+      const resultado: ScanResult = {
+        status: 'error',
+        nombre: alumno.nombre_completo,
+        mensaje: `⛔ ACCESO DENEGADO: ${motivo}`,
+        detalle: 'Debe pasar por el mostrador de recepción para regularizar su cuota o bono.',
+        timestamp: horaActual
+      };
+      setLastScan(resultado);
+      setHistorialReciente((prev) => [resultado, ...prev.slice(0, 9)]);
+
+      logActivity({
+        origen: 'recepcion',
+        tipo_evento: 'checkin_denegado',
+        descripcion: `Acceso denegado en recepción: ${alumno.nombre_completo} está ${motivo}`,
+        usuario_afectado: alumno.nombre_completo,
+        sede: sedeName
+      });
+      return;
+    }
+
     // 4. Inserción de asistencia en tabla asistencias de Dance Factory
     const asistenciaPayload: { alumno_id: string; clase_id?: string; fecha_hora?: string } = {
       alumno_id: alumno.id,
@@ -102,7 +138,6 @@ export default function RecepcionScanWidget({
 
     // 5. Check-in Exitoso
     playFeedbackSound('success');
-    const planLower = (alumno.plan_activo || '').toLowerCase();
     const isRegular =
       planLower.includes('regular') ||
       planLower.includes('mensual') ||

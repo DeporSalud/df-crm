@@ -145,6 +145,49 @@ export default function GlobalScannerWidget() {
           mensaje: `Acceso denegado: Alumno ${student.estado || "Inactivo"}`
         };
         showNotification(deniedEvt);
+        setRecentEntrances(prev => [deniedEvt, ...prev.slice(0, 29)]);
+        return;
+      }
+
+      // Validar si tiene Plan Activo y Saldo de Bono
+      const planLower = (student.plan_activo || "").toLowerCase().trim();
+      const sinPlan = !student.plan_activo || 
+        planLower === "" || 
+        planLower.includes("sin plan") || 
+        planLower.includes("ningun") || 
+        planLower.includes("pendiente");
+
+      const isBono = planLower.includes("bono") || planLower.includes("suelta") || (!planLower.includes("regular") && !planLower.includes("mensual") && !planLower.includes("ilimitad") && !planLower.includes("cuota") && student.clases_restantes !== null && student.clases_restantes !== undefined);
+      const bonoAgotado = isBono && (student.clases_restantes === null || student.clases_restantes === undefined || student.clases_restantes <= 0);
+
+      if (sinPlan || bonoAgotado) {
+        playFeedbackSound("error");
+        const motivo = sinPlan 
+          ? "SIN PLAN ACTIVO (No matriculado ni con bono)" 
+          : `BONO AGOTADO (0 clases restantes en ${student.plan_activo || "Bono"})`;
+        
+        const deniedEvt: ScanEntranceEvent = {
+          id: "scan_" + Date.now(),
+          studentId: student.id,
+          nombreCompleto: student.nombre_completo,
+          planActivo: student.plan_activo || "Sin plan activo",
+          clasesRestantes: student.clases_restantes ?? 0,
+          estado: student.estado || "Activo",
+          hora: horaActual,
+          fecha: fechaActual,
+          status: "denied",
+          mensaje: `⚠️ ACCESO DENEGADO: ${motivo}. Acudir a recepción.`
+        };
+        showNotification(deniedEvt);
+        setRecentEntrances(prev => [deniedEvt, ...prev.slice(0, 29)]);
+
+        logActivity({
+          origen: "recepcion",
+          tipo_evento: "checkin_denegado",
+          descripcion: `Acceso QR denegado: ${student.nombre_completo} está ${motivo}`,
+          usuario_afectado: student.nombre_completo,
+          sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+        });
         return;
       }
 
@@ -186,7 +229,6 @@ export default function GlobalScannerWidget() {
       // 4. Feedback Sonoro y Notificación Visual
       playFeedbackSound("success");
 
-      const planLower = (student.plan_activo || "").toLowerCase();
       const isRegular = planLower.includes("regular") || planLower.includes("mensual") || planLower.includes("ilimitad") || student.clases_restantes === null;
       const saldoInfo = !isRegular 
         ? `Bono (${student.clases_restantes ?? 0} clases de saldo)` 
@@ -347,7 +389,7 @@ export default function GlobalScannerWidget() {
             currentNotification.status === "success" 
               ? "bg-slate-950/95 border-emerald-500/50 shadow-emerald-500/20" 
               : currentNotification.status === "denied"
-              ? "bg-slate-950/95 border-amber-500/50 shadow-amber-500/20"
+              ? "bg-slate-950/95 border-rose-500 shadow-rose-500/40 ring-2 ring-rose-500/30 animate-pulse"
               : "bg-slate-950/95 border-rose-500/50 shadow-rose-500/20"
           }`}>
             <div className="flex items-start justify-between gap-3">
@@ -356,13 +398,13 @@ export default function GlobalScannerWidget() {
                   currentNotification.status === "success"
                     ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
                     : currentNotification.status === "denied"
-                    ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                    ? "bg-rose-500/25 text-rose-300 border border-rose-500/50"
                     : "bg-rose-500/20 text-rose-400 border border-rose-500/30"
                 }`}>
                   {currentNotification.status === "success" ? (
                     <CheckCircle2 size={22} className="text-emerald-400" />
                   ) : currentNotification.status === "denied" ? (
-                    <AlertTriangle size={22} className="text-amber-400" />
+                    <AlertTriangle size={22} className="text-rose-400" />
                   ) : (
                     <X size={22} className="text-rose-400" />
                   )}
@@ -373,7 +415,7 @@ export default function GlobalScannerWidget() {
                     currentNotification.status === "success"
                       ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
                       : currentNotification.status === "denied"
-                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/25"
+                      ? "bg-rose-500/25 text-rose-300 border border-rose-500/40"
                       : "bg-rose-500/15 text-rose-400 border border-rose-500/25"
                   }`}>
                     {currentNotification.status === "success" ? "✓ ACCESO CONCEDIDO" : currentNotification.status === "denied" ? "⚠️ ACCESO DENEGADO" : "✕ ERROR DE LECTURA"}
