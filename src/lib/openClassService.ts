@@ -729,7 +729,7 @@ let isAutoSuspensionProcessing = false;
  * cancela la sesión y reembolsa automáticamente 1 clase al bono del alumno en Supabase.
  * 
  * Reglas de seguridad e idempotencia:
- * 1. Opera ÚNICAMENTE sobre sesiones FUTURAS (horasRestantes > 0 && horasRestantes <= OPEN_CLASS_CUTOFF_HOURS).
+ * 1. Opera ÚNICAMENTE sobre sesiones FUTURAS (horasRestantes > 0 && horasRestantes < OPEN_CLASS_CUTOFF_HOURS).
  * 2. Utiliza un registro persistente (df_suspended_sessions_v1) para garantizar que una sesión jamás se suspenda ni reembolse más de una vez.
  * 3. Al reembolsar, elimina el registro en alumnos_clases en Supabase de forma segura por fecha (deleteAlumnosClasesBySessionDate).
  */
@@ -771,8 +771,8 @@ export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ cancelad
         const sample = reservas[0];
         const horasRestantes = getHorasRestantesParaSesion(sample.fecha_iso, sample.hora_inicio);
         
-        // ÚNICAMENTE sesiones futuras dentro del margen de 5 horas previas
-        if (horasRestantes > 0 && horasRestantes <= OPEN_CLASS_CUTOFF_HOURS) {
+        // ÚNICAMENTE sesiones futuras dentro del margen de 5 horas previas (< 5h)
+        if (horasRestantes > 0 && horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
           suspendedSet.add(sessionKey);
 
           for (const r of reservas) {
