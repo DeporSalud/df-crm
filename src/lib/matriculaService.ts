@@ -512,7 +512,8 @@ export function hasPaidSeasonMatricula(student?: any, date: Date = new Date()): 
       plan.includes("bono 8") || 
       plan.includes("bono 10") || 
       plan.includes("ilimitad") || 
-      plan.includes("pase")
+      plan.includes("pase") ||
+      plan.includes("suelta")
     );
     if (isSpecificBono && !plan.includes("matrícula") && !plan.includes("matricula")) {
       return true;
