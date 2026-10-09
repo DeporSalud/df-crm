@@ -531,7 +531,15 @@ export interface OpenClassSessionStatus {
 /**
  * Helper canonical evaluator for Open Class cutoff rules.
  */
-export function evaluateOpenClassCutoff(hoursRemaining: number, studentCount: number, maxCapacity: number = 20) {
+export function evaluateOpenClassCutoff(
+  hoursRemaining: number,
+  studentCount: number,
+  arg3: number = 20,
+  arg4?: number
+) {
+  const minStudents = typeof arg4 === "number" ? arg3 : OPEN_CLASS_MIN_STUDENTS;
+  const maxCapacity = typeof arg4 === "number" ? arg4 : (typeof arg3 === "number" ? arg3 : 20);
+
   if (hoursRemaining <= 0) {
     return {
       status: "finalizada" as const,
@@ -542,42 +550,44 @@ export function evaluateOpenClassCutoff(hoursRemaining: number, studentCount: nu
     };
   }
 
-  // Under 5 hours strict rule
+  const isFull = studentCount >= maxCapacity;
+
+  // Under 5 hours rule: auto-suspension if < 4 students; stays OPEN if >= 4 students
   if (hoursRemaining < OPEN_CLASS_CUTOFF_HOURS) {
-    if (studentCount < OPEN_CLASS_MIN_STUDENTS) {
+    if (studentCount < minStudents) {
       return {
         status: "suspendida_aforo_minimo" as const,
         puedeReservar: false,
         refundRequired: true,
-        badgeText: `⚠️ Suspendida (mín. ${OPEN_CLASS_MIN_STUDENTS} pers.)`,
-        reason: `Clase suspendida: No se alcanzó el mínimo de ${OPEN_CLASS_MIN_STUDENTS} personas a las ${OPEN_CLASS_CUTOFF_HOURS}h previas.`
+        badgeText: `⚠️ Suspendida (mín. ${minStudents} pers.)`,
+        reason: `Clase suspendida: No se alcanzó el mínimo de ${minStudents} personas a las ${OPEN_CLASS_CUTOFF_HOURS}h previas.`
       };
     } else {
       return {
         status: "confirmada" as const,
-        puedeReservar: false,
+        puedeReservar: !isFull,
         refundRequired: false,
-        badgeText: "✓ Confirmada (Plazo cerrado)",
-        reason: `Plazo de reserva cerrado estrictamente ${OPEN_CLASS_CUTOFF_HOURS}h antes.`
+        badgeText: isFull ? "Aforo Completo" : `✓ Confirmada (${studentCount}/${maxCapacity})`,
+        reason: isFull ? "Aforo completo" : "Abierta para reservas"
       };
     }
   }
 
   // 5 hours or more remaining
-  const isFull = studentCount >= maxCapacity;
   return {
-    status: studentCount >= OPEN_CLASS_MIN_STUDENTS ? ("confirmada" as const) : ("abierta" as const),
+    status: studentCount >= minStudents ? ("confirmada" as const) : ("abierta" as const),
     puedeReservar: !isFull,
     refundRequired: false,
-    badgeText: studentCount >= OPEN_CLASS_MIN_STUDENTS ? `✓ Confirmada (${studentCount}/${maxCapacity})` : `${studentCount}/${OPEN_CLASS_MIN_STUDENTS} mín. (corte 5h)`,
+    badgeText: studentCount >= minStudents ? `✓ Confirmada (${studentCount}/${maxCapacity})` : `${studentCount}/${minStudents} mín. (corte 5h)`,
     reason: isFull ? "Aforo completo" : "Abierta para reservas"
   };
 }
 
 /**
  * Regla de negocio oficial de Dance Factory:
- * Si quedan menos de 5 horas para la clase y hay menos de 4 personas apuntadas,
- * la sesión queda suspendida por aforo mínimo y se bloquean nuevas reservas.
+ * Si quedan menos de 5 horas para la clase:
+ * - Con < 4 personas: la sesión queda suspendida por aforo mínimo y se reembolsa el saldo a los alumnos.
+ * - Con >= 4 personas: la sesión permanece ABIERTA y activa (puedeReservar: true) hasta el inicio o completar 20 plazas.
  */
 export function getOpenClassSessionStatus(
   claseId: string,
@@ -603,7 +613,7 @@ export function getOpenClassSessionStatus(
     };
   }
 
-  // REGLA DE LAS 5 HORAS PREVIAS (COMUNICADO OFICIAL DANCE FACTORY: CORTE Y CIERRE DE RESERVAS)
+  // REGLA DE LAS 5 HORAS PREVIAS (CORTE DE AFORO MÍNIMO)
   if (horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
     if (reservasCount < OPEN_CLASS_MIN_STUDENTS) {
       return {
@@ -623,11 +633,13 @@ export function getOpenClassSessionStatus(
         horasRestantes,
         reservasCount,
         minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
-        puedeReservar: false,
+        puedeReservar: !isFull,
         refundRequired: false,
-        motivoBloqueo: `Plazo de reserva cerrado: según la normativa oficial de Dance Factory, las reservas cierran estrictamente ${OPEN_CLASS_CUTOFF_HOURS}h antes del inicio de la clase.`,
-        badgeText: "✓ Confirmada (Plazo cerrado)",
-        badgeColor: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+        motivoBloqueo: isFull ? "Aforo completo" : undefined,
+        badgeText: isFull ? "Aforo Completo" : `✓ Confirmada (${reservasCount}/${aforoMaximo})`,
+        badgeColor: isFull 
+          ? "bg-red-500/20 text-red-300 border border-red-500/30" 
+          : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
       };
     }
   }
