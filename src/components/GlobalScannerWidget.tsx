@@ -28,7 +28,8 @@ import { playSawtoothAlarm, playSuccessChime } from "@/lib/soundUtils";
 import { 
   marcarAsistenciaPorAlumnoYSesion, 
   findStudentByCodeOrText, 
-  resolveClassForCheckIn 
+  resolveClassForCheckIn,
+  formatSedeName 
 } from "@/lib/openClassService";
 
 export interface ScanEntranceEvent {
@@ -280,7 +281,7 @@ export default function GlobalScannerWidget() {
         tipo_evento: "checkin",
         descripcion: `Validación automática escáner QR/NFC (${notificationDetail})`,
         usuario_afectado: student.nombre_completo,
-        sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+        sede: resolved.sede ? formatSedeName(resolved.sede) : (activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla")
       });
 
       // Disparar evento para que páginas abiertas se enteren

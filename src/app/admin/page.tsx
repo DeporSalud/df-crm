@@ -33,7 +33,8 @@ import {
   syncReservasFromSupabase,
   getReservasCountForDate,
   findStudentByCodeOrText,
-  resolveClassForCheckIn
+  resolveClassForCheckIn,
+  formatSedeName
 } from "@/lib/openClassService";
 import AccessDeniedOverlay from "@/components/AccessDeniedOverlay";
 import { HardwareScannerDebouncer } from "@/lib/scannerDebounce";
@@ -551,18 +552,26 @@ export default function AdminDashboardRecepcion() {
       : `Bono (${student.clases_restantes ?? 0} clases de saldo)`;
     const classDetailStr = resolved.claseNombre ? ` • ${resolved.claseNombre}` : '';
 
+    const sedeDisplay = resolved.sede 
+      ? formatSedeName(resolved.sede) 
+      : (activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla");
+
     // Audit log
     logActivity({
       origen: "recepcion",
       tipo_evento: "checkin",
       descripcion: `Validación de acceso QR/NFC (${remainingTextStr}${classDetailStr})`,
       usuario_afectado: student.nombre_completo,
-      sede: activeSede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+      sede: sedeDisplay
     });
+
+    const sedeNotice = (resolved.sede && activeSede !== "consolidado" && normalizeSede(resolved.sede) !== normalizeSede(activeSede))
+      ? ` • [${formatSedeName(resolved.sede)}]`
+      : '';
 
     setStatusMessage({ 
       type: 'success', 
-      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr})` 
+      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr}${sedeNotice})` 
     });
 
     publishSyncEvent("df_checkin_success", { ...student, resolvedClass: resolved });

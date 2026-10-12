@@ -78,14 +78,14 @@ export function isCuotaImpagada(student: any): boolean {
         }
       }
 
-      // Check pending mensualidad in payments ledger
+      // Check pending mensualidad in payments ledger (only strictly defaulted 'Impagado', never initial 'Pendiente')
       const rawPagos = localStorage.getItem("df_pagos_transacciones_v1");
       if (rawPagos) {
         const pagos: any[] = JSON.parse(rawPagos);
         const normName = (student.nombre_completo || "").toLowerCase().trim();
         const hasPendingMonthly = pagos.some(p => 
           (p.alumno_id === student.id || (p.alumno_nombre && p.alumno_nombre.toLowerCase().trim() === normName)) &&
-          (p.estado === "Pendiente" || p.estado === "Impagado") &&
+          p.estado === "Impagado" &&
           (p.categoria === "mensualidad" || p.categoria === "cuota")
         );
         if (hasPendingMonthly) return true;
@@ -142,15 +142,24 @@ export function evaluateReceptionAccess(student: any): AccessEvaluationResult {
 
   // 4. Normalize and check plan status
   const planLower = (student.plan_activo || "").toLowerCase().trim();
+  const hasEnrolledClasses = Boolean(
+    student.es_alumno_regular === true ||
+    (Array.isArray(student.alumnos_clases) && student.alumnos_clases.length > 0) ||
+    (Array.isArray(student.clases) && student.clases.length > 0)
+  );
+
   const sinPlan = 
-    !student.plan_activo || 
-    planLower === "" || 
-    planLower.includes("sin plan") || 
-    planLower.includes("ningun") || 
-    planLower.includes("pendiente");
+    !hasEnrolledClasses && (
+      !student.plan_activo || 
+      planLower === "" || 
+      planLower.includes("sin plan") || 
+      planLower.includes("ningun") || 
+      planLower.includes("pendiente")
+    );
 
   // 5. Determine if student is on a bono or regular membership
   const isRegularOrUnlimited = 
+    hasEnrolledClasses ||
     planLower.includes("regular") || 
     planLower.includes("mensual") || 
     planLower.includes("ilimitad") || 
@@ -158,11 +167,14 @@ export function evaluateReceptionAccess(student: any): AccessEvaluationResult {
     student.clases_restantes === null;
 
   const isBono = 
-    planLower.includes("bono") || 
-    planLower.includes("suelta") || 
-    (!isRegularOrUnlimited && student.clases_restantes !== null && student.clases_restantes !== undefined);
+    !isRegularOrUnlimited && (
+      planLower.includes("bono") || 
+      planLower.includes("suelta") || 
+      planLower.includes("pack") ||
+      (student.clases_restantes !== null && student.clases_restantes !== undefined)
+    );
 
-  // 6. Check for exhausted bono (saldo <= 0)
+  // 6. Check for exhausted bono (saldo <= 0) - ONLY for genuine bono students, NEVER for regular students
   const bonoAgotado = isBono && (
     student.clases_restantes === null || 
     student.clases_restantes === undefined || 

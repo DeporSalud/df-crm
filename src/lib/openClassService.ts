@@ -1272,8 +1272,8 @@ export async function resolveClassForCheckIn(
         const startMin = parseTimeToMinutes(c.hora_inicio);
         const endMin = parseTimeToMinutes(c.hora_fin);
 
-        // Ventana de llegada [inicio - 45 min, fin + 15 min]
-        if (currentMinutes >= (startMin - 45) && currentMinutes <= (endMin + 15)) {
+        // Ventana de llegada flexible [inicio - 60 min, fin + 30 min]
+        if (currentMinutes >= (startMin - 60) && currentMinutes <= (endMin + 30)) {
           const dist = Math.abs(currentMinutes - startMin);
           if (dist < minDistance) {
             minDistance = dist;
@@ -1311,7 +1311,7 @@ export async function resolveClassForCheckIn(
       const startMin = parseTimeToMinutes(todayReserva.hora_inicio);
       const endMin = parseTimeToMinutes(todayReserva.hora_fin);
 
-      if (currentMinutes >= (startMin - 45) && currentMinutes <= (endMin + 15)) {
+      if (currentMinutes >= (startMin - 60) && currentMinutes <= (endMin + 30)) {
         return {
           claseId: todayReserva.clase_id,
           claseNombre: todayReserva.nombre_clase,
@@ -1339,8 +1339,8 @@ export async function resolveClassForCheckIn(
         const startMin = parseTimeToMinutes(prefClass.hora_inicio);
         const endMin = parseTimeToMinutes(prefClass.hora_fin);
 
-        // Solo usar la clase si estamos dentro del rango temporal (±45 min)
-        if (currentMinutes >= (startMin - 45) && currentMinutes <= (endMin + 20)) {
+        // Solo usar la clase si estamos dentro del rango temporal (±50 min)
+        if (currentMinutes >= (startMin - 50) && currentMinutes <= (endMin + 30)) {
           const isPrefOpen = (prefClass.nombre_clase || "").toUpperCase().includes("OPEN");
           if (!isPrefOpen || !isRegularOrUnlimited || currentMinutes < endMin) {
             return {
@@ -1357,19 +1357,13 @@ export async function resolveClassForCheckIn(
     } catch {}
   }
 
-  // 4. COMPROBAR CLASE REGULAR ACTIVA EN LA SEDE PARA EL HORARIO ACTUAL
+  // 4. COMPROBAR CLASE REGULAR ACTIVA PARA EL HORARIO ACTUAL (Soporte Multi-Sede Universal)
   try {
-    let query = supabase
+    const { data: activeClasses } = await supabase
       .from("clases_cuadrante")
       .select("*")
       .eq("dia_semana", hoyDia);
 
-    if (activeSede && activeSede !== "consolidado") {
-      const sedeKey = activeSede.toLowerCase().includes("castilla") ? "castilla" : "tejar";
-      query = query.in("sede", sedeKey === "tejar" ? ["tejar", "studio", "mostoles"] : ["castilla", "alcorcon"]);
-    }
-
-    const { data: activeClasses } = await query;
     if (activeClasses && activeClasses.length > 0) {
       let candidate: any = null;
       let minDelta = Infinity;
@@ -1383,13 +1377,16 @@ export async function resolveClassForCheckIn(
         // Las Open Classes requieren reserva previa confirmada (comprobada en el paso 2).
         if (isOpen) continue;
 
-        // Comprobar sede del alumno si se conoce
-        if (student.sede && c.sede && normalizeSede(student.sede) !== normalizeSede(c.sede)) {
-          continue;
-        }
+        // Ventana de llegada [inicio - 50 min, fin + 20 min]
+        if (currentMinutes >= (startMin - 50) && currentMinutes <= (endMin + 20)) {
+          let delta = Math.abs(currentMinutes - startMin);
+          // Preferencia de desempate si coincide con la sede activa o sede del alumno
+          if (activeSede && activeSede !== "consolidado" && normalizeSede(c.sede) === normalizeSede(activeSede)) {
+            delta -= 5;
+          } else if (student.sede && normalizeSede(c.sede) === normalizeSede(student.sede)) {
+            delta -= 3;
+          }
 
-        if (currentMinutes >= (startMin - 35) && currentMinutes <= (endMin + 10)) {
-          const delta = Math.abs(currentMinutes - startMin);
           if (delta < minDelta) {
             minDelta = delta;
             candidate = c;
