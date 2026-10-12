@@ -443,9 +443,19 @@ export default function OpenClassAsistentesModal({
 
       // Deduct class if not unlimited
       if (!isUnlimited) {
+        const { data: freshDbS } = await supabase
+          .from("alumnos")
+          .select("clases_restantes")
+          .eq("id", selectedStudentToAdd.id)
+          .single();
+
+        const actualDbBalance = typeof freshDbS?.clases_restantes === "number"
+          ? freshDbS.clases_restantes
+          : currentBalance;
+
         await supabase
           .from("alumnos")
-          .update({ clases_restantes: Math.max(0, currentBalance - 1) })
+          .update({ clases_restantes: Math.max(0, actualDbBalance - 1) })
           .eq("id", selectedStudentToAdd.id);
       }
 
