@@ -1596,16 +1596,16 @@ export default function AlumnosPage() {
 
               {/* Sección: Credenciales de Acceso App Alumnos */}
               <div className="border-t border-[var(--color-border)] pt-4">
-                 <h4 className="text-xs font-bold text-[var(--color-primary)] mb-2 uppercase tracking-wider">Acceso a la App de Alumnos</h4>
+                 <h4 className="text-xs font-bold text-[var(--color-primary)] mb-2 uppercase tracking-wider">Acceso a la App de Alumnos (Carnet Digital & QR)</h4>
                  <div className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                    <div className="text-xs space-y-1">
                      <p className="text-white font-semibold flex items-center gap-1.5">
-                       <span>🔑 Usuario:</span>
-                       <strong className="font-mono text-[var(--color-secondary)]">{formData.email || "fran.sarciat@gmail.com"}</strong>
+                       <span>🔑 Acceso por Email:</span>
+                       <strong className="font-mono text-[var(--color-secondary)]">{formData.email || "Introduce un email"}</strong>
                      </p>
                      <p className="text-[var(--color-text-secondary)] flex items-center gap-1.5">
-                       <span>🔒 Contraseña generada por Recepción:</span>
-                       <strong className="font-mono text-white bg-white/10 px-2 py-0.5 rounded">1234</strong>
+                       <span>⚡ Método de Acceso:</span>
+                       <span className="text-emerald-400 font-medium">100% Sin contraseña (Código seguro OTP al correo)</span>
                      </p>
                    </div>
                    <button
@@ -1614,22 +1614,28 @@ export default function AlumnosPage() {
                        logActivity({
                          origen: "recepcion",
                          tipo_evento: "email_credenciales",
-                         descripcion: `Envío de credenciales de acceso por correo a ${formData.nombre_completo || "alumno"}`,
+                         descripcion: `Instrucciones de acceso para ${formData.nombre_completo || "alumno"} (${formData.email})`,
                          usuario_afectado: formData.nombre_completo || "Alumno",
                          sede: formData.sede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
                        });
 
                        setAppModal({
                          isOpen: true,
-                         title: "Credenciales Enviadas",
-                         message: `Email de credenciales enviado a ${formData.email || "fran.sarciat@gmail.com"}:\n\nEstimado/a ${formData.nombre_completo || "alumno"},\n\n¡Bienvenido/a a Dance Factory!\n\nTus credenciales para entrar a tu App de Alumnos (Carnet Digital & QR) son:\n\n• Usuario (Email): ${formData.email || "fran.sarciat@gmail.com"}\n• Contraseña: 1234\n\nPuedes iniciar sesión en la app desde tu smartphone.`,
-                         type: "email",
-                         confirmText: "Genial"
+                         title: "Instrucciones de Acceso al Carnet Digital",
+                         message: `Instrucciones para ${formData.nombre_completo || "el alumno"}:\n\n` +
+                           `1. Entra a la App de Alumnos: https://app.dancefactoryalcorcon.es/login\n` +
+                           `2. Introduce el email registrado: ${formData.email || "(indica su email oficial)"}\n` +
+                           `3. Pulsa "Solicitar Código de Acceso": el sistema enviará un código numérico seguro de 6 dígitos a su correo electrónico.\n` +
+                           `4. Introduce el código en la pantalla: entrará directamente a su Carnet Digital con sus clases y su código QR de acceso.\n\n` +
+                           `⚠️ AVISO PARA RECEPCIÓN:\n` +
+                           `Los alumnos NO necesitan contraseña. Si un alumno ya está matriculado aquí, NUNCA debe entrar en "Darse de alta" ni en /registro (eso crearía una cuenta duplicada vacía). Solo debe pulsar "Iniciar Sesión" con su correo.`,
+                         type: "info",
+                         confirmText: "Entendido"
                        });
                      }}
                      className="px-3.5 py-2 rounded-lg bg-[var(--color-secondary)]/15 border border-[var(--color-secondary)]/30 text-[var(--color-secondary)] hover:bg-[var(--color-secondary)] hover:text-white transition-all text-xs font-bold shrink-0 flex items-center gap-1.5 active:scale-95"
                    >
-                     ✉️ Enviar Credenciales por Email
+                     📲 Ver Instrucciones de Acceso
                    </button>
                  </div>
               </div>

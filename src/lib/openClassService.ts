@@ -1121,14 +1121,74 @@ export interface CheckInClassResolution {
  * - DNI / NIE (ej. "54243763B")
  * - Email
  */
+async function resolveActiveSiblingStudent(foundStudent: any): Promise<any> {
+  if (!foundStudent) return null;
+
+  const planLower = (foundStudent.plan_activo || "").toLowerCase().trim();
+  const hasClasses = Array.isArray(foundStudent.alumnos_clases) && foundStudent.alumnos_clases.length > 0;
+  const isSinPlan = !hasClasses && (
+    !foundStudent.plan_activo || 
+    planLower === "" || 
+    planLower.includes("sin plan") || 
+    planLower.includes("pendiente")
+  );
+
+  // Si ya tiene un plan regular o activo con clases, retornarlo directamente
+  if (!isSinPlan) {
+    return foundStudent;
+  }
+
+  // Si tiene 'Sin Plan Activo', buscar si existe un registro activo hermano por email, teléfono o nombre
+  const cleanName = (foundStudent.nombre_completo || "").trim();
+  const cleanEmail = foundStudent.email ? foundStudent.email.trim().toLowerCase() : "";
+  const cleanPhone = foundStudent.telefono ? foundStudent.telefono.replace(/\D/g, "").slice(-9) : "";
+
+  const orClauses: string[] = [];
+  if (cleanEmail && cleanEmail.includes("@")) {
+    orClauses.push(`email.ilike.${cleanEmail}`);
+  }
+  if (cleanPhone.length >= 9) {
+    orClauses.push(`telefono.ilike.%${cleanPhone}%`);
+  }
+  if (cleanName.length >= 4) {
+    orClauses.push(`nombre_completo.ilike.%${cleanName}%`);
+  }
+
+  if (orClauses.length === 0) return foundStudent;
+
+  try {
+    const { data: siblings } = await supabase
+      .from("alumnos")
+      .select("*, alumnos_clases(*)")
+      .neq("id", foundStudent.id)
+      .or(orClauses.join(","));
+
+    if (siblings && siblings.length > 0) {
+      // Priorizar el hermano que tenga clases matriculadas o plan regular
+      const activeSibling = siblings.find(s => 
+        (Array.isArray(s.alumnos_clases) && s.alumnos_clases.length > 0) ||
+        (s.plan_activo && !s.plan_activo.toLowerCase().includes("sin plan"))
+      );
+      if (activeSibling) {
+        console.log(`[Scanner] Smart deduplication: re-routing ${foundStudent.nombre_completo} (${foundStudent.id}) to active enrolled profile ${activeSibling.nombre_completo} (${activeSibling.id})`);
+        return activeSibling;
+      }
+    }
+  } catch (e) {
+    console.warn("[Scanner] Error resolving sibling student:", e);
+  }
+
+  return foundStudent;
+}
+
 export async function findStudentByCodeOrText(rawCode: string): Promise<any | null> {
   const trimmed = (rawCode || "").trim();
   if (!trimmed) return null;
 
   // 1. UUID exacto
   if (trimmed.length === 36 && (trimmed.match(/-/g) || []).length === 4) {
-    const { data } = await supabase.from("alumnos").select("*").eq("id", trimmed).maybeSingle();
-    if (data) return data;
+    const { data } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("id", trimmed).maybeSingle();
+    if (data) return await resolveActiveSiblingStudent(data);
   }
 
   // 2. Normalizar teclado español y prefijos
@@ -1157,23 +1217,23 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
 
   for (const token of candidates) {
     // Exact nfc_token
-    const { data: byNfc } = await supabase.from("alumnos").select("*").eq("nfc_token", token).limit(1).maybeSingle();
-    if (byNfc) return byNfc;
+    const { data: byNfc } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("nfc_token", token).limit(1).maybeSingle();
+    if (byNfc) return await resolveActiveSiblingStudent(byNfc);
 
     // Exact DNI
-    const { data: byDni } = await supabase.from("alumnos").select("*").ilike("dni", token).limit(1).maybeSingle();
-    if (byDni) return byDni;
+    const { data: byDni } = await supabase.from("alumnos").select("*, alumnos_clases(*)").ilike("dni", token).limit(1).maybeSingle();
+    if (byDni) return await resolveActiveSiblingStudent(byDni);
 
     // Exact email
     if (token.includes("@")) {
-      const { data: byEmail } = await supabase.from("alumnos").select("*").ilike("email", token).limit(1).maybeSingle();
-      if (byEmail) return byEmail;
+      const { data: byEmail } = await supabase.from("alumnos").select("*, alumnos_clases(*)").ilike("email", token).limit(1).maybeSingle();
+      if (byEmail) return await resolveActiveSiblingStudent(byEmail);
     }
 
     // Exact ID match if UUID
     if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
-      const { data: byId } = await supabase.from("alumnos").select("*").eq("id", token).limit(1).maybeSingle();
-      if (byId) return byId;
+      const { data: byId } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("id", token).limit(1).maybeSingle();
+      if (byId) return await resolveActiveSiblingStudent(byId);
     }
   }
 
@@ -1186,12 +1246,12 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
 
     const { data: byPhone } = await supabase
       .from("alumnos")
-      .select("*")
+      .select("*, alumnos_clases(*)")
       .or(`telefono.eq.${digits9},telefono.eq.${spaced1},telefono.eq.${spaced2},telefono.ilike.%${digits9.slice(3, 9)}%`)
       .limit(1)
       .maybeSingle();
 
-    if (byPhone) return byPhone;
+    if (byPhone) return await resolveActiveSiblingStudent(byPhone);
   }
 
   // 4. Búsqueda por Nombre Completo (soporta "Olivia Anna", "Olivia", "Hrebenyvk", etc.)
@@ -1199,32 +1259,32 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     // Intento 1: Nombre completo ilike '%cleanToken%'
     const { data: byName } = await supabase
       .from("alumnos")
-      .select("*")
+      .select("*, alumnos_clases(*)")
       .ilike("nombre_completo", `%${cleanToken}%`)
       .limit(1)
       .maybeSingle();
-    if (byName) return byName;
+    if (byName) return await resolveActiveSiblingStudent(byName);
 
     // Si tiene varios términos (ej. "Olivia Anna"), buscar por cada palabra relevante
     const words = cleanToken.split(/\s+/).filter(w => w.length >= 3);
     for (const w of words) {
       const { data: byWord } = await supabase
         .from("alumnos")
-        .select("*")
+        .select("*, alumnos_clases(*)")
         .ilike("nombre_completo", `%${w}%`)
         .limit(1)
         .maybeSingle();
-      if (byWord) return byWord;
+      if (byWord) return await resolveActiveSiblingStudent(byWord);
     }
 
     // Intento 2: OR ampliado (nfc_token, dni, email, telefono, nombre_completo)
     const { data: byOr } = await supabase
       .from("alumnos")
-      .select("*")
+      .select("*, alumnos_clases(*)")
       .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%,nombre_completo.ilike.%${cleanToken}%`)
       .limit(1)
       .maybeSingle();
-    if (byOr) return byOr;
+    if (byOr) return await resolveActiveSiblingStudent(byOr);
   }
 
   return null;
