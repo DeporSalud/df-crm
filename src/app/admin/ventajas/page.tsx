@@ -167,14 +167,8 @@ export default function AdminVentajasPage() {
             const calculatedExp = calculateBonoExpirationDate(s);
             if (calculatedExp) {
               fechaCaducidad = calculatedExp.toISOString().slice(0, 10);
-            } else if (s.creado_en) {
-              const expDate = new Date(s.creado_en);
-              expDate.setDate(expDate.getDate() + 30);
-              fechaCaducidad = expDate.toISOString().slice(0, 10);
             } else {
-              const expDate = new Date();
-              expDate.setDate(expDate.getDate() + 30);
-              fechaCaducidad = expDate.toISOString().slice(0, 10);
+              fechaCaducidad = "2026-11-01";
             }
           }
 

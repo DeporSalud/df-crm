@@ -785,33 +785,49 @@ export function calculateBonoExpirationDate(
     return new Date("2026-09-30T20:00:00.000Z");
   }
 
-  // 2. Bonos Regulares: Validez de 30 días naturales (1 mes) desde la fecha de compra/activación.
+  // 2. Bonos Regulares Activos: Validez de 1 mes natural desde la compra.
+  // Regla oficial Dance Factory:
+  // Todos los bonos de septiembre caducaron el 30/09/2026.
+  // Por tanto, todos los bonos regulares que están activos a día de hoy corresponden
+  // como mínimo a la cuota adquirida/renovada el 1 de octubre de 2026.
+  // La fecha más temprana en la que puede caducar cualquier bono regular activo es el 01/11/2026.
   if (storedCaducidad) {
     const parsed = new Date(storedCaducidad);
-    if (!isNaN(parsed.getTime()) && parsed > new Date("2026-09-30T23:59:59.999Z")) {
+    if (!isNaN(parsed.getTime()) && parsed >= new Date("2026-10-31T20:00:00.000Z")) {
       return parsed;
     }
   }
 
   if (student.bono_caducidad) {
     const parsedObj = new Date(student.bono_caducidad);
-    if (!isNaN(parsedObj.getTime()) && parsedObj > new Date("2026-09-30T23:59:59.999Z")) {
+    if (!isNaN(parsedObj.getTime()) && parsedObj >= new Date("2026-10-31T20:00:00.000Z")) {
       return parsedObj;
     }
   }
 
-  // Fecha de compra desde student properties (ZERO localStorage)
+  // Fecha de compra del bono
   let purchaseDate: Date | null = null;
-  if (student.bono_compra_fecha || student.fecha_compra || student.creado_en) {
-    const pStr = student.bono_compra_fecha || student.fecha_compra || student.creado_en;
+  if (student.bono_compra_fecha || student.fecha_compra) {
+    const pStr = student.bono_compra_fecha || student.fecha_compra;
     const pParsed = new Date(pStr);
     if (!isNaN(pParsed.getTime())) {
       purchaseDate = pParsed;
     }
   }
 
-  const baseDate = purchaseDate || new Date();
-  const validityDays = 30;
-  const expDate = new Date(baseDate.getTime() + validityDays * 24 * 60 * 60 * 1000);
+  // Si la fecha de compra no está fijada o proviene del alta en septiembre (creado_en),
+  // la base mínima para cualquier bono regular activo es el 1 de octubre de 2026.
+  const minOctDate = new Date("2026-10-01T00:00:00.000Z");
+  const baseDate = (purchaseDate && purchaseDate >= minOctDate) ? purchaseDate : minOctDate;
+
+  // Validez de 1 mes: compra el 01/10/2026 -> vence el 01/11/2026
+  const expDate = new Date(baseDate.getTime());
+  expDate.setMonth(expDate.getMonth() + 1);
+
+  const minNovDate = new Date("2026-11-01T20:00:00.000Z");
+  if (expDate < minNovDate) {
+    return minNovDate;
+  }
+
   return expDate;
 }
