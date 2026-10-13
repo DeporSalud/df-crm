@@ -53,10 +53,12 @@ export default function GlobalScannerWidget() {
   const [manualInput, setManualInput] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   
-  // Access Denied Overlay State (R1.2)
+  // Access Denied Overlay State (R1.2, R4)
   const [accessDeniedState, setAccessDeniedState] = useState<{
     isOpen: boolean;
     studentName?: string;
+    student?: any;
+    reason?: string;
     motivo?: string;
     rawCode?: string;
   }>({
@@ -88,6 +90,8 @@ export default function GlobalScannerWidget() {
       setAccessDeniedState({
         isOpen: true,
         studentName: detail.student?.nombre_completo || detail.studentName,
+        student: detail.student,
+        reason: detail.reason,
         motivo: detail.motivo || detail.message,
         rawCode: detail.rawCode
       });
@@ -160,6 +164,8 @@ export default function GlobalScannerWidget() {
         setAccessDeniedState({
           isOpen: true,
           studentName: undefined,
+          student: undefined,
+          reason: "ALUMNO_NO_ENCONTRADO",
           motivo: "Código escaneado no reconocido o alumno inexistente",
           rawCode: raw
         });
@@ -195,6 +201,8 @@ export default function GlobalScannerWidget() {
         setAccessDeniedState({
           isOpen: true,
           studentName: student.nombre_completo,
+          student,
+          reason: evalResult.reason,
           motivo: evalResult.motivoDetallado || evalResult.message,
           rawCode: raw
         });
@@ -273,7 +281,8 @@ export default function GlobalScannerWidget() {
       const saldoInfo = !isRegular 
         ? `Bono (${student.clases_restantes ?? 0} clases de saldo)` 
         : "Cuota Regular Mensual";
-      const notificationDetail = `${saldoInfo} • ${resolved.claseNombre}`;
+      const timingNotice = resolved.timingMessage ? ` • ${resolved.timingMessage}` : "";
+      const notificationDetail = `${saldoInfo} • ${resolved.claseNombre}${timingNotice}`;
 
       // Log en auditoría
       await logActivity({
@@ -682,10 +691,12 @@ export default function GlobalScannerWidget() {
         onClose={() => setIsHistoricoModalOpen(false)}
       />
 
-      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2) */}
+      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2, R4) */}
       <AccessDeniedOverlay
         isOpen={accessDeniedState.isOpen}
         studentName={accessDeniedState.studentName}
+        student={accessDeniedState.student}
+        reason={accessDeniedState.reason}
         motivo={accessDeniedState.motivo}
         rawCode={accessDeniedState.rawCode}
         onClose={() => setAccessDeniedState(prev => ({ ...prev, isOpen: false }))}

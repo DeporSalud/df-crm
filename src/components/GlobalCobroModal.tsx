@@ -38,6 +38,7 @@ import {
 } from "@/lib/matriculaService";
 import { publishSyncEvent } from "@/lib/syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
+import { studentMatchesSearchQuery } from "@/lib/identityUtils";
 
 export function openGlobalCobro(student?: any) {
   if (typeof window !== "undefined") {
@@ -233,11 +234,7 @@ export default function GlobalCobroModal() {
   };
 
   const matchingStudents = searchStudentInput.trim().length > 1
-    ? students.filter(s => 
-        (s.nombre_completo || "").toLowerCase().includes(searchStudentInput.toLowerCase()) ||
-        (s.dni || "").toLowerCase().includes(searchStudentInput.toLowerCase()) ||
-        (s.telefono || "").includes(searchStudentInput)
-      ).slice(0, 5)
+    ? students.filter(s => studentMatchesSearchQuery(s, searchStudentInput)).slice(0, 5)
     : [];
 
   const cambioEfectivo = efectivoEntregado && parseFloat(efectivoEntregado) > formImporte

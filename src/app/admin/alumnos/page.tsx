@@ -20,16 +20,28 @@ import { exportAlumnosCSV, parseAlumnosCSV } from "@/lib/csvUtils";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
 import { syncReservasFromSupabase } from "@/lib/openClassService";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, Info } from "lucide-react";
 
 import { getStoredIBAN, saveStoredIBAN, deleteStoredIBAN } from "@/lib/ibanStorage";
 import { isPromoSeptiembreBono, calculateBonoExpirationDate } from "@/lib/matriculaService";
 import { getBonosAlumnos } from "@/lib/ventajasService";
+import { 
+  studentMatchesSearchQuery, 
+  normalizePhoneDigits, 
+  normalizeEmail, 
+  normalizeDNI 
+} from "@/lib/identityUtils";
+import { 
+  getBonoStatusBadgeMadrid, 
+  calculateBonoDaysRemainingMadrid, 
+  isBonoExpiringSoonMadrid, 
+  getEndOfDayMadrid 
+} from "@/lib/timezones";
 
 // Validation Helpers
 function validateDNI(dni: string): { valid: boolean; message?: string } {
   if (!dni || !dni.trim()) return { valid: true };
-  const clean = dni.toUpperCase().replace(/[\s\-]/g, "");
+  const clean = normalizeDNI(dni);
   // Permite DNI, NIE y pasaportes internacionales alfanuméricos de entre 4 y 20 caracteres
   if (/^[A-Z0-9]{4,20}$/i.test(clean)) {
     return { valid: true };
@@ -39,9 +51,9 @@ function validateDNI(dni: string): { valid: boolean; message?: string } {
 
 function validatePhone(phone: string): { valid: boolean; message?: string } {
   if (!phone || !phone.trim()) return { valid: true }; // Opcional en edición
-  const clean = phone.replace(/[\s\-\(\)\.]/g, "");
+  const clean = normalizePhoneDigits(phone);
   // Permite números españoles e internacionales (7 a 15 dígitos)
-  if (/^(?:\+?\d{1,4})?[0-9]{7,15}$/.test(clean)) {
+  if (clean.length >= 7 && clean.length <= 15) {
     return { valid: true };
   }
   return { valid: false, message: "El teléfono debe contener entre 7 y 15 dígitos numéricos." };
@@ -49,7 +61,8 @@ function validatePhone(phone: string): { valid: boolean; message?: string } {
 
 function validateEmail(email: string): { valid: boolean; message?: string } {
   if (!email || !email.trim()) return { valid: true };
-  const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const clean = normalizeEmail(email);
+  const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean);
   if (!isValid) {
     return { valid: false, message: "Formato de correo electrónico inválido." };
   }
@@ -479,9 +492,9 @@ export default function AlumnosPage() {
     const payload: Record<string, any> = {
       sede: formData.sede || (activeSede !== "consolidado" ? activeSede : "tejar"),
       nombre_completo: formData.nombre_completo.trim(),
-      telefono: formData.telefono.trim(),
-      email: formData.email.trim() || null,
-      dni: formData.dni.trim() || null,
+      telefono: normalizePhoneDigits(formData.telefono) || formData.telefono.trim(),
+      email: normalizeEmail(formData.email) || null,
+      dni: normalizeDNI(formData.dni) || null,
       direccion: formData.direccion.trim() || null,
       fecha_nacimiento: formData.fecha_nacimiento || null,
       plan_activo: finalPlan,
@@ -665,13 +678,7 @@ export default function AlumnosPage() {
   });
 
   const filteredStudents = students
-    .filter(student => 
-      student.nombre_completo?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      student.telefono?.includes(searchTerm) ||
-      student.nfc_token?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      student.dni?.toLowerCase().includes(searchTerm.toLowerCase())
-    )
+    .filter(student => studentMatchesSearchQuery(student, searchTerm))
     .sort((a, b) => {
       const nameA = a.nombre_completo || "";
       const nameB = b.nombre_completo || "";
@@ -859,29 +866,14 @@ export default function AlumnosPage() {
                                 statusLabel = "Caducado (Promo Sep)";
                               } else {
                                 const storedExp = bonosCaducidadMap[student.id];
-                                const exp = calculateBonoExpirationDate(student, storedExp);
-                                if (exp) {
+                                const rawExp = calculateBonoExpirationDate(student, storedExp);
+                                if (rawExp) {
+                                  const exp = getEndOfDayMadrid(rawExp);
                                   expDateStr = exp.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
-                                  const today = new Date();
-                                  today.setHours(0, 0, 0, 0);
-                                  const expMidnight = new Date(exp);
-                                  expMidnight.setHours(0, 0, 0, 0);
-                                  const diffDays = Math.ceil((expMidnight.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-                                  if (diffDays < 0) {
-                                    isExpired = true;
-                                    statusLabel = `Caducado (${expDateStr})`;
-                                  } else if (diffDays === 0) {
-                                    isExpiringSoon = true;
-                                    statusLabel = `Caduca HOY (${expDateStr})`;
-                                  } else if (diffDays === 1) {
-                                    isExpiringSoon = true;
-                                    statusLabel = `Caduca MAÑANA (${expDateStr})`;
-                                  } else if (diffDays <= 3) {
-                                    isExpiringSoon = true;
-                                    statusLabel = `Caduca en ${diffDays}d (${expDateStr})`;
-                                  } else {
-                                    statusLabel = `Exp: ${expDateStr}`;
-                                  }
+                                  const badge = getBonoStatusBadgeMadrid(exp);
+                                  isExpired = badge.isExpired;
+                                  isExpiringSoon = badge.isExpiringSoon;
+                                  statusLabel = badge.statusLabel;
                                 }
                               }
                               return statusLabel ? (
@@ -1382,11 +1374,18 @@ export default function AlumnosPage() {
                      />
                    </div>
                    <div>
-                     <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">DNI / NIF</label>
+                     <div className="flex items-center justify-between mb-1">
+                       <label className="block text-xs font-semibold text-[var(--color-text-secondary)]">DNI / NIF</label>
+                       <span className="text-[10px] text-slate-400 flex items-center gap-1" title="Obligatorio para cobertura de póliza y seguro escolar">
+                         <Info size={11} className="text-[var(--color-primary)]" /> Para seguro
+                       </span>
+                     </div>
                      <input 
                        type="text" 
                        value={formData.dni}
                        onChange={(e) => setFormData({...formData, dni: e.target.value})}
+                       placeholder="Ej. 12345678A"
+                       title="DNI o NIE con letra del alumno o tutor legal"
                        className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors" 
                      />
                    </div>
@@ -1479,11 +1478,18 @@ export default function AlumnosPage() {
                  <h4 className="text-xs font-bold text-[var(--color-primary)] mb-3 uppercase tracking-wider">Contacto y Tarifa</h4>
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Teléfono *</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-[var(--color-text-secondary)]">Teléfono *</label>
+                        <span className="text-[10px] text-slate-400 flex items-center gap-1" title="Móvil para avisos de clases y avisos por WhatsApp">
+                          <Info size={11} className="text-[var(--color-primary)]" /> Móvil avisos
+                        </span>
+                      </div>
                       <input 
                         type="tel" 
                         value={formData.telefono}
                         onChange={(e) => setFormData({...formData, telefono: e.target.value})}
+                        placeholder="Ej. 612 34 56 78"
+                        title="Teléfono móvil de contacto del alumno o tutor legal"
                         className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors" 
                         required 
                       />
@@ -1581,15 +1587,27 @@ export default function AlumnosPage() {
                         <option value="castilla">Studio 2 Paseo Castilla</option>
                       </select>
                     </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Cuenta Bancaria / IBAN (para Domiciliación SEPA)</label>
+                    <div className="md:col-span-2 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-semibold text-[var(--color-text-secondary)]">
+                          Cuenta Bancaria / IBAN (para Domiciliación SEPA)
+                        </label>
+                        <span className="text-[10px] text-amber-400/90 flex items-center gap-1" title="El IBAN debe pertenecer al alumno o tutor pagador. No introducir el IBAN de Dance Factory.">
+                          <Info size={12} /> Cuenta del alumno/tutor
+                        </span>
+                      </div>
                       <input 
                         type="text" 
                         value={formData.iban}
                         onChange={(e) => setFormData({...formData, iban: e.target.value.toUpperCase()})}
-                        placeholder="ES91 2100 0418 4502 0005 1332"
+                        placeholder="ES00 0000 0000 0000 0000 0000"
+                        title="Introduce el IBAN de 24 caracteres del alumno o tutor para domiciliación bancaria de recibos SEPA"
                         className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm font-mono rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors" 
                       />
+                      <p className="text-[10px] text-[var(--color-text-secondary)] flex items-center gap-1 mt-0.5">
+                        <Info size={12} className="shrink-0 text-[var(--color-primary)]" />
+                        <span>IBAN de 24 caracteres del alumno para remesas SEPA. No ingresar la cuenta bancaria del centro.</span>
+                      </p>
                     </div>
                  </div>
               </div>

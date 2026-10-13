@@ -13,6 +13,8 @@ import { supabase } from "@/lib/supabase/client";
 export type SyncEventType =
   | "df_reservas_updated"
   | "df_pagos_updated"
+  | "df_alumnos_updated"
+  | "df_student_fees_updated"
   | "df_checkin_success"
   | "df_pending_bonos_updated"
   | "df_checkin_denied"

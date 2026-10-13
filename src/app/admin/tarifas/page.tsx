@@ -29,6 +29,7 @@ import {
 } from "@/lib/tarifasService";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
+import { getEndOfDayMadrid, formatMadridDateTime } from "@/lib/timezones";
 
 export default function TarifasPage() {
   const [tarifas, setTarifas] = useState<TarifaItem[]>([]);
@@ -342,6 +343,16 @@ export default function TarifasPage() {
 
       </div>
 
+      {/* Official Timezone & Expiration Cutoff Banner for Bonos */}
+      {(activeCategory === "bonos" || activeCategory === "all") && (
+        <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5 text-xs text-amber-200/90 shadow-sm">
+          <Clock size={16} className="text-amber-400 shrink-0 mt-0.5" />
+          <p className="leading-relaxed text-[11px]">
+            <strong>ℹ️ Política Oficial de Caducidad (Europe/Madrid):</strong> Los bonos tienen una validez de <strong>30 días naturales</strong> y su corte es exacto a las <strong>23:59:59</strong> hora peninsular española. Todos los bonos activos adquiridos en octubre son válidos como mínimo hasta el <strong>01/11/2026</strong> a las 23:59:59.
+          </p>
+        </div>
+      )}
+
       {/* TARIFF CARDS GRID */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredTarifas.map((t) => {
@@ -408,7 +419,12 @@ export default function TarifasPage() {
                   ) : t.clases_incluidas ? (
                     <span className="flex items-center gap-1">
                       <Sparkles size={13} className="text-amber-400" />
-                      {t.clases_incluidas} clases
+                      {t.clases_incluidas} clases • 30d (23:59h Madrid)
+                    </span>
+                  ) : t.tipo === "bono" ? (
+                    <span className="flex items-center gap-1">
+                      <Sparkles size={13} className="text-amber-400" />
+                      Ilimitado • Corte 23:59h Madrid
                     </span>
                   ) : (
                     <span>Ilimitado</span>

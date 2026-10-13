@@ -5,6 +5,7 @@
  */
 
 import { getTipoAlumnoFromBirthDate } from "./studentFees";
+import { normalizePhoneDigits, normalizeEmail, normalizeDNI } from "./identityUtils";
 
 export const UTF8_BOM = "\uFEFF";
 
@@ -297,13 +298,14 @@ export function parseAlumnosCSV(text: string): {
       }
 
       const emailRaw = idxEmail !== -1 ? row[idxEmail]?.trim() : null;
-      const email = emailRaw && emailRaw.includes("@") ? emailRaw : null;
-      const telefono = (idxTelefono !== -1 ? row[idxTelefono]?.trim() : "") || "600000000";
+      const email = emailRaw && emailRaw.includes("@") ? normalizeEmail(emailRaw) : null;
+      const rawTelefono = idxTelefono !== -1 ? row[idxTelefono]?.trim() : "";
+      const telefono = (rawTelefono ? normalizePhoneDigits(rawTelefono) : "") || "600000000";
       const rawSede = (idxSede !== -1 ? row[idxSede]?.toLowerCase() : "") || "";
       const sede = (rawSede.includes("2") || rawSede.includes("castilla") || rawSede.includes("alcorcon")) ? "castilla" : "tejar";
       const plan_activo = (idxPlan !== -1 ? row[idxPlan]?.trim() : "") || "Clases Regulares";
       const dniRaw = idxDni !== -1 ? row[idxDni]?.trim() : null;
-      const dni = dniRaw && dniRaw !== "-" ? dniRaw : null;
+      const dni = dniRaw && dniRaw !== "-" ? normalizeDNI(dniRaw) : null;
       const fecha_nacimiento = (idxFechaNac !== -1 ? row[idxFechaNac]?.trim() : null) || null;
       
       let tipo_alumno: "adulto" | "infantil" = "adulto";
@@ -361,14 +363,15 @@ export function parseAlumnosCSV(text: string): {
         const nombre_completo = row[0]?.trim() || "Sin Nombre";
         const rawNfc = row[1]?.trim();
         const nfc_token = rawNfc && rawNfc !== "-" ? rawNfc : null;
-        const telefono = row[2]?.trim() || "600000000";
+        const rawPhone = row[2]?.trim() || "";
+        const telefono = (rawPhone ? normalizePhoneDigits(rawPhone) : "") || "600000000";
         const rawEmail = row[3]?.trim();
-        const email = rawEmail && rawEmail.includes("@") ? rawEmail : null;
+        const email = rawEmail && rawEmail.includes("@") ? normalizeEmail(rawEmail) : null;
         const rawSede = (row[4] || "").toLowerCase();
         const sede = (rawSede.includes("2") || rawSede.includes("castilla") || rawSede.includes("alcorcon")) ? "castilla" : "tejar";
         const plan_activo = row[5]?.trim() || "Clases Regulares";
         const rawDni = row[8]?.trim();
-        const dni = rawDni && rawDni !== "-" ? rawDni : null;
+        const dni = rawDni && rawDni !== "-" ? normalizeDNI(rawDni) : null;
         const rawDir = row[9]?.trim();
         const direccion = rawDir && rawDir !== "-" ? rawDir : null;
 

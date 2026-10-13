@@ -11,6 +11,9 @@
  *    - Compras posteriores: 0,00 € (ya abonada en compra anterior o saldo activo).
  */
 
+// @ts-ignore
+import { getEndOfDayMadrid } from "./timezones.ts";
+
 export const PRECIO_MATRICULA_ANUAL = 15;
 
 export interface BonoItemDefinition {
@@ -749,9 +752,10 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
  * Calcula con precisión la fecha de caducidad oficial del bono activo del alumno.
  * 
  * Reglas de negocio:
- * 1. Bonos Promo Septiembre (promo_sep_...): caducan el 30 de septiembre de 2026 (23:59h hora peninsular / 20:00 UTC).
+ * 1. Bonos Promo Septiembre (promo_sep_...): caducan el 30 de septiembre de 2026 (23:59:59.999 Europe/Madrid).
  * 2. Bonos Regulares (Bono 4, Bono 8, Bono 10, Pase Ilimitado, Clase Suelta):
  *    Tienen una validez oficial de 1 mes (30 días naturales) desde la fecha de compra/activación.
+ *    Corte exacto a las 23:59:59.999 hora peninsular España (Europe/Madrid).
  *    ZERO localStorage!
  */
 export function calculateBonoExpirationDate(
@@ -782,26 +786,26 @@ export function calculateBonoExpirationDate(
                           plan.includes("promocion septiembre");
 
   if (isExplicitPromo) {
-    return new Date("2026-09-30T20:00:00.000Z");
+    return getEndOfDayMadrid("2026-09-30");
   }
 
   // 2. Bonos Regulares Activos: Validez de 1 mes natural desde la compra.
   // Regla oficial Dance Factory:
-  // Todos los bonos de septiembre caducaron el 30/09/2026.
+  // Todos los bonos de septiembre caducaron el 30/09/2026 a las 23:59:59.
   // Por tanto, todos los bonos regulares que están activos a día de hoy corresponden
   // como mínimo a la cuota adquirida/renovada el 1 de octubre de 2026.
-  // La fecha más temprana en la que puede caducar cualquier bono regular activo es el 01/11/2026.
+  // La fecha más temprana en la que puede caducar cualquier bono regular activo es el 01/11/2026 (23:59:59 Madrid).
   if (storedCaducidad) {
     const parsed = new Date(storedCaducidad);
-    if (!isNaN(parsed.getTime()) && parsed >= new Date("2026-10-31T20:00:00.000Z")) {
-      return parsed;
+    if (!isNaN(parsed.getTime()) && parsed >= getEndOfDayMadrid("2026-10-31")) {
+      return getEndOfDayMadrid(parsed);
     }
   }
 
   if (student.bono_caducidad) {
     const parsedObj = new Date(student.bono_caducidad);
-    if (!isNaN(parsedObj.getTime()) && parsedObj >= new Date("2026-10-31T20:00:00.000Z")) {
-      return parsedObj;
+    if (!isNaN(parsedObj.getTime()) && parsedObj >= getEndOfDayMadrid("2026-10-31")) {
+      return getEndOfDayMadrid(parsedObj);
     }
   }
 
@@ -820,14 +824,15 @@ export function calculateBonoExpirationDate(
   const minOctDate = new Date("2026-10-01T00:00:00.000Z");
   const baseDate = (purchaseDate && purchaseDate >= minOctDate) ? purchaseDate : minOctDate;
 
-  // Validez de 1 mes: compra el 01/10/2026 -> vence el 01/11/2026
+  // Validez de 1 mes: compra el 01/10/2026 -> vence el 01/11/2026 (corte 23:59:59 Europe/Madrid)
   const expDate = new Date(baseDate.getTime());
   expDate.setMonth(expDate.getMonth() + 1);
 
-  const minNovDate = new Date("2026-11-01T20:00:00.000Z");
-  if (expDate < minNovDate) {
+  const minNovDate = getEndOfDayMadrid("2026-11-01");
+  const finalExp = getEndOfDayMadrid(expDate);
+  if (finalExp < minNovDate) {
     return minNovDate;
   }
 
-  return expDate;
+  return finalExp;
 }

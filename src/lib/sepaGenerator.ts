@@ -48,7 +48,13 @@ export interface SEPAOptions {
   students?: SEPAStudentInput[];
   studentsList?: SEPAStudentInput[];
   config?: Partial<SEPACreditorConfig>;
+  companyName?: string;
+  companyNif?: string;
+  companyIban?: string;
+  companyBic?: string;
+  creditorSchemeId?: string;
   paymentMethodsMap?: Record<string, string>;
+  paymentsLedger?: any[];
   assignedClasses?: Record<string, any[]>;
 }
 
@@ -131,29 +137,151 @@ export function sanitizeSEPAText(str: string = ""): string {
 }
 
 /**
+ * Canonical helper to filter students eligible for SEPA direct debit remittances:
+ * - Excludes inactive or cancelled students
+ * - Excludes students with payment method "Efectivo" / "cash"
+ * - Excludes students who already paid their monthly fee at the desk
+ * - Excludes students without IBAN (when IBAN is provided)
+ */
+export function filterStudentsForSEPARemittance(
+  students: any[] = [],
+  paymentsLedger: any[] = [],
+  targetMonth: string = "2026-10"
+): any[] {
+  return students.filter(student => {
+    if (student.estado && student.estado !== "Activo") return false;
+
+    const metodo = String(student.metodo_pago || student.forma_pago || "").toLowerCase().trim();
+    if (metodo === "efectivo" || metodo === "cash") return false;
+
+    const hasPaidInDesk = paymentsLedger.some(p => {
+      const matchStudent = (p.alumno_id && student.id && p.alumno_id === student.id) ||
+        (p.alumno_nombre && student.nombre_completo && p.alumno_nombre.trim().toLowerCase() === student.nombre_completo.trim().toLowerCase());
+      const matchMonth = (p.mes && p.mes.includes(targetMonth)) ||
+        (p.periodo_mes && p.periodo_mes === targetMonth) ||
+        (p.fecha_hora && p.fecha_hora.startsWith(targetMonth)) ||
+        (p.concepto && p.concepto.includes(targetMonth));
+      const isCompleted = ["completado", "pagado", "cobrado"].includes(String(p.estado || "").toLowerCase());
+      return matchStudent && matchMonth && isCompleted;
+    });
+
+    if (hasPaidInDesk) return false;
+    if (student.iban !== undefined && (!student.iban || !String(student.iban).trim())) return false;
+
+    return true;
+  });
+}
+
+/**
  * Core ISO 20022 pain.008.001.02 XML generator with September 20€ advance deduction
+ * and strict front-desk payment / cash reconciliation shield.
  * Supports both object options `{ monthStr, students }` and positional arguments `(studentsList, monthStr, ...)`
  */
 export function generateSEPAXml(
   optionsOrStudents: SEPAOptions | SEPAStudentInput[],
   posMonthStr?: string,
   posPaymentMethodsMap?: Record<string, string>,
-  posAssignedClasses?: Record<string, any[]>
+  posAssignedClasses?: Record<string, any[]>,
+  posPaymentsLedger?: any[]
 ): SEPAResult {
   let monthStr = "2026-09";
-  let students: SEPAStudentInput[] = [];
+  let rawStudents: SEPAStudentInput[] = [];
   let cfg: SEPACreditorConfig = { ...DANCE_FACTORY_CREDITOR_DEFAULT };
+  let paymentMethodsMap: Record<string, string> | undefined = undefined;
+  let paymentsLedger: any[] | undefined = undefined;
 
   if (Array.isArray(optionsOrStudents)) {
-    students = optionsOrStudents;
+    rawStudents = optionsOrStudents;
     monthStr = posMonthStr || "2026-09";
+    paymentMethodsMap = posPaymentMethodsMap;
+    paymentsLedger = posPaymentsLedger;
   } else {
     monthStr = optionsOrStudents.monthStr || "2026-09";
-    students = optionsOrStudents.students || optionsOrStudents.studentsList || [];
+    rawStudents = optionsOrStudents.students || optionsOrStudents.studentsList || [];
     if (optionsOrStudents.config) {
       cfg = { ...cfg, ...optionsOrStudents.config };
     }
+    if (optionsOrStudents.companyName) cfg.companyName = optionsOrStudents.companyName;
+    if (optionsOrStudents.companyNif) cfg.companyNif = optionsOrStudents.companyNif;
+    if (optionsOrStudents.companyIban) cfg.companyIban = optionsOrStudents.companyIban;
+    if (optionsOrStudents.companyBic) cfg.companyBic = optionsOrStudents.companyBic;
+    if (optionsOrStudents.creditorSchemeId) cfg.creditorSchemeId = optionsOrStudents.creditorSchemeId;
+    paymentMethodsMap = optionsOrStudents.paymentMethodsMap || posPaymentMethodsMap;
+    paymentsLedger = optionsOrStudents.paymentsLedger || posPaymentsLedger;
   }
+
+  // Double-Charge & Cash Exclusion Shield:
+  // 1. Exclude students whose method is "Efectivo" / "cash"
+  // 2. Exclude students marked inactive / baja
+  // 3. Exclude students who already paid at the desk (via Efectivo, TPV, Bizum, etc.)
+  const monthNum = monthStr.split("-")[1] || "";
+  const monthKeywords: Record<string, string[]> = {
+    "09": ["septiembre", "sep"],
+    "10": ["octubre", "oct"],
+    "11": ["noviembre", "nov"],
+    "12": ["diciembre", "dic"]
+  };
+  const keywords = monthKeywords[monthNum] || [];
+
+  const students = rawStudents.filter((s) => {
+    if (s.estado && (String(s.estado).toLowerCase() === "inactivo" || String(s.estado).toLowerCase() === "baja")) {
+      return false;
+    }
+
+    const sId = s.id || "";
+    const method = (
+      (paymentMethodsMap && sId && paymentMethodsMap[sId]) ||
+      s.metodo_pago ||
+      s.forma_pago ||
+      ""
+    ).toString().toLowerCase().trim();
+
+    if (method === "efectivo" || method === "cash") {
+      return false;
+    }
+
+    if (s.pagado_en_mostrador === true || s.ya_pagado === true) {
+      return false;
+    }
+
+    if (paymentsLedger && Array.isArray(paymentsLedger) && paymentsLedger.length > 0) {
+      const hasPaid = paymentsLedger.some((p: any) => {
+        const estadoLower = String(p.estado || "").toLowerCase();
+        const isCompleted = ["cobrado", "completado", "pagado"].includes(estadoLower);
+        if (!isCompleted) return false;
+
+        const metodoPago = String(p.metodo_pago || p.metodo || "").toUpperCase();
+        const isDeskOrNonSepa = 
+          (metodoPago !== "" && metodoPago !== "SEPA") || 
+          (p.atendido_por && String(p.atendido_por).toLowerCase().includes("recep")) ||
+          (p.id && !String(p.id).startsWith("sepa_"));
+        if (!isDeskOrNonSepa) return false;
+
+        const matchesId = Boolean(sId && p.alumno_id && p.alumno_id === sId);
+        const matchesName = Boolean(s.nombre_completo && p.alumno_nombre && s.nombre_completo.trim().toLowerCase() === p.alumno_nombre.trim().toLowerCase());
+        const matchesDni = Boolean(s.dni && p.alumno_dni && s.dni.trim().toLowerCase() === p.alumno_dni.trim().toLowerCase());
+        if (!matchesId && !matchesName && !matchesDni) return false;
+
+        const isSameMonth = 
+          p.periodo_mes === monthStr ||
+          (p.fecha_hora && String(p.fecha_hora).startsWith(monthStr)) ||
+          (p.mes && String(p.mes).includes(monthStr)) ||
+          (p.concepto && String(p.concepto).toLowerCase().includes(monthStr.toLowerCase()));
+
+        const matchesKeyword = keywords.some(k => p.concepto && String(p.concepto).toLowerCase().includes(k));
+
+        const isMonthly = 
+          p.categoria === "mensualidad" ||
+          (p.concepto && (String(p.concepto).toLowerCase().includes("mensual") || String(p.concepto).toLowerCase().includes("cuota")));
+
+        return (isSameMonth || matchesKeyword) && isMonthly;
+      });
+
+      if (hasPaid) return false;
+    }
+
+    return true;
+  });
 
   const isSepMonth = monthStr === "2026-09" || monthStr.toLowerCase().includes("sep");
   const now = new Date();
@@ -265,8 +393,7 @@ export function generateSEPAXml(
             </Othr>
           </PrvtId>
         </Id>
-      </CdtrSchmeId>
-${txLines}
+      </CdtrSchmeId>${txLines ? "\n" + txLines : ""}
     </PmtInf>
   </CstmrDrctDbtInitn>
 </Document>`;

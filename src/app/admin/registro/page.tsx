@@ -65,7 +65,7 @@ const DEFAULT_STAFF: StaffUser[] = [
     telefono: "611 223 344",
     rol: "recepcion",
     permiso_sede: "tejar",
-    pin: "1234",
+    pin: "4829",
     estado: "activo",
     creado_en: "2026-08-05T09:00:00.000Z",
     ultimo_acceso: "2026-08-26T16:45:00.000Z",
@@ -270,7 +270,7 @@ export default function RegistroPage() {
       setModal({
         isOpen: true,
         title: "PIN Inválido",
-        message: "El código PIN debe tener exactamente 4 dígitos numéricos (ej. 1234).",
+        message: "El código PIN debe tener exactamente 4 dígitos numéricos (ej. 8392).",
         type: "warning"
       });
       return;
@@ -1158,7 +1158,8 @@ export default function RegistroPage() {
                     type="text"
                     value={staffFormData.telefono}
                     onChange={(e) => setStaffFormData(prev => ({ ...prev, telefono: e.target.value }))}
-                    placeholder="600 000 000"
+                    placeholder="Ej. 612 34 56 78"
+                    title="Teléfono de contacto del empleado"
                     className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded-xl px-3.5 py-2.5 text-xs text-[var(--color-text-title)] outline-none focus:border-[var(--color-primary)] font-mono"
                   />
                 </div>
@@ -1218,12 +1219,16 @@ export default function RegistroPage() {
                   maxLength={4}
                   value={staffFormData.pin}
                   onChange={(e) => setStaffFormData(prev => ({ ...prev, pin: e.target.value.replace(/\D/g, "") }))}
-                  placeholder="Ej. 1234"
+                  placeholder="Código PIN de 4 dígitos"
+                  title="Código PIN numérico personal para autenticación en pantalla táctil de recepción o portal docente"
                   className="w-full bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-xl px-4 py-2.5 text-center text-lg font-mono font-bold tracking-widest text-[var(--color-primary)] outline-none focus:border-[var(--color-primary)]"
                 />
-                <p className="text-[10px] text-[var(--color-text-secondary)]">
-                  Este PIN se usará en el teclado táctil para iniciar sesión en la recepción o el portal docente.
-                </p>
+                <div className="flex items-start gap-1.5 p-2 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)] text-[10px] text-[var(--color-text-secondary)]">
+                  <KeyRound size={13} className="text-[var(--color-primary)] shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Seguridad en mostrador:</strong> Introduce un PIN personal único de 4 dígitos numéricos (evita secuencias como 1234 o 0000). Se utilizará para inicio de sesión rápido en pantalla táctil de recepción o en el portal docente.
+                  </span>
+                </div>
               </div>
 
               <div>

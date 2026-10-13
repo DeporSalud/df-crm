@@ -1,11 +1,13 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { Camera } from 'lucide-react';
 import { useScannerBridge } from '@/hooks/useScannerBridge';
 import { supabase } from '@/lib/supabase/client';
 import { logActivity } from '@/lib/activityLogger';
 import { useSede } from '@/context/SedeContext';
 import AccessDeniedOverlay from '@/components/AccessDeniedOverlay';
+import WebcamScannerModal from '@/components/WebcamScannerModal';
 import { HardwareScannerDebouncer } from '@/lib/scannerDebounce';
 import { evaluateReceptionAccess, dispatchAccessDenied } from '@/lib/accessControlService';
 import { 
@@ -21,6 +23,9 @@ interface ScanResult {
   plan?: string;
   mensaje: string;
   detalle?: string;
+  timingStatus?: 'on_time' | 'early' | 'late' | 'outside_schedule';
+  timingMinutes?: number;
+  timingMessage?: string;
   timestamp: string;
 }
 
@@ -52,14 +57,17 @@ export default function RecepcionScanWidget({
     timestamp: ''
   });
   const [historialReciente, setHistorialReciente] = useState<ScanResult[]>([]);
+  const [isWebcamOpen, setIsWebcamOpen] = useState(false);
 
   // Hardware Scanner Debouncer (>= 2.5s) (R1.3)
   const debouncerRef = useRef(new HardwareScannerDebouncer(2500));
 
-  // Access Denied Overlay State (R1.2)
+  // Access Denied Overlay State (R1.2, R4)
   const [accessDeniedState, setAccessDeniedState] = useState<{
     isOpen: boolean;
     studentName?: string;
+    student?: any;
+    reason?: string;
     motivo?: string;
     rawCode?: string;
   }>({
@@ -73,6 +81,8 @@ export default function RecepcionScanWidget({
       setAccessDeniedState({
         isOpen: true,
         studentName: detail.student?.nombre_completo || detail.studentName,
+        student: detail.student,
+        reason: detail.reason,
         motivo: detail.motivo || detail.message,
         rawCode: detail.rawCode
       });
@@ -120,6 +130,8 @@ export default function RecepcionScanWidget({
       setAccessDeniedState({
         isOpen: true,
         studentName: undefined,
+        student: undefined,
+        reason: 'ALUMNO_NO_ENCONTRADO',
         motivo: 'Código escaneado no reconocido o alumno inexistente',
         rawCode: trimmed
       });
@@ -147,6 +159,8 @@ export default function RecepcionScanWidget({
       setAccessDeniedState({
         isOpen: true,
         studentName: alumno.nombre_completo,
+        student: alumno,
+        reason: evalResult.reason,
         motivo: evalResult.motivoDetallado || evalResult.message,
         rawCode: trimmed
       });
@@ -257,6 +271,9 @@ export default function RecepcionScanWidget({
       detalle: resolved.profesor 
         ? `Prof: ${resolved.profesor} • ${formatSedeName(resolved.sede || effectiveSede)}`
         : resolved.claseNombre || 'Acceso general a instalaciones',
+      timingStatus: resolved.timingStatus,
+      timingMinutes: resolved.timingMinutes,
+      timingMessage: resolved.timingMessage,
       timestamp: horaActual
     };
 
@@ -274,8 +291,8 @@ export default function RecepcionScanWidget({
 
   return (
     <div className="space-y-6">
-      {/* Indicador de estado del escáner WebSocket */}
-      <div className="flex items-center justify-between bg-[var(--color-bg-card)] border border-[var(--color-border)] p-4 rounded-2xl shadow-md">
+      {/* Indicador de estado del escáner WebSocket y Botón de Respaldo Webcam */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-[var(--color-bg-card)] border border-[var(--color-border)] p-4 rounded-2xl shadow-md gap-3">
         <div className="flex items-center gap-3">
           <div className="relative flex h-3.5 w-3.5">
             {isConnected && (
@@ -300,12 +317,23 @@ export default function RecepcionScanWidget({
             </span>
           </div>
         </div>
-        <span className="text-xs font-mono px-2.5 py-1 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-secondary)]">
-          ws://localhost:8080
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsWebcamOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-200 border border-purple-500/30 text-xs font-bold transition-all shadow-sm hover:scale-105 active:scale-95 cursor-pointer"
+            title="Activar escáner por cámara web (respaldo en navegador)"
+          >
+            <Camera size={14} />
+            <span>Cámara Web</span>
+          </button>
+          <span className="text-xs font-mono px-2.5 py-1 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-secondary)]">
+            ws://localhost:8080
+          </span>
+        </div>
       </div>
 
-      {/* Banner reactivo con feedback visual verde / rojo */}
+      {/* Banner reactivo con feedback visual verde / rojo y badges de puntualidad */}
       <div
         className={`p-6 rounded-2xl border-2 transition-all duration-300 shadow-xl ${
           lastScan.status === 'success'
@@ -337,6 +365,18 @@ export default function RecepcionScanWidget({
                   {lastScan.plan || lastScan.detalle}
                 </p>
               )}
+              {lastScan.timingMessage && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${
+                    lastScan.timingStatus === 'early' ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' :
+                    lastScan.timingStatus === 'late' ? 'bg-rose-500/20 text-rose-300 border-rose-500/30' :
+                    lastScan.timingStatus === 'outside_schedule' ? 'bg-orange-500/20 text-orange-300 border-orange-500/30' :
+                    'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                  }`}>
+                    {lastScan.timingMessage}
+                  </span>
+                </div>
+              )}
             </div>
             <span className="text-xs font-mono px-2.5 py-1 rounded bg-black/40 text-slate-300 border border-white/10 font-bold">
               {lastScan.timestamp}
@@ -362,6 +402,9 @@ export default function RecepcionScanWidget({
                   <div>
                     <span className="font-bold text-white block">{item.nombre || item.detalle}</span>
                     {item.plan && <span className="text-xs text-[var(--color-text-secondary)]">{item.plan}</span>}
+                    {item.timingMessage && (
+                      <span className="text-[11px] text-amber-300/90 block mt-0.5">{item.timingMessage}</span>
+                    )}
                   </div>
                 </div>
                 <span className="text-xs font-mono text-[var(--color-text-secondary)]">{item.timestamp}</span>
@@ -371,10 +414,19 @@ export default function RecepcionScanWidget({
         </div>
       )}
 
-      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2) */}
+      {/* Modal de Escáner por Cámara Web de Navegador (R4) */}
+      <WebcamScannerModal
+        isOpen={isWebcamOpen}
+        onClose={() => setIsWebcamOpen(false)}
+        onScan={procesarLecturaQR}
+      />
+
+      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2, R4) */}
       <AccessDeniedOverlay
         isOpen={accessDeniedState.isOpen}
         studentName={accessDeniedState.studentName}
+        student={accessDeniedState.student}
+        reason={accessDeniedState.reason}
         motivo={accessDeniedState.motivo}
         rawCode={accessDeniedState.rawCode}
         onClose={() => setAccessDeniedState(prev => ({ ...prev, isOpen: false }))}

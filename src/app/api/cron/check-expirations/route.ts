@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase/client";
 import { isPromoSeptiembreBono, calculateBonoExpirationDate } from "@/lib/matriculaService";
+import { getEndOfDayMadrid, calculateBonoDaysRemainingMadrid, isBonoExpiringSoonMadrid } from "@/lib/timezones";
 
 export const dynamic = "force-dynamic";
 
@@ -65,14 +66,15 @@ async function forwardCheckOrFallback(request: NextRequest) {
 
       let expDate: Date;
       if (isPromo) {
-        expDate = new Date("2026-09-30T20:00:00.000Z");
+        expDate = getEndOfDayMadrid("2026-09-30");
       } else {
-        expDate = calculateBonoExpirationDate(student) || new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const rawExp = calculateBonoExpirationDate(student) || new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        expDate = getEndOfDayMadrid(rawExp);
       }
 
-      const diffMs = expDate.getTime() - now.getTime();
-      const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-      if (daysLeft <= 7) expiringCount++;
+      const daysLeft = calculateBonoDaysRemainingMadrid(expDate);
+      const isExpiringSoon = isBonoExpiringSoonMadrid(expDate);
+      if (isExpiringSoon) expiringCount++;
 
       studentReports.push({
         id: student.id,

@@ -13,7 +13,7 @@ import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
 import { isRegularClassStudent, isTeacherProfile } from "@/lib/matriculaService";
 import { 
   Calendar, Users, Clock, Sparkles, CheckCircle2, ChevronRight, 
-  CalendarDays, Flame, Building2, Edit3 
+  CalendarDays, Flame, Building2, Edit3, Camera 
 } from "lucide-react";
 import {
   getUpcomingCalendarDates,
@@ -37,6 +37,7 @@ import {
   formatSedeName
 } from "@/lib/openClassService";
 import AccessDeniedOverlay from "@/components/AccessDeniedOverlay";
+import WebcamScannerModal from "@/components/WebcamScannerModal";
 import { HardwareScannerDebouncer } from "@/lib/scannerDebounce";
 import { evaluateReceptionAccess, dispatchAccessDenied } from "@/lib/accessControlService";
 import { playSawtoothAlarm, playSuccessChime } from "@/lib/soundUtils";
@@ -202,15 +203,18 @@ export default function AdminDashboardRecepcion() {
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Access Denied Overlay State (R1.2)
+  // Access Denied Overlay State (R1.2, R4)
   const [accessDeniedState, setAccessDeniedState] = useState<{
     isOpen: boolean;
     studentName?: string;
+    student?: any;
+    reason?: string;
     motivo?: string;
     rawCode?: string;
   }>({
     isOpen: false
   });
+  const [isWebcamOpen, setIsWebcamOpen] = useState(false);
 
   const qrInputRef = useRef<HTMLInputElement>(null);
   const debouncerRef = useRef<HardwareScannerDebouncer>(new HardwareScannerDebouncer(2500));
@@ -491,6 +495,8 @@ export default function AdminDashboardRecepcion() {
       setAccessDeniedState({
         isOpen: true,
         studentName: student.nombre_completo,
+        student,
+        reason: evalResult.reason,
         motivo: evalResult.motivoDetallado || evalResult.message,
         rawCode: student.dni || student.id
       });
@@ -569,9 +575,11 @@ export default function AdminDashboardRecepcion() {
       ? ` • [${formatSedeName(resolved.sede)}]`
       : '';
 
+    const timingNotice = resolved.timingMessage ? ` • ${resolved.timingMessage}` : '';
+
     setStatusMessage({ 
       type: 'success', 
-      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr}${sedeNotice})` 
+      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr}${sedeNotice}${timingNotice})` 
     });
 
     publishSyncEvent("df_checkin_success", { ...student, resolvedClass: resolved });
@@ -1543,6 +1551,8 @@ export default function AdminDashboardRecepcion() {
                           setAccessDeniedState({
                             isOpen: true,
                             studentName: undefined,
+                            student: undefined,
+                            reason: "ALUMNO_NO_ENCONTRADO",
                             motivo: "Código escaneado no reconocido o alumno inexistente",
                             rawCode: cleanVal
                           });
@@ -1566,6 +1576,15 @@ export default function AdminDashboardRecepcion() {
             </form>
             
             <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setIsWebcamOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 text-purple-200 border border-purple-500/30 text-xs font-semibold transition-all shadow-sm hover:scale-105 active:scale-95 cursor-pointer"
+                title="Activar escáner por cámara web (respaldo en navegador)"
+              >
+                <Camera size={14} />
+                <span>Cámara Web</span>
+              </button>
               <div className="flex items-center gap-1.5">
                 <span className={`w-2.5 h-2.5 rounded-full ${isBridgeConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
                 <span className={isBridgeConnected ? 'text-emerald-400 font-bold' : 'text-slate-400'}>
@@ -1702,10 +1721,43 @@ export default function AdminDashboardRecepcion() {
         }}
       />
 
-      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2) */}
+      {/* Modal de Escáner por Cámara Web (R4) */}
+      <WebcamScannerModal
+        isOpen={isWebcamOpen}
+        onClose={() => setIsWebcamOpen(false)}
+        onScan={async (scannedCode) => {
+          setIsWebcamOpen(false);
+          const debounceRes = debouncerRef.current.processScan(scannedCode);
+          if (!debounceRes.accepted) return;
+          const student = await findStudentByScannedCode(scannedCode);
+          if (student) {
+            processCheckIn(student);
+          } else {
+            playErrorSound();
+            setAccessDeniedState({
+              isOpen: true,
+              studentName: undefined,
+              student: undefined,
+              reason: "ALUMNO_NO_ENCONTRADO",
+              motivo: "Código escaneado no reconocido o alumno inexistente",
+              rawCode: scannedCode
+            });
+            dispatchAccessDenied({
+              reason: "ALUMNO_NO_ENCONTRADO",
+              message: `⛔ ACCESO DENEGADO: Código QR/NFC no reconocido ("${scannedCode}"). Pasar por mostrador de recepción`,
+              rawCode: scannedCode
+            });
+            triggerError(`⛔ ACCESO DENEGADO: Código QR/NFC no reconocido ("${scannedCode}"). Pasar por mostrador de recepción`);
+          }
+        }}
+      />
+
+      {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2, R4) */}
       <AccessDeniedOverlay
         isOpen={accessDeniedState.isOpen}
         studentName={accessDeniedState.studentName}
+        student={accessDeniedState.student}
+        reason={accessDeniedState.reason}
         motivo={accessDeniedState.motivo}
         rawCode={accessDeniedState.rawCode}
         onClose={() => setAccessDeniedState(prev => ({ ...prev, isOpen: false }))}

@@ -305,7 +305,13 @@ export default function PagosYFacturacionPage() {
 
     // Subscribe to real-time events across tabs & devices via canonical syncEventBus
     const unsubscribe = subscribeSyncEvent(
-      ["df_pagos_updated", "df_pending_bonos_updated"],
+      [
+        "df_pagos_updated", 
+        "df_pending_bonos_updated", 
+        "df_alumnos_updated", 
+        "df_student_fees_updated", 
+        "df_reservas_updated"
+      ],
       () => {
         loadData();
       }
@@ -386,6 +392,96 @@ export default function PagosYFacturacionPage() {
     return plan.includes("regular") || s.plan_activo === "Clases Regulares" || (s.clases_restantes === null && !plan.includes("bono"));
   });
 
+  // Cross-reference desk payments (Efectivo / TPV / Bizum / Transferencia en mostrador):
+  // Verifies if a student has already paid their monthly regular fee at reception for selectedMonth
+  const getDeskPaymentForStudent = (student: any): PagoTransaccion | undefined => {
+    if (!student) return undefined;
+    const monthNum = selectedMonth.split("-")[1] || "";
+    const monthNames: Record<string, string[]> = {
+      "09": ["septiembre", "sep"],
+      "10": ["octubre", "oct"],
+      "11": ["noviembre", "nov"],
+      "12": ["diciembre", "dic"]
+    };
+    const keywords = monthNames[monthNum] || [];
+
+    return pagos.find(p => {
+      // Must be a confirmed / completed transaction
+      if (p.estado !== "Cobrado" && (p as any).estado !== "Completado" && (p as any).estado !== "Pagado") {
+        return false;
+      }
+
+      // Must be a reception desk or manual non-automated remittance transaction
+      const isDeskOrManual = 
+        p.metodo_pago !== "SEPA" || 
+        (p.atendido_por && p.atendido_por.toLowerCase().includes("recep")) ||
+        !p.id.startsWith("sepa_");
+      if (!isDeskOrManual) return false;
+
+      // Match student identity
+      const matchesId = Boolean(student.id && p.alumno_id && p.alumno_id === student.id);
+      const matchesDni = Boolean(student.dni && p.alumno_dni && student.dni.trim().toLowerCase() === p.alumno_dni.trim().toLowerCase());
+      const matchesName = Boolean(student.nombre_completo && p.alumno_nombre && student.nombre_completo.trim().toLowerCase() === p.alumno_nombre.trim().toLowerCase());
+      if (!matchesId && !matchesDni && !matchesName) return false;
+
+      // Match target month
+      const isSameMonth = 
+        p.periodo_mes === selectedMonth ||
+        (p.fecha_hora && p.fecha_hora.startsWith(selectedMonth)) ||
+        (p.fecha_corta && p.fecha_corta.includes(`/${monthNum}/`)) ||
+        (p.concepto && p.concepto.toLowerCase().includes(selectedMonth.toLowerCase()));
+
+      const matchesKeyword = keywords.some(k => p.concepto && p.concepto.toLowerCase().includes(k));
+
+      // Match monthly fee category or concept
+      const isMonthlyFee = 
+        p.categoria === "mensualidad" ||
+        (p.concepto && (p.concepto.toLowerCase().includes("mensual") || p.concepto.toLowerCase().includes("cuota")));
+
+      return (isSameMonth || matchesKeyword) && isMonthlyFee;
+    });
+  };
+
+  // Determine Remittance Eligibility Status for a Student
+  const getStudentRemittanceStatus = (student: any): {
+    status: "eligible" | "desk_paid" | "cash_method" | "other_method";
+    label: string;
+    deskPayment?: PagoTransaccion;
+  } => {
+    // 1. Strict desk payment check: already paid at reception
+    const deskPayment = getDeskPaymentForStudent(student);
+    if (deskPayment) {
+      return {
+        status: "desk_paid",
+        label: `Pagado en Mostrador (${deskPayment.metodo_pago})`,
+        deskPayment
+      };
+    }
+
+    // 2. Strict method check: Efectivo is completely excluded from SEPA debit files
+    const currentMethod = paymentMethods[student.id] || "SEPA";
+    if (currentMethod === "Efectivo") {
+      return {
+        status: "cash_method",
+        label: "Efectivo / Mostrador"
+      };
+    }
+
+    // 3. Other non-SEPA direct debit methods (Stripe, TPV, Transferencia)
+    if (currentMethod !== "SEPA") {
+      return {
+        status: "other_method",
+        label: currentMethod
+      };
+    }
+
+    // 4. Eligible for SEPA XML Direct Debit
+    return {
+      status: "eligible",
+      label: "Listo para Remesa"
+    };
+  };
+
   const filteredRemesaStudents = regularStudents.filter(s => {
     const matchesSearch = 
       (s.nombre_completo || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -413,8 +509,22 @@ export default function PagosYFacturacionPage() {
     };
   };
 
+  // Strictly filter students for SEPA direct debit export:
+  // - Method must NOT be "Efectivo"
+  // - Method must be "SEPA"
+  // - Student MUST NOT have already paid at reception desk for this month
+  const sepaExportStudents = filteredRemesaStudents.filter(s => {
+    const remStatus = getStudentRemittanceStatus(s);
+    return remStatus.status === "eligible";
+  });
+
+  const deskPaidStudentsCount = filteredRemesaStudents.filter(s => getStudentRemittanceStatus(s).status === "desk_paid").length;
+  const cashMethodStudentsCount = filteredRemesaStudents.filter(s => getStudentRemittanceStatus(s).status === "cash_method").length;
+  const totalExcludedCount = filteredRemesaStudents.length - sepaExportStudents.length;
+
   const totalRegularCount = regularStudents.length;
   const totalNetToRemit = regularStudents.reduce((acc, s) => acc + getStudentRemittanceData(s).neto, 0);
+  const totalSepaNetToRemit = sepaExportStudents.reduce((acc, s) => acc + getStudentRemittanceData(s).neto, 0);
   const totalGrossBilling = regularStudents.reduce((acc, s) => acc + getStudentFee(s).cuotaBase, 0);
 
   const handleExportSEPA = () => {
@@ -422,7 +532,19 @@ export default function PagosYFacturacionPage() {
   };
 
   const handleExportSEPAXML = () => {
-    const sepaResult = generateSEPAXml(filteredRemesaStudents, selectedMonth, paymentMethods, assignedClassesMap);
+    if (sepaExportStudents.length === 0 && filteredRemesaStudents.length > 0) {
+      if (!confirm(`No hay alumnos con domiciliación SEPA pendientes para ${selectedMonth} (todos los alumnos están excluidos por pago previo en mostrador o método Efectivo). ¿Deseas generar igualmente el fichero XML de control vacío con CtrlSum 0.00€?`)) {
+        return;
+      }
+    }
+
+    const sepaResult = generateSEPAXml(
+      sepaExportStudents, 
+      selectedMonth, 
+      paymentMethods, 
+      assignedClassesMap,
+      pagos
+    );
     const xmlContent = typeof sepaResult === "string" ? sepaResult : sepaResult.xml;
     const blob = new Blob([xmlContent], { type: "application/xml;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -433,15 +555,43 @@ export default function PagosYFacturacionPage() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+
+    alert(
+      `✓ Fichero bancario SEPA XML generado con éxito (pain.008.001.02):\n\n` +
+      `• Recibos incluidos en remesa: ${sepaResult.txCount}\n` +
+      `• Importe total remesado: ${sepaResult.totalAmount.toFixed(2)} €\n` +
+      `• Alumnos excluidos por pago previo en mostrador: ${deskPaidStudentsCount}\n` +
+      `• Alumnos excluidos por método Efectivo: ${cashMethodStudentsCount}\n` +
+      `• Total alumnos blindados de cobro duplicado: ${totalExcludedCount}`
+    );
   };
 
   const handleExportSEPACsv = () => {
-    const sepaStudents = filteredRemesaStudents.filter(s => (paymentMethods[s.id] || "SEPA") === "SEPA");
-    const targetList = sepaStudents.length > 0 ? sepaStudents : filteredRemesaStudents;
-    const headers = ["Nombre Completo", "DNI", "Sede", "Clase Asignada", "Cuota Base (€)", "Anticipo Abonado (€)", "Neto a Remesar (€)", "Metodo de Pago", "Estado"];
-    const rows = targetList.map(s => {
+    const headers = [
+      "Nombre Completo", 
+      "DNI", 
+      "Sede", 
+      "Clase Asignada", 
+      "Cuota Base (€)", 
+      "Anticipo Abonado (€)", 
+      "Neto a Remesar (€)", 
+      "Metodo de Pago", 
+      "Estado Remesa",
+      "Detalle Cobro Mostrador"
+    ];
+    const rows = filteredRemesaStudents.map(s => {
       const data = getStudentRemittanceData(s);
       const metodo = paymentMethods[s.id] || "SEPA";
+      const remStatus = getStudentRemittanceStatus(s);
+      const estadoStr = remStatus.status === "eligible" 
+        ? "Listo para remesar" 
+        : remStatus.status === "desk_paid" 
+          ? "Excluido - Pagado en Mostrador" 
+          : "Excluido - Método " + metodo;
+      const deskDetail = remStatus.deskPayment 
+        ? `${remStatus.deskPayment.metodo_pago} (${remStatus.deskPayment.importe.toFixed(2)}€ el ${remStatus.deskPayment.fecha_corta})` 
+        : "";
+
       return [
         `"${s.nombre_completo || ''}"`,
         `"${s.dni || 'PENDIENTE'}"`,
@@ -451,7 +601,8 @@ export default function PagosYFacturacionPage() {
         (-data.anticipo).toFixed(2),
         data.neto.toFixed(2),
         `"${metodo}"`,
-        '"Listo para procesar"'
+        `"${estadoStr}"`,
+        `"${deskDetail}"`
       ];
     });
 
@@ -515,9 +666,9 @@ export default function PagosYFacturacionPage() {
         </div>
 
         <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-4 shadow-sm">
-          <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Previsión Remesa {selectedMonth}</span>
-          <h3 className="text-2xl font-bold font-mono text-purple-400 mt-1">{totalNetToRemit.toFixed(2)} €</h3>
-          <span className="text-[10px] text-[var(--color-text-secondary)]">{totalRegularCount} alumnos regulares</span>
+          <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Previsión Remesa SEPA {selectedMonth}</span>
+          <h3 className="text-2xl font-bold font-mono text-purple-400 mt-1">{totalSepaNetToRemit.toFixed(2)} €</h3>
+          <span className="text-[10px] text-[var(--color-text-secondary)]">{sepaExportStudents.length} domiciliados ({totalExcludedCount} excluidos)</span>
         </div>
       </div>
       
@@ -571,6 +722,13 @@ export default function PagosYFacturacionPage() {
 
           {activeTab === "remesas" && (
             <div className="flex items-center gap-2">
+              <span 
+                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px] font-semibold cursor-help"
+                title="Blindaje de Cobros: Los alumnos con método 'Efectivo' o que ya hayan liquidado su mensualidad en mostrador quedan automáticamente excluidos de este fichero bancario para evitar cobros duplicados."
+              >
+                <HelpCircle size={13} className="text-amber-400 shrink-0" />
+                <span>Shield Doble Cobro Activo</span>
+              </span>
               <button
                 onClick={handleExportSEPACsv}
                 className="px-3 py-2 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-xs font-bold text-slate-300 hover:text-white border border-[var(--color-border)] transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
@@ -582,10 +740,10 @@ export default function PagosYFacturacionPage() {
               <button
                 onClick={handleExportSEPAXML}
                 className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-all flex items-center gap-1.5 shadow-md shadow-amber-400/20 cursor-pointer"
-                title="Descargar Fichero XML ISO 20022 pain.008.001.02 Norma 19"
+                title="Descargar Fichero XML ISO 20022 pain.008.001.02 Norma 19 (Excluye alumnos de Efectivo y pagos en mostrador)"
               >
                 <Download size={14} />
-                <span>Descargar SEPA XML (ISO 20022)</span>
+                <span>Descargar SEPA XML ({sepaExportStudents.length})</span>
               </button>
             </div>
           )}
@@ -830,6 +988,37 @@ export default function PagosYFacturacionPage() {
       {activeTab === "remesas" && (
         <div className="space-y-4 animate-in fade-in duration-200">
           
+          {/* SEPA Cross-Billing & Double-Charge Shield Banner */}
+          <div className="bg-gradient-to-r from-amber-500/15 via-amber-500/10 to-transparent border border-amber-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/30">
+                <Zap size={16} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-amber-300 text-sm">Blindaje Anti-Doble Cargo SEPA</span>
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-bold border border-emerald-500/30">
+                    Activo
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  Los alumnos con método <span className="font-bold text-white">"Efectivo"</span> ({cashMethodStudentsCount}) o que ya hayan liquidado su mensualidad en mostrador ({deskPaidStudentsCount}) quedan <span className="text-amber-300 font-semibold underline">estrictamente excluidos</span> del fichero bancario SEPA XML para eliminar cualquier riesgo de cobro duplicado a primeros de mes.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 font-mono text-[11px] bg-slate-900/80 px-3.5 py-2 rounded-xl border border-white/10 self-stretch sm:self-auto justify-center">
+              <div className="text-center">
+                <span className="text-[10px] text-slate-400 block uppercase">A Remesar</span>
+                <span className="font-extrabold text-emerald-400 text-sm">{sepaExportStudents.length}</span>
+              </div>
+              <div className="h-6 w-px bg-white/10 mx-1"></div>
+              <div className="text-center">
+                <span className="text-[10px] text-slate-400 block uppercase">Excluidos</span>
+                <span className="font-extrabold text-amber-400 text-sm">{totalExcludedCount}</span>
+              </div>
+            </div>
+          </div>
+
           {/* Controls Bar */}
           <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] p-3.5 rounded-2xl shadow-sm flex flex-col md:flex-row gap-3 items-center justify-between">
             
@@ -905,6 +1094,7 @@ export default function PagosYFacturacionPage() {
                       const feeData = getStudentRemittanceData(student);
                       const currentMethod = paymentMethods[student.id] || "SEPA";
                       const assignedNames = (assignedClassesMap[student.id] || []).join(" / ") || feeData.claseNombre || "Clases Regulares";
+                      const remStatus = getStudentRemittanceStatus(student);
 
                       return (
                         <tr key={student.id} className="hover:bg-[var(--color-bg-hover)] transition-colors">
@@ -939,7 +1129,13 @@ export default function PagosYFacturacionPage() {
                           </td>
 
                           <td className="py-3 px-4 text-center">
-                            <span className="font-mono font-black text-sm text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-xl border border-amber-500/30">
+                            <span className={`font-mono font-black text-sm px-2.5 py-1 rounded-xl border ${
+                              remStatus.status === "eligible"
+                                ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+                                : remStatus.status === "desk_paid"
+                                  ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                                  : "text-slate-400 bg-slate-500/10 border-slate-500/20"
+                            }`}>
                               {feeData.neto.toFixed(2)} €
                             </span>
                           </td>
@@ -959,9 +1155,37 @@ export default function PagosYFacturacionPage() {
                           </td>
 
                           <td className="py-3 px-4 text-center">
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
-                              <CheckCircle2 size={11} /> Listo
-                            </span>
+                            {remStatus.status === "desk_paid" ? (
+                              <span 
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20 cursor-help"
+                                title={`Cuota de ${selectedMonth} ya liquidada en recepción (${remStatus.deskPayment?.metodo_pago}) el ${remStatus.deskPayment?.fecha_corta}. Excluido estrictamente del SEPA XML.`}
+                              >
+                                <CheckCircle2 size={11} className="text-amber-400" />
+                                <span>Cobrado Mostrador (Excluido)</span>
+                              </span>
+                            ) : remStatus.status === "cash_method" ? (
+                              <span 
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-500/10 px-2.5 py-1 rounded-full border border-slate-500/20 cursor-help"
+                                title="Alumno con pago presencial en Efectivo. Excluido estrictamente de la remesa bancaria."
+                              >
+                                <Coins size={11} className="text-slate-400" />
+                                <span>Efectivo (Excluido SEPA)</span>
+                              </span>
+                            ) : remStatus.status === "other_method" ? (
+                              <span 
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-400 bg-blue-500/10 px-2.5 py-1 rounded-full border border-blue-500/20"
+                                title={`Cobro gestionado por ${remStatus.label}. Excluido de remesa bancaria.`}
+                              >
+                                <span>Excluido ({remStatus.label})</span>
+                              </span>
+                            ) : (
+                              <span 
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20"
+                                title="Listo para incluir en el fichero SEPA XML ISO 20022"
+                              >
+                                <CheckCircle2 size={11} /> Listo para Remesa
+                              </span>
+                            )}
                           </td>
                         </tr>
                       );

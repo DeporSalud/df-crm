@@ -1,5 +1,6 @@
 import studentFeesData from "@/data/student_fees.json";
 import { calcularCuotaPorHoras, TarifaItem } from "./tarifasService";
+import { publishSyncEvent, subscribeSyncEvent } from "./syncEventBus";
 
 export interface StudentFeeInfo {
   cuotaBase: number;
@@ -181,11 +182,24 @@ export function saveStudentFeeOverride(studentIdentifier: string, cuota: number)
     const current = getStudentFeeOverrides();
     current[studentIdentifier] = cuota;
     localStorage.setItem(OVERRIDES_STORAGE_KEY, JSON.stringify(current));
-    window.dispatchEvent(new Event("df_student_fees_updated"));
-    window.dispatchEvent(new Event("df_pagos_updated"));
+
+    // Multi-window & multi-device event synchronization across tabs and devices
+    publishSyncEvent("df_student_fees_updated", { studentIdentifier, cuota, timestamp: Date.now() });
+    publishSyncEvent("df_pagos_updated", { studentIdentifier, cuota, timestamp: Date.now() });
+    publishSyncEvent("df_alumnos_updated", { studentIdentifier, cuota, timestamp: Date.now() });
   } catch (e) {
     console.error("Error saving student fee override:", e);
   }
+}
+
+/**
+ * Convenient helper to subscribe to student fee updates across tabs and devices
+ */
+export function subscribeStudentFeesSync(callback: (detail?: any) => void): () => void {
+  return subscribeSyncEvent(
+    ["df_student_fees_updated", "df_pagos_updated", "df_alumnos_updated"],
+    (detail) => callback(detail)
+  );
 }
 
 /**

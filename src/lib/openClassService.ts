@@ -1108,7 +1108,75 @@ export interface CheckInClassResolution {
   sede?: string;
   isRegular: boolean;
   isOpenClass: boolean;
+  timingStatus?: 'on_time' | 'early' | 'late' | 'outside_schedule';
+  timingMinutes?: number;
+  timingMessage?: string;
+  horaInicio?: string;
+  horaFin?: string;
 }
+
+/**
+ * Resolución canónica de puntualidad y ventanas de acceso a clase (R4)
+ */
+export function resolveClassTiming(
+  horaInicio?: string,
+  horaFin?: string,
+  checkInTimeStr?: string
+): {
+  timingStatus: 'on_time' | 'early' | 'late' | 'outside_schedule';
+  timingMinutes: number;
+  timingMessage: string;
+  allowsAccess: boolean;
+} {
+  const parseMin = (s?: string) => {
+    if (!s) return 0;
+    const [h = 0, m = 0] = String(s).split(":").map(Number);
+    return (h || 0) * 60 + (m || 0);
+  };
+
+  const startMin = parseMin(horaInicio);
+  const endMin = parseMin(horaFin);
+  let checkMin: number;
+  if (checkInTimeStr) {
+    checkMin = parseMin(checkInTimeStr);
+  } else {
+    const now = new Date();
+    checkMin = now.getHours() * 60 + now.getMinutes();
+  }
+  const delta = checkMin - startMin;
+
+  if (delta >= -10 && delta <= 10) {
+    return {
+      timingStatus: "on_time",
+      timingMinutes: Math.abs(delta),
+      timingMessage: "A tiempo para clase",
+      allowsAccess: true
+    };
+  } else if (delta < -10 && delta >= -60) {
+    const earlyMin = Math.abs(delta);
+    return {
+      timingStatus: "early",
+      timingMinutes: earlyMin,
+      timingMessage: `Llegada anticipada: ${earlyMin} min antes de clase`,
+      allowsAccess: true
+    };
+  } else if (delta > 10 && delta <= 30) {
+    return {
+      timingStatus: "late",
+      timingMinutes: delta,
+      timingMessage: `Llegada con retraso: ${delta} min tarde a clase`,
+      allowsAccess: true
+    };
+  } else {
+    return {
+      timingStatus: "outside_schedule",
+      timingMinutes: Math.abs(delta),
+      timingMessage: "Fuera de horario de clase",
+      allowsAccess: false
+    };
+  }
+}
+
 
 /**
  * Búsqueda ultra robusta de alumnos para escáner QR, RFID, NFC y búsqueda manual:
@@ -1353,15 +1421,48 @@ export async function resolveClassForCheckIn(
         }
       }
 
+      // Si el alumno tiene clase hoy pero llega fuera de la ventana habitual (ej. 75 min antes o tras fin),
+      // seleccionar la clase de hoy más cercana para informar a recepción sin bloquear acceso
+      if (!bestRegular && todayClasses.length > 0) {
+        for (const c of todayClasses) {
+          const startMin = parseTimeToMinutes(c.hora_inicio);
+          const dist = Math.abs(currentMinutes - startMin);
+          if (dist < minDistance) {
+            minDistance = dist;
+            bestRegular = c;
+          }
+        }
+      }
+
       if (bestRegular) {
         const isOpen = (bestRegular.nombre_clase || "").toUpperCase().includes("OPEN") || bestRegular.tipo_clase === "Open Class";
+        const timing = resolveClassTiming(bestRegular.hora_inicio, bestRegular.hora_fin);
+
+        let customMessage = timing.timingMessage;
+        if (timing.timingStatus === "early") {
+          customMessage = `⏰ Llegada anticipada: ${timing.timingMinutes} min antes de su clase (${bestRegular.hora_inicio})`;
+        } else if (timing.timingStatus === "late") {
+          customMessage = `⚠️ Llegada con retraso: ${timing.timingMinutes} min tarde a su clase (${bestRegular.hora_inicio})`;
+        } else if (timing.timingStatus === "outside_schedule") {
+          const startMin = parseTimeToMinutes(bestRegular.hora_inicio);
+          const delta = currentMinutes - startMin;
+          customMessage = delta < 0
+            ? `⏰ Fuera de horario: Llegada ${timing.timingMinutes} min antes de su clase (${bestRegular.hora_inicio})`
+            : `⚠️ Fuera de horario: Clase finalizada (${bestRegular.hora_inicio} - ${bestRegular.hora_fin || ''})`;
+        }
+
         return {
           claseId: bestRegular.id,
           claseNombre: bestRegular.nombre_clase,
           profesor: bestRegular.profesor,
           sede: bestRegular.sede,
           isRegular: !isOpen,
-          isOpenClass: isOpen
+          isOpenClass: isOpen,
+          timingStatus: timing.timingStatus,
+          timingMinutes: timing.timingMinutes,
+          timingMessage: customMessage,
+          horaInicio: bestRegular.hora_inicio,
+          horaFin: bestRegular.hora_fin
         };
       }
     }
@@ -1383,13 +1484,26 @@ export async function resolveClassForCheckIn(
       const endMin = parseTimeToMinutes(todayReserva.hora_fin);
 
       if (currentMinutes >= (startMin - 60) && currentMinutes <= (endMin + 30)) {
+        const timing = resolveClassTiming(todayReserva.hora_inicio, todayReserva.hora_fin);
+        let customMessage = timing.timingMessage;
+        if (timing.timingStatus === "early") {
+          customMessage = `⏰ Llegada anticipada: ${timing.timingMinutes} min antes de su clase (${todayReserva.hora_inicio})`;
+        } else if (timing.timingStatus === "late") {
+          customMessage = `⚠️ Llegada con retraso: ${timing.timingMinutes} min tarde a su clase (${todayReserva.hora_inicio})`;
+        }
+
         return {
           claseId: todayReserva.clase_id,
           claseNombre: todayReserva.nombre_clase,
           profesor: todayReserva.profesor,
           sede: todayReserva.sede,
           isRegular: false,
-          isOpenClass: true
+          isOpenClass: true,
+          timingStatus: timing.timingStatus,
+          timingMinutes: timing.timingMinutes,
+          timingMessage: customMessage,
+          horaInicio: todayReserva.hora_inicio,
+          horaFin: todayReserva.hora_fin
         };
       }
     }
@@ -1414,13 +1528,19 @@ export async function resolveClassForCheckIn(
         if (currentMinutes >= (startMin - 50) && currentMinutes <= (endMin + 30)) {
           const isPrefOpen = (prefClass.nombre_clase || "").toUpperCase().includes("OPEN");
           if (!isPrefOpen || !isRegularOrUnlimited || currentMinutes < endMin) {
+            const timing = resolveClassTiming(prefClass.hora_inicio, prefClass.hora_fin);
             return {
               claseId: prefClass.id,
               claseNombre: prefClass.nombre_clase,
               profesor: prefClass.profesor,
               sede: prefClass.sede,
               isRegular: !isPrefOpen,
-              isOpenClass: isPrefOpen
+              isOpenClass: isPrefOpen,
+              timingStatus: timing.timingStatus,
+              timingMinutes: timing.timingMinutes,
+              timingMessage: timing.timingMessage,
+              horaInicio: prefClass.hora_inicio,
+              horaFin: prefClass.hora_fin
             };
           }
         }
@@ -1466,13 +1586,19 @@ export async function resolveClassForCheckIn(
       }
 
       if (candidate) {
+        const timing = resolveClassTiming(candidate.hora_inicio, candidate.hora_fin);
         return {
           claseId: candidate.id,
           claseNombre: candidate.nombre_clase,
           profesor: candidate.profesor,
           sede: candidate.sede,
           isRegular: true,
-          isOpenClass: false
+          isOpenClass: false,
+          timingStatus: timing.timingStatus,
+          timingMinutes: timing.timingMinutes,
+          timingMessage: timing.timingMessage,
+          horaInicio: candidate.hora_inicio,
+          horaFin: candidate.hora_fin
         };
       }
     }
@@ -1485,7 +1611,10 @@ export async function resolveClassForCheckIn(
     claseId: null,
     claseNombre: "Acceso a Instalaciones",
     isRegular: isRegularOrUnlimited,
-    isOpenClass: false
+    isOpenClass: false,
+    timingStatus: "on_time",
+    timingMinutes: 0,
+    timingMessage: "Acceso a instalaciones"
   };
 }
 
