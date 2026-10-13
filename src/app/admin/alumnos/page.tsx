@@ -24,6 +24,7 @@ import { CheckCircle2 } from "lucide-react";
 
 import { getStoredIBAN, saveStoredIBAN, deleteStoredIBAN } from "@/lib/ibanStorage";
 import { isPromoSeptiembreBono, calculateBonoExpirationDate } from "@/lib/matriculaService";
+import { getBonosAlumnos } from "@/lib/ventajasService";
 
 // Validation Helpers
 function validateDNI(dni: string): { valid: boolean; message?: string } {
@@ -85,6 +86,25 @@ export default function AlumnosPage() {
   const [historyPayments, setHistoryPayments] = useState<any[]>([]);
   const [historyReservas, setHistoryReservas] = useState<any[]>([]);
   const { activeSede } = useSede();
+
+  // Bonos Caducidad Map
+  const [bonosCaducidadMap, setBonosCaducidadMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const updateBonosMap = () => {
+      const allBonos = getBonosAlumnos();
+      const map: Record<string, string> = {};
+      allBonos.forEach(b => {
+        if (b.alumno_id && b.fecha_caducidad) {
+          map[b.alumno_id] = b.fecha_caducidad;
+        }
+      });
+      setBonosCaducidadMap(map);
+    };
+    updateBonosMap();
+    window.addEventListener("df_bonos_updated", updateBonosMap);
+    return () => window.removeEventListener("df_bonos_updated", updateBonosMap);
+  }, []);
 
   // Expiration check state
   const [isCheckingExpirations, setIsCheckingExpirations] = useState(false);
@@ -829,17 +849,53 @@ export default function AlumnosPage() {
                                 (student.plan_activo || "").toLowerCase().includes("promoción septiembre") ||
                                 (student.plan_activo || "").toLowerCase().includes("promocion septiembre");
                               let expDateStr = "";
+                              let isExpired = false;
+                              let isExpiringSoon = false;
+                              let statusLabel = "";
+
                               if (isPromo) {
                                 expDateStr = "30/09/26";
+                                isExpired = true;
+                                statusLabel = "Caducado (Promo Sep)";
                               } else {
-                                const exp = calculateBonoExpirationDate(student);
+                                const storedExp = bonosCaducidadMap[student.id];
+                                const exp = calculateBonoExpirationDate(student, storedExp);
                                 if (exp) {
                                   expDateStr = exp.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit" });
+                                  const today = new Date();
+                                  today.setHours(0, 0, 0, 0);
+                                  const expMidnight = new Date(exp);
+                                  expMidnight.setHours(0, 0, 0, 0);
+                                  const diffDays = Math.ceil((expMidnight.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                                  if (diffDays < 0) {
+                                    isExpired = true;
+                                    statusLabel = `Caducado (${expDateStr})`;
+                                  } else if (diffDays === 0) {
+                                    isExpiringSoon = true;
+                                    statusLabel = `Caduca HOY (${expDateStr})`;
+                                  } else if (diffDays === 1) {
+                                    isExpiringSoon = true;
+                                    statusLabel = `Caduca MAÑANA (${expDateStr})`;
+                                  } else if (diffDays <= 3) {
+                                    isExpiringSoon = true;
+                                    statusLabel = `Caduca en ${diffDays}d (${expDateStr})`;
+                                  } else {
+                                    statusLabel = `Exp: ${expDateStr}`;
+                                  }
                                 }
                               }
-                              return expDateStr ? (
-                                <span className="text-[10px] text-slate-400 font-mono block mt-0.5" title={`Caducidad: ${expDateStr}`}>
-                                  Exp: {expDateStr}
+                              return statusLabel ? (
+                                <span 
+                                  className={`text-[10px] font-mono block mt-0.5 ${
+                                    isExpired 
+                                      ? "text-rose-400 font-bold" 
+                                      : isExpiringSoon 
+                                      ? "text-amber-400 font-bold" 
+                                      : "text-slate-400"
+                                  }`} 
+                                  title={`Fecha de expiración del bono: ${expDateStr}`}
+                                >
+                                  {statusLabel}
                                 </span>
                               ) : null;
                             })()}

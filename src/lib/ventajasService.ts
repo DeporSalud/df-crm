@@ -317,12 +317,19 @@ export function consumirSesionBono(id: string): { success: boolean; bono?: BonoA
   return { success: true, bono: updatedTarget, message: `1 sesión consumida. Quedan ${updatedTarget.clases_restantes} clases.` };
 }
 
-export function recargarSesionesBono(id: string, clasesExtra: number, precioExtra: number = 0): BonoAlumno | null {
+export function recargarSesionesBono(bonoOrId: string | BonoAlumno, clasesExtra: number, precioExtra: number = 0): BonoAlumno | null {
   const all = getBonosAlumnos();
-  const index = all.findIndex(b => b.id === id);
-  if (index === -1) return null;
+  const id = typeof bonoOrId === "string" ? bonoOrId : bonoOrId.id;
+  const index = all.findIndex(b => b.id === id || (typeof bonoOrId !== "string" && bonoOrId.alumno_id && b.alumno_id === bonoOrId.alumno_id));
 
-  const target = all[index];
+  let target: BonoAlumno;
+  if (index === -1) {
+    if (typeof bonoOrId === "string") return null;
+    target = { ...bonoOrId };
+  } else {
+    target = all[index];
+  }
+
   const newTotal = target.total_clases + clasesExtra;
   const newRestantes = target.clases_restantes + clasesExtra;
   
@@ -340,7 +347,47 @@ export function recargarSesionesBono(id: string, clasesExtra: number, precioExtr
     estado: "Activo"
   };
 
-  all[index] = updatedTarget;
+  if (index === -1) {
+    all.push(updatedTarget);
+  } else {
+    all[index] = updatedTarget;
+  }
+
+  saveBonosAlumnos(all);
+  return updatedTarget;
+}
+
+export function prorrogarBono(bonoOrId: string | BonoAlumno, diasExtra: number = 30): BonoAlumno | null {
+  const all = getBonosAlumnos();
+  const id = typeof bonoOrId === "string" ? bonoOrId : bonoOrId.id;
+  const index = all.findIndex(b => b.id === id || (typeof bonoOrId !== "string" && bonoOrId.alumno_id && b.alumno_id === bonoOrId.alumno_id));
+
+  let target: BonoAlumno;
+  if (index === -1) {
+    if (typeof bonoOrId === "string") return null;
+    target = { ...bonoOrId };
+  } else {
+    target = all[index];
+  }
+
+  const currentExp = new Date(target.fecha_caducidad);
+  const now = new Date();
+  const baseDate = isNaN(currentExp.getTime()) || currentExp < now ? now : currentExp;
+  const future = new Date(baseDate.getTime() + diasExtra * 24 * 60 * 60 * 1000);
+  const newExp = future.toISOString().slice(0, 10);
+
+  const updatedTarget: BonoAlumno = {
+    ...target,
+    fecha_caducidad: newExp,
+    estado: target.clases_restantes > 0 ? "Activo" : target.estado
+  };
+
+  if (index === -1) {
+    all.push(updatedTarget);
+  } else {
+    all[index] = updatedTarget;
+  }
+
   saveBonosAlumnos(all);
   return updatedTarget;
 }

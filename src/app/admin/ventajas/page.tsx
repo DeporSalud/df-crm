@@ -37,6 +37,7 @@ import {
   saveBonosAlumnos,
   consumirSesionBono,
   recargarSesionesBono,
+  prorrogarBono,
   crearBonoAlumno,
   deleteBonoAlumno
 } from "@/lib/ventajasService";
@@ -157,7 +158,10 @@ export default function AdminVentajasPage() {
 
           // Calculate expiry
           let fechaCaducidad = "2026-09-30";
-          if (planLower.includes("promo") || planLower.includes("septiembre")) {
+          const localOverride = localBonos.find(lb => lb.alumno_id === s.id || lb.id === `bono_db_${s.id}`);
+          if (localOverride && localOverride.fecha_caducidad) {
+            fechaCaducidad = localOverride.fecha_caducidad;
+          } else if (planLower.includes("promo") || planLower.includes("septiembre")) {
             fechaCaducidad = "2026-09-30";
           } else {
             const calculatedExp = calculateBonoExpirationDate(s);
@@ -557,6 +561,21 @@ export default function AdminVentajasPage() {
       setIsRecargaModalOpen(false);
       await loadData();
       showToast(`✓ Bono recargado (+${recargaClases} clases) y cobro registrado`);
+    }
+  };
+
+  const handleProrrogarBono = async (bono: BonoAlumno) => {
+    const updated = prorrogarBono(bono, 30);
+    if (updated) {
+      logActivity({
+        origen: "recepcion",
+        tipo_evento: "edicion_alumno",
+        descripcion: `Prórroga de bono (+30 días hasta ${updated.fecha_caducidad}) para ${bono.alumno_nombre}`,
+        usuario_afectado: bono.alumno_nombre,
+        sede: bono.sede === "tejar" ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+      });
+      await loadData();
+      showToast(`✓ Bono prorrogado +30 días para ${bono.alumno_nombre} (Vence: ${updated.fecha_caducidad})`);
     }
   };
 
@@ -1081,6 +1100,14 @@ export default function AdminVentajasPage() {
                                 🎟️ Canjear 1 Clase
                               </button>
                             )}
+
+                            <button
+                              onClick={() => handleProrrogarBono(bono)}
+                              className="px-2 py-1 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 text-[11px] font-bold transition-colors cursor-pointer"
+                              title="Extender la caducidad del bono 30 días más"
+                            >
+                              ⏱️ +30 Días
+                            </button>
 
                             <button
                               onClick={() => handleOpenRecarga(bono)}
