@@ -384,12 +384,20 @@ export function getOpenClassReservas(): OpenClassReserva[] {
   }
 }
 
-export function saveOpenClassReservas(reservas: OpenClassReserva[]): void {
+export function saveOpenClassReservas(reservas: OpenClassReserva[], options?: { silentBroadcast?: boolean }): void {
   if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(reservas));
+    const serialized = JSON.stringify(reservas);
+    const existing = localStorage.getItem(STORAGE_KEY);
+    if (existing === serialized) {
+      // Sin cambios: evitar escrituras innecesarias y bucles de re-renderizado
+      return;
+    }
+    localStorage.setItem(STORAGE_KEY, serialized);
     window.dispatchEvent(new Event("df_reservas_updated"));
-    publishSyncEvent("df_reservas_updated");
+    if (!options?.silentBroadcast) {
+      publishSyncEvent("df_reservas_updated");
+    }
   } catch (e) {
     console.error("Error saving openclass reservas:", e);
   }
@@ -1085,7 +1093,7 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
       }
     }
 
-    saveOpenClassReservas(merged);
+    saveOpenClassReservas(merged, { silentBroadcast: true });
     return getOpenClassReservas();
   } catch (err) {
     console.error("Error in syncReservasFromSupabase:", err);
