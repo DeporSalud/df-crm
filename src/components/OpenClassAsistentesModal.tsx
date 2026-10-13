@@ -23,7 +23,8 @@ import {
   syncReservasFromSupabase,
   isReservaCancelable,
   getTodayISO,
-  deleteAlumnosClasesBySessionDate
+  deleteAlumnosClasesBySessionDate,
+  normalizeSede
 } from "@/lib/openClassService";
 import { publishSyncEvent } from "@/lib/syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
@@ -89,41 +90,94 @@ export default function OpenClassAsistentesModal({
 
   const loadReservas = async () => {
     if (!clase || !currentCalendarDay) return;
+    setIsLoading(true);
     
     // Sync latest data from Supabase
     await syncReservasFromSupabase();
 
+    const classUUID = normalizeClaseId(clase.id);
+    const dateISO = currentCalendarDay.dateISO;
+
+    try {
+      // Query Supabase directly for 100% live consistency in reception
+      const { data: directAc, error: directAcErr } = await supabase
+        .from("alumnos_clases")
+        .select(`
+          id,
+          alumno_id,
+          clase_id,
+          asignado_en,
+          alumnos (
+            id,
+            nombre_completo,
+            email,
+            telefono,
+            dni,
+            plan_activo
+          )
+        `)
+        .eq("clase_id", classUUID)
+        .gte("asignado_en", `${dateISO}T00:00:00`)
+        .lte("asignado_en", `${dateISO}T23:59:59.999Z`);
+
+      const { data: asData } = await supabase
+        .from("asistencias")
+        .select("alumno_id, fecha_hora")
+        .eq("clase_id", classUUID)
+        .gte("fecha_hora", `${dateISO}T00:00:00`)
+        .lte("fecha_hora", `${dateISO}T23:59:59.999Z`);
+
+      const attendedSet = new Set((asData || []).map((a: any) => a.alumno_id));
+
+      if (!directAcErr && directAc) {
+        const dayCap = currentCalendarDay.dayName.charAt(0) + currentCalendarDay.dayName.slice(1).toLowerCase();
+        const directList: OpenClassReserva[] = directAc.map((row: any) => {
+          const a = row.alumnos || {};
+          const isAttended = attendedSet.has(row.alumno_id);
+          return {
+            id: row.id && String(row.id).startsWith("res_") ? row.id : `res_sb_${row.alumno_id}_${classUUID}_${dateISO}`,
+            alumno_id: row.alumno_id,
+            alumno_nombre: a.nombre_completo || "Alumno",
+            alumno_email: a.email || "",
+            alumno_telefono: a.telefono || "",
+            alumno_dni: a.dni || "",
+            alumno_plan: a.plan_activo || "Bono Open Class",
+            clase_id: classUUID,
+            nombre_clase: clase.nombre_clase,
+            profesor: clase.profesor,
+            sede: normalizeSede(clase.sede || "castilla"),
+            sala: clase.sala || "Sala 1",
+            fecha_iso: dateISO,
+            fecha_formateada: `${dayCap} ${currentCalendarDay.dayNumber} de ${currentCalendarDay.monthName}`,
+            dia_semana: currentCalendarDay.dayName,
+            hora_inicio: clase.hora_inicio || "19:00",
+            hora_fin: clase.hora_fin || "20:00",
+            creado_en: row.asignado_en || new Date().toISOString(),
+            estado: isAttended ? "Asistida" : "Confirmada",
+            asistido: isAttended
+          };
+        });
+
+        // Merge with local reservations
+        const localList = getReservasPorClaseYSesion(clase.id, dateISO);
+        const mergedList = [...directList];
+        for (const loc of localList) {
+          if (!mergedList.some(m => m.alumno_id === loc.alumno_id)) {
+            mergedList.push(loc);
+          }
+        }
+
+        setReservas(mergedList);
+        setIsLoading(false);
+        return;
+      }
+    } catch (e) {
+      console.warn("Direct query failed, fallback to local:", e);
+    }
+
     const list = getReservasPorClaseYSesion(clase.id, currentCalendarDay.dateISO);
     setReservas(list);
-
-    // Asynchronously enrich with latest student data from Supabase if students modified profile
-    const studentIds = list.map(r => r.alumno_id).filter(Boolean);
-    if (studentIds.length > 0) {
-      try {
-        const { data: latestStudents } = await supabase
-          .from("alumnos")
-          .select("id, nombre_completo, email, telefono, dni, plan_activo")
-          .in("id", studentIds);
-
-        if (latestStudents && latestStudents.length > 0) {
-          const map = new Map(latestStudents.map(s => [s.id, s]));
-          setReservas(prev => prev.map(r => {
-            const s = map.get(r.alumno_id);
-            if (!s) return r;
-            return {
-              ...r,
-              alumno_nombre: s.nombre_completo || r.alumno_nombre,
-              alumno_email: s.email || r.alumno_email,
-              alumno_telefono: s.telefono || r.alumno_telefono,
-              alumno_dni: s.dni || r.alumno_dni,
-              alumno_plan: s.plan_activo || r.alumno_plan
-            };
-          }));
-        }
-      } catch (e) {
-        // Fallback to existing snapshot
-      }
-    }
+    setIsLoading(false);
   };
 
   useEffect(() => {

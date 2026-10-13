@@ -712,7 +712,8 @@ export async function deleteAlumnosClasesBySessionDate(
       .delete({ count: "exact" })
       .eq("alumno_id", alumnoId)
       .eq("clase_id", normClassId)
-      .ilike("asignado_en", `${cleanISO}%`);
+      .gte("asignado_en", `${cleanISO}T00:00:00`)
+      .lte("asignado_en", `${cleanISO}T23:59:59.999Z`);
 
     if (!errFallback && countFallback && countFallback > 0) {
       return { success: true, count: countFallback };
@@ -1014,7 +1015,9 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
       
       // Calculate session date
       let fechaISO = "";
-      if (rawDate) {
+      if (rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+        fechaISO = rawDate;
+      } else if (rawDate) {
         const calDay = createCalendarDayFromISO(rawDate);
         if (normalizeDay(calDay.dayName) === normalizeDay(diaSemana)) {
           fechaISO = rawDate;

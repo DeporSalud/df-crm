@@ -1060,9 +1060,20 @@ export default function ProfesorPortal() {
     }
 
     const hasUnlimited = (teacherStudent.plan_activo || "").toLowerCase().includes("ilimitad");
-    const remainingClasses = typeof teacherStudent.clases_restantes === "number" ? teacherStudent.clases_restantes : 0;
+    let currentBalance = typeof teacherStudent.clases_restantes === "number" ? teacherStudent.clases_restantes : 0;
 
-    if (!hasUnlimited && remainingClasses <= 0) {
+    try {
+      const { data: freshDb } = await supabase
+        .from("alumnos")
+        .select("clases_restantes, plan_activo")
+        .eq("id", teacherStudent.id)
+        .maybeSingle();
+      if (freshDb && typeof freshDb.clases_restantes === "number") {
+        currentBalance = freshDb.clases_restantes;
+      }
+    } catch {}
+
+    if (!hasUnlimited && currentBalance <= 0) {
       setModal({
         isOpen: true,
         title: "Bono Docente Requerido",
@@ -1072,8 +1083,24 @@ export default function ProfesorPortal() {
       return;
     }
 
-    if (!hasUnlimited && remainingClasses > 0) {
-      const newCount = remainingClasses - 1;
+    // Persistencia central en Supabase alumnos_clases para visualización inmediata en recepción
+    const classUUID = normalizeClaseId(clase.id);
+    const sessionISO = `${selectedCalendarDay.dateISO}T${clase.hora_inicio || "19:00"}:00.000Z`;
+    try {
+      const { error: insErr } = await supabase.from("alumnos_clases").insert([{
+        alumno_id: teacherStudent.id,
+        clase_id: classUUID,
+        asignado_en: sessionISO
+      }]);
+      if (insErr && !insErr.message?.includes("duplicate")) {
+        console.warn("Notice: teacher enrollment in alumnos_clases:", insErr);
+      }
+    } catch (err) {
+      console.warn("Notice: teacher enrollment in alumnos_clases:", err);
+    }
+
+    if (!hasUnlimited && currentBalance > 0) {
+      const newCount = currentBalance - 1;
       setTeacherStudent((prev: any) => ({ ...prev, clases_restantes: newCount }));
       try {
         await supabase
@@ -1083,19 +1110,6 @@ export default function ProfesorPortal() {
       } catch (e) {
         console.error("Error updating teacher classes:", e);
       }
-    }
-
-    // Persistencia central en Supabase alumnos_clases para visualización inmediata en recepción
-    const classUUID = normalizeClaseId(clase.id);
-    const sessionISO = `${selectedCalendarDay.dateISO}T${clase.hora_inicio || "19:00"}:00.000Z`;
-    try {
-      await supabase.from("alumnos_clases").insert([{
-        alumno_id: teacherStudent.id,
-        clase_id: classUUID,
-        asignado_en: sessionISO
-      }]);
-    } catch (err) {
-      console.warn("Notice: teacher enrollment in alumnos_clases:", err);
     }
 
     crearReservaOpenClass({
@@ -1142,7 +1156,8 @@ export default function ProfesorPortal() {
         .delete()
         .eq("alumno_id", teacherStudent.id)
         .eq("clase_id", classUUID)
-        .ilike("asignado_en", `${cleanISO}%`);
+        .gte("asignado_en", `${cleanISO}T00:00:00`)
+        .lte("asignado_en", `${cleanISO}T23:59:59.999Z`);
     } catch (e) {
       console.warn("Error deleting teacher enrollment from alumnos_clases:", e);
     }
