@@ -314,6 +314,14 @@ export default function AlumnosPage() {
   const handleOpenEdit = async (student: any) => {
     setIsEditing(true);
     setEditingId(student.id);
+
+    // Fetch fresh student row from Supabase to prevent overwriting live clases_restantes with stale UI state
+    const { data: freshStudentRow } = await supabase
+      .from("alumnos")
+      .select("*")
+      .eq("id", student.id)
+      .maybeSingle();
+    const liveStudent = freshStudentRow ? { ...student, ...freshStudentRow } : student;
     
     // Fetch all classes across sedes so all enrolled classes can be displayed
     const { data: allClases } = await supabase
@@ -329,7 +337,7 @@ export default function AlumnosPage() {
     const { data: assigned } = await supabase
       .from("alumnos_clases")
       .select("clase_id, clases_cuadrante(nombre_clase)")
-      .eq("alumno_id", student.id);
+      .eq("alumno_id", liveStudent.id);
       
     const assignedIds = assigned 
       ? assigned
@@ -339,27 +347,27 @@ export default function AlumnosPage() {
           })
           .map((a: any) => a.clase_id) 
       : [];
-    const studentIban = student.iban || getStoredIBAN(student.id);
-    const feeInfo = getStudentFee(student);
-    const rawExp = calculateBonoExpirationDate(student, bonosCaducidadMap[student.id]);
+    const studentIban = liveStudent.iban || getStoredIBAN(liveStudent.id);
+    const feeInfo = getStudentFee(liveStudent);
+    const rawExp = calculateBonoExpirationDate(liveStudent, bonosCaducidadMap[liveStudent.id]);
     const expMadridISO = rawExp ? getMadridDateISO(rawExp) : "";
 
     setFormData({
-      sede: student.sede || "tejar",
-      nombre_completo: student.nombre_completo || "",
-      telefono: student.telefono || "",
-      email: student.email || "",
-      dni: student.dni || "",
-      direccion: student.direccion || "",
+      sede: liveStudent.sede || "tejar",
+      nombre_completo: liveStudent.nombre_completo || "",
+      telefono: liveStudent.telefono || "",
+      email: liveStudent.email || "",
+      dni: liveStudent.dni || "",
+      direccion: liveStudent.direccion || "",
       iban: studentIban || "",
-      fecha_nacimiento: student.fecha_nacimiento || "",
-      tipo_alumno: (student.tipo_alumno || (student.fecha_nacimiento ? getTipoAlumnoFromBirthDate(student.fecha_nacimiento) : "adulto")) as "adulto" | "infantil",
-      plan_activo: student.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`,
+      fecha_nacimiento: liveStudent.fecha_nacimiento || "",
+      tipo_alumno: (liveStudent.tipo_alumno || (liveStudent.fecha_nacimiento ? getTipoAlumnoFromBirthDate(liveStudent.fecha_nacimiento) : "adulto")) as "adulto" | "infantil",
+      plan_activo: liveStudent.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`,
       cuota_mensual: feeInfo.cuotaBase,
-      clases_restantes: typeof student.clases_restantes === "number" ? student.clases_restantes : null,
+      clases_restantes: typeof liveStudent.clases_restantes === "number" ? liveStudent.clases_restantes : null,
       bono_caducidad: expMadridISO || "",
-      nfc_token: student.nfc_token || "",
-      estado: student.estado || "Activo",
+      nfc_token: liveStudent.nfc_token || "",
+      estado: liveStudent.estado || "Activo",
       clases_asignadas: assignedIds
     });
     setIsModalOpen(true);
@@ -518,10 +526,39 @@ export default function AlumnosPage() {
     };
 
     if (isBonoOrPromo || (typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0)) {
-      payload.clases_restantes = clases_restantes;
       if (formData.bono_caducidad && !finalPlan.toLowerCase().includes("promo") && !finalPlan.toLowerCase().includes("septiembre")) {
         payload.creado_en = subtractOneCalendarMonthMadrid(formData.bono_caducidad);
       }
+
+      // Si se está editando un alumno con bono retroactivo y el campo clases_restantes sigue en el total nominal (4, 8 o 10),
+      // descontar automáticamente las Open Classes ya reservadas desde la fecha de inicio del bono para evitar saldos inflados
+      if (isEditing && editingId && isBonoOrPromo && payload.creado_en) {
+        const nominalMatch = finalPlan.match(/(\d+)/);
+        const nominalPack = nominalMatch ? parseInt(nominalMatch[1], 10) : 0;
+        const startISO = String(payload.creado_en).slice(0, 10);
+        const todayStr = getMadridDateISO();
+
+        if (nominalPack > 0 && clases_restantes === nominalPack && startISO < todayStr) {
+          try {
+            const { data: usedRows } = await supabase
+              .from("alumnos_clases")
+              .select("id, asignado_en, clases_cuadrante(nombre_clase)")
+              .eq("alumno_id", editingId)
+              .gte("asignado_en", `${startISO}T00:00:00`);
+
+            const openUsedCount = (usedRows || []).filter((r: any) => {
+              const cname = (r.clases_cuadrante?.nombre_clase || "").toUpperCase();
+              return cname.includes("OPEN") || cname.includes("FORMACI");
+            }).length;
+
+            if (openUsedCount > 0 && openUsedCount <= nominalPack) {
+              clases_restantes = Math.max(0, nominalPack - openUsedCount);
+            }
+          } catch {}
+        }
+      }
+
+      payload.clases_restantes = clases_restantes;
     }
 
     let error: any = null;

@@ -29,6 +29,7 @@ import {
   marcarAsistenciaPorAlumnoYSesion, 
   findStudentByCodeOrText, 
   resolveClassForCheckIn,
+  reconcileBonoConsumptionOnCheckIn,
   formatSedeName 
 } from "@/lib/openClassService";
 
@@ -257,6 +258,9 @@ export default function GlobalScannerWidget() {
       if (assistError) {
         console.warn("[GlobalScanner] Nota de inserción asistencia:", assistError.message);
       }
+
+      // Conciliar consumo de bono (descuenta 1 clase si acude sin reserva previa de hoy; evita doble descuento si ya reservó)
+      await reconcileBonoConsumptionOnCheckIn(student, resolved.claseId, resolved.horaInicio);
 
       // Sincronizar asistencia en Open Class ÚNICAMENTE si la clase resuelta es una Open Class
       if (resolved.isOpenClass && resolved.claseId) {

@@ -751,6 +751,14 @@ export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ cancelad
   isAutoSuspensionProcessing = true;
 
   try {
+    // 0. Sincronizar SIEMPRE desde Supabase antes de evaluar el aforo para nunca evaluar sobre un localStorage parcial o desactualizado
+    try {
+      await syncReservasFromSupabase();
+    } catch (syncErr) {
+      console.warn("[verificarYSuspenderSesionesBajoAforo] No se pudo sincronizar con Supabase, abortando evaluación:", syncErr);
+      return { canceladasCount: 0, alumnosReembolsados: [] };
+    }
+
     // Conjunto de sesiones ya suspendidas previamente
     let suspendedSessions: string[] = [];
     try {
@@ -778,36 +786,60 @@ export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ cancelad
 
       if (reservas.length > 0 && reservas.length < OPEN_CLASS_MIN_STUDENTS) {
         const sample = reservas[0];
-        const horasRestantes = getHorasRestantesParaSesion(sample.fecha_iso, sample.hora_inicio);
+        const cleanISO = cleanDateISO(sample.fecha_iso);
+        const normClassId = normalizeClaseId(sample.clase_id);
+        const horasRestantes = getHorasRestantesParaSesion(cleanISO, sample.hora_inicio);
         
         // ÚNICAMENTE sesiones futuras dentro del margen de 5 horas previas (< 5h)
         if (horasRestantes > 0 && horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
+          // Doble verificación autoritativa directa en Supabase alumnos_clases antes de suspender
+          const { startISO, endISO } = getMadridDayRangeUTC(cleanISO);
+          const literalStart = `${cleanISO}T00:00:00.000Z`;
+          const literalEnd = `${cleanISO}T23:59:59.999Z`;
+          const minBound = startISO < literalStart ? startISO : literalStart;
+          const maxBound = endISO > literalEnd ? endISO : literalEnd;
+
+          const { data: dbSessionRows, error: dbCountErr } = await supabase
+            .from("alumnos_clases")
+            .select("id, alumno_id")
+            .eq("clase_id", normClassId)
+            .gte("asignado_en", minBound)
+            .lte("asignado_en", maxBound);
+
+          // Si hubo error de red o si en Supabase hay >= 4 alumnos reales, JAMÁS suspender la clase
+          if (dbCountErr || !dbSessionRows || dbSessionRows.length >= OPEN_CLASS_MIN_STUDENTS) {
+            continue;
+          }
+
           suspendedSet.add(sessionKey);
 
           for (const r of reservas) {
             r.estado = "Cancelada";
             r.asistido = false;
             updated = true;
-            reembolsados.push(r.alumno_nombre || r.alumno_id);
 
-            // Reembolsar 1 clase en Supabase si tiene saldo de bono y eliminar reserva de alumnos_clases de forma segura
+            // Reembolsar 1 clase en Supabase ÚNICAMENTE si la fila se elimina realmente de alumnos_clases (idempotencia multi-dispositivo)
             try {
-              const { data: st } = await supabase
-                .from("alumnos")
-                .select("id, clases_restantes, plan_activo")
-                .eq("id", r.alumno_id)
-                .maybeSingle();
-
               // Safe deletion in alumnos_clases filtered strictly by session date
-              await deleteAlumnosClasesBySessionDate(r.alumno_id, r.clase_id, sample.fecha_iso);
+              const delResult = await deleteAlumnosClasesBySessionDate(r.alumno_id, r.clase_id, cleanISO);
 
-              if (st && typeof st.clases_restantes === "number") {
-                const planLower = (st.plan_activo || "").toLowerCase();
-                const isUnlimited = planLower.includes("ilimitad");
-                if (!isUnlimited) {
-                  await supabase.from("alumnos").update({
-                    clases_restantes: st.clases_restantes + 1
-                  }).eq("id", st.id);
+              if (delResult.success && delResult.count > 0) {
+                reembolsados.push(r.alumno_nombre || r.alumno_id);
+
+                const { data: st } = await supabase
+                  .from("alumnos")
+                  .select("id, clases_restantes, plan_activo")
+                  .eq("id", r.alumno_id)
+                  .maybeSingle();
+
+                if (st && typeof st.clases_restantes === "number") {
+                  const planLower = (st.plan_activo || "").toLowerCase();
+                  const isUnlimited = planLower.includes("ilimitad");
+                  if (!isUnlimited) {
+                    await supabase.from("alumnos").update({
+                      clases_restantes: st.clases_restantes + 1
+                    }).eq("id", st.id);
+                  }
                 }
               }
             } catch (e) {
@@ -1392,17 +1424,26 @@ export async function resolveClassForCheckIn(
     return (hh || 0) * 60 + (mm || 0);
   };
 
-  // 1. COMPROBAR CLASES REGULARES MATRICULADAS HOY EN alumnos_clases
+  // 1. COMPROBAR CLASES REGULARES O RESERVAS DE HOY MATRICULADAS EN alumnos_clases
   try {
     const { data: enrollments } = await supabase
       .from("alumnos_clases")
-      .select("clase_id, clases_cuadrante(*)")
+      .select("clase_id, asignado_en, clases_cuadrante(*)")
       .eq("alumno_id", student.id);
 
     if (enrollments && enrollments.length > 0) {
       const todayClasses = enrollments
-        .map((e: any) => e.clases_cuadrante)
-        .filter((c: any) => c && (c.dia_semana || "").toUpperCase() === hoyDia);
+        .filter((e: any) => {
+          const c = e.clases_cuadrante;
+          if (!c || (c.dia_semana || "").toUpperCase() !== hoyDia) return false;
+          const isOpen = (c.nombre_clase || "").toUpperCase().includes("OPEN") || c.tipo_clase === "Open Class";
+          // Si es Open Class, SOLO cuenta como reserva de hoy si asignado_en corresponde a todayISO
+          if (isOpen && e.asignado_en) {
+            return cleanDateISO(e.asignado_en) === todayISO;
+          }
+          return true;
+        })
+        .map((e: any) => e.clases_cuadrante);
 
       let bestRegular: any = null;
       let minDistance = Infinity;
@@ -1548,7 +1589,7 @@ export async function resolveClassForCheckIn(
     } catch {}
   }
 
-  // 4. COMPROBAR CLASE REGULAR ACTIVA PARA EL HORARIO ACTUAL (Soporte Multi-Sede Universal)
+  // 4. COMPROBAR CLASE ACTIVA PARA EL HORARIO ACTUAL (Soporte Multi-Sede Universal)
   try {
     const { data: activeClasses } = await supabase
       .from("clases_cuadrante")
@@ -1564,9 +1605,8 @@ export async function resolveClassForCheckIn(
         const endMin = parseTimeToMinutes(c.hora_fin);
         const isOpen = (c.nombre_clase || "").toUpperCase().includes("OPEN") || c.tipo_clase === "Open Class";
 
-        // CRÍTICO: NUNCA asignar Open Class en el fallback de proximidad.
-        // Las Open Classes requieren reserva previa confirmada (comprobada en el paso 2).
-        if (isOpen) continue;
+        // CRÍTICO: NUNCA asignar Open Class en el fallback de proximidad a alumnos de clases regulares.
+        if (isOpen && isRegularOrUnlimited) continue;
 
         // Ventana de llegada [inicio - 50 min, fin + 20 min]
         if (currentMinutes >= (startMin - 50) && currentMinutes <= (endMin + 20)) {
@@ -1586,14 +1626,15 @@ export async function resolveClassForCheckIn(
       }
 
       if (candidate) {
+        const isCandidateOpen = (candidate.nombre_clase || "").toUpperCase().includes("OPEN") || candidate.tipo_clase === "Open Class";
         const timing = resolveClassTiming(candidate.hora_inicio, candidate.hora_fin);
         return {
           claseId: candidate.id,
           claseNombre: candidate.nombre_clase,
           profesor: candidate.profesor,
           sede: candidate.sede,
-          isRegular: true,
-          isOpenClass: false,
+          isRegular: !isCandidateOpen,
+          isOpenClass: isCandidateOpen,
           timingStatus: timing.timingStatus,
           timingMinutes: timing.timingMinutes,
           timingMessage: timing.timingMessage,
@@ -1616,6 +1657,106 @@ export async function resolveClassForCheckIn(
     timingMinutes: 0,
     timingMessage: "Acceso a instalaciones"
   };
+}
+
+/**
+ * Concilia el consumo de bono cuando un alumno con Bono ficha en el escáner de recepción:
+ * - Si el alumno YA tenía reserva confirmada para la sesión de hoy en `alumnos_clases`,
+ *   su clase ya fue descontada al reservar -> NO vuelve a descontar (evita doble descuento).
+ * - Si el alumno con Bono acude presencialmente SIN reserva previa para hoy en `alumnos_clases`,
+ *   registra su inscripción de hoy en `alumnos_clases` y descuenta 1 clase de `clases_restantes` en Supabase.
+ */
+export async function reconcileBonoConsumptionOnCheckIn(
+  student: any,
+  resolvedClaseId?: string | null,
+  horaInicio?: string | null
+): Promise<{ deducted: boolean; newBalance: number | null }> {
+  if (!student?.id) return { deducted: false, newBalance: student?.clases_restantes ?? null };
+
+  const planLower = (student.plan_activo || "").toLowerCase().trim();
+  const isRegularOrUnlimited =
+    planLower.includes("regular") ||
+    planLower.includes("mensual") ||
+    planLower.includes("ilimitad") ||
+    planLower.includes("cuota") ||
+    student.clases_restantes === null ||
+    student.clases_restantes === undefined;
+
+  if (isRegularOrUnlimited) {
+    return { deducted: false, newBalance: student.clases_restantes ?? null };
+  }
+
+  try {
+    const todayNow = new Date();
+    const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
+    const { startISO, endISO } = getMadridDayRangeUTC(todayISO);
+    const literalStart = `${todayISO}T00:00:00.000Z`;
+    const literalEnd = `${todayISO}T23:59:59.999Z`;
+    const minBound = startISO < literalStart ? startISO : literalStart;
+    const maxBound = endISO > literalEnd ? endISO : literalEnd;
+
+    // 1. Obtener saldo fresco de Supabase
+    const { data: freshStudent } = await supabase
+      .from("alumnos")
+      .select("id, clases_restantes, plan_activo")
+      .eq("id", student.id)
+      .maybeSingle();
+
+    const currentBalance = typeof freshStudent?.clases_restantes === "number"
+      ? freshStudent.clases_restantes
+      : (typeof student.clases_restantes === "number" ? student.clases_restantes : 0);
+
+    // 2. Comprobar si ya tenía reserva hoy en alumnos_clases (lo que implica que ya se descontó al reservar)
+    let acQuery = supabase
+      .from("alumnos_clases")
+      .select("id, clase_id, asignado_en")
+      .eq("alumno_id", student.id)
+      .gte("asignado_en", minBound)
+      .lte("asignado_en", maxBound);
+
+    if (resolvedClaseId) {
+      acQuery = acQuery.eq("clase_id", normalizeClaseId(resolvedClaseId));
+    }
+
+    const { data: todayBookings, error: acErr } = await acQuery;
+    if (acErr) {
+      return { deducted: false, newBalance: currentBalance };
+    }
+
+    if (todayBookings && todayBookings.length > 0) {
+      // Ya tenía reserva para esta sesión hoy -> el bono ya fue descontado al reservar
+      student.clases_restantes = currentBalance;
+      return { deducted: false, newBalance: currentBalance };
+    }
+
+    // 3. No tenía reserva previa para hoy (walk-in con bono): insertar en alumnos_clases para hoy y descontar 1 clase
+    if (resolvedClaseId) {
+      const normClassId = normalizeClaseId(resolvedClaseId);
+      const cleanHour = (horaInicio || "19:00").trim();
+      const sessionISO = `${todayISO}T${cleanHour.length === 5 ? cleanHour : "19:00"}:00+00:00`;
+      await supabase.from("alumnos_clases").insert([{
+        alumno_id: student.id,
+        clase_id: normClassId,
+        asignado_en: sessionISO
+      }]);
+    }
+
+    const updatedBalance = Math.max(0, currentBalance - 1);
+    const { error: updErr } = await supabase
+      .from("alumnos")
+      .update({ clases_restantes: updatedBalance })
+      .eq("id", student.id);
+
+    if (!updErr) {
+      student.clases_restantes = updatedBalance;
+      return { deducted: true, newBalance: updatedBalance };
+    }
+
+    return { deducted: false, newBalance: currentBalance };
+  } catch (err) {
+    console.warn("[reconcileBonoConsumptionOnCheckIn] Error:", err);
+    return { deducted: false, newBalance: student.clases_restantes ?? null };
+  }
 }
 
 export { evaluateReceptionAccess, isCuotaImpagada, dispatchAccessDenied } from "./accessControlService";

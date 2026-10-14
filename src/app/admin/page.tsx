@@ -34,6 +34,7 @@ import {
   getReservasCountForDate,
   findStudentByCodeOrText,
   resolveClassForCheckIn,
+  reconcileBonoConsumptionOnCheckIn,
   formatSedeName
 } from "@/lib/openClassService";
 import AccessDeniedOverlay from "@/components/AccessDeniedOverlay";
@@ -541,7 +542,10 @@ export default function AdminDashboardRecepcion() {
       return;
     }
 
-    // 2. Si la clase resuelta es una Open Class de hoy, sincronizar asistencia en la reserva
+    // 2. Conciliar consumo de bono (descuenta 1 clase si acude sin reserva previa de hoy; evita doble descuento si ya reservó)
+    await reconcileBonoConsumptionOnCheckIn(student, resolved.claseId, resolved.horaInicio);
+
+    // 3. Si la clase resuelta es una Open Class de hoy, sincronizar asistencia en la reserva
     if (resolved.isOpenClass && resolved.claseId) {
       const todayNow = new Date();
       const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;

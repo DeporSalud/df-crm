@@ -14,6 +14,7 @@ import {
   findStudentByCodeOrText, 
   resolveClassForCheckIn, 
   marcarAsistenciaPorAlumnoYSesion,
+  reconcileBonoConsumptionOnCheckIn,
   formatSedeName
 } from '@/lib/openClassService';
 
@@ -219,7 +220,10 @@ export default function RecepcionScanWidget({
       return;
     }
 
-    // 6. Sincronizar asistencia en Open Class si la clase resuelta es una Open Class
+    // 6. Conciliar consumo de bono (descuenta 1 clase si acude sin reserva previa de hoy; evita doble descuento si ya reservó)
+    await reconcileBonoConsumptionOnCheckIn(alumno, resolved.claseId, resolved.horaInicio);
+
+    // 7. Sincronizar asistencia en Open Class si la clase resuelta es una Open Class
     if (resolved.isOpenClass && resolved.claseId) {
       try {
         const todayNow = new Date();
@@ -233,7 +237,7 @@ export default function RecepcionScanWidget({
       }
     }
 
-    // 7. Disparar evento global de checkin
+    // 8. Disparar evento global de checkin
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('df_checkin_success', {
         detail: { alumno, resolved }
