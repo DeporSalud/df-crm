@@ -34,8 +34,10 @@ import {
   getCurrentSeason, 
   isRegularClassStudent, 
   isTeacherProfile, 
-  isMatriculaValidForCurrentSeason 
+  isMatriculaValidForCurrentSeason,
+  calculateBonoExpirationDate
 } from "@/lib/matriculaService";
+import { getEndOfDayMadrid } from "@/lib/timezones";
 import { publishSyncEvent } from "@/lib/syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
 import { studentMatchesSearchQuery } from "@/lib/identityUtils";
@@ -152,7 +154,7 @@ export default function GlobalCobroModal() {
   };
 
   // Submit Cobro
-  const handleSubmitCobro = (e: React.FormEvent) => {
+  const handleSubmitCobro = async (e: React.FormEvent) => {
     e.preventDefault();
     if (formImporte <= 0 && formConcepto.trim() === "") return;
 
@@ -177,21 +179,42 @@ export default function GlobalCobroModal() {
     if (selectedStudent?.id) {
       let addClasses = 0;
       const lower = formConcepto.toLowerCase();
-      if (lower.includes("suelta") || lower.includes("1 clase")) addClasses = 1;
-      else if (lower.includes("4")) addClasses = 4;
-      else if (lower.includes("8")) addClasses = 8;
-      else if (lower.includes("10")) addClasses = 10;
-      else if (lower.includes("ilimitad")) addClasses = 999;
+      const isBonoConcept =
+        formCategoria === "bono" ||
+        formCategoria === "clase_suelta" ||
+        (!lower.includes("mensualidad regular") &&
+          (lower.includes("bono") || lower.includes("clase suelta") || lower.includes("pase ilimitado")));
+
+      if (isBonoConcept) {
+        if (lower.includes("suelta") || /\b1\s*clase\b/.test(lower)) addClasses = 1;
+        else if (/\b16\b/.test(lower)) addClasses = 16;
+        else if (/\b12\b/.test(lower)) addClasses = 12;
+        else if (/\b10\b/.test(lower)) addClasses = 10;
+        else if (/\b8\b/.test(lower)) addClasses = 8;
+        else if (/\b4\b/.test(lower)) addClasses = 4;
+        else if (lower.includes("ilimitad")) addClasses = 999;
+      }
 
       const isTeacher = isTeacherProfile(selectedStudent) || lower.includes("docente") || (nombrePagador || "").toLowerCase().includes("docente");
       const isRegular = isRegularClassStudent(selectedStudent);
       const isMatriculaPayment = formCategoria === "matricula" || lower.includes("matrícula") || lower.includes("matricula");
-      const needsMatriculaActivation = !isTeacher && !isRegular && (isMatriculaPayment || !isMatriculaValidForCurrentSeason(selectedStudent));
+      const needsMatriculaActivation = !isTeacher && !isRegular && (isMatriculaPayment || (isBonoConcept && !isMatriculaValidForCurrentSeason(selectedStudent)));
 
       const updatePayload: Record<string, any> = {};
       if (addClasses > 0) {
-        const cur = typeof selectedStudent.clases_restantes === "number" ? selectedStudent.clases_restantes : 0;
-        updatePayload.clases_restantes = cur + addClasses;
+        const { data: freshStudent } = await supabase
+          .from("alumnos")
+          .select("*")
+          .eq("id", selectedStudent.id)
+          .maybeSingle();
+
+        const baseStudent = freshStudent || selectedStudent;
+        const rawCur = typeof baseStudent?.clases_restantes === "number" ? baseStudent.clases_restantes : 0;
+        const rawExp = calculateBonoExpirationDate(baseStudent);
+        const isCurrentExpired = Boolean(rawExp && Date.now() > getEndOfDayMadrid(rawExp).getTime());
+        const validPreviousClasses = isCurrentExpired ? 0 : Math.max(0, rawCur);
+
+        updatePayload.clases_restantes = addClasses >= 999 ? 999 : validPreviousClasses + addClasses;
         updatePayload.plan_activo = formConcepto.trim();
         updatePayload.creado_en = new Date().toISOString();
       }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import TopHeader from "@/components/layout/TopHeader";
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
@@ -295,9 +295,17 @@ export default function AlumnosPage() {
     setHistoryLoading(false);
   };
 
+  const initialEditSnapshotRef = useRef<{
+    plan_activo: string;
+    clases_restantes: number | null;
+    bono_caducidad: string;
+    clases_asignadas: string[];
+  } | null>(null);
+
   const handleOpenCreate = async () => {
     setIsEditing(false);
     setEditingId(null);
+    initialEditSnapshotRef.current = null;
 
     const { data: allClases } = await supabase
       .from("clases_cuadrante")
@@ -352,6 +360,17 @@ export default function AlumnosPage() {
     const rawExp = calculateBonoExpirationDate(liveStudent, bonosCaducidadMap[liveStudent.id]);
     const expMadridISO = rawExp ? getMadridDateISO(rawExp) : "";
 
+    const initialPlan = liveStudent.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`;
+    const initialClasesRestantes = typeof liveStudent.clases_restantes === "number" ? liveStudent.clases_restantes : null;
+    const initialBonoCaducidad = expMadridISO || "";
+
+    initialEditSnapshotRef.current = {
+      plan_activo: initialPlan,
+      clases_restantes: initialClasesRestantes,
+      bono_caducidad: initialBonoCaducidad,
+      clases_asignadas: [...assignedIds]
+    };
+
     setFormData({
       sede: liveStudent.sede || "tejar",
       nombre_completo: liveStudent.nombre_completo || "",
@@ -362,10 +381,10 @@ export default function AlumnosPage() {
       iban: studentIban || "",
       fecha_nacimiento: liveStudent.fecha_nacimiento || "",
       tipo_alumno: (liveStudent.tipo_alumno || (liveStudent.fecha_nacimiento ? getTipoAlumnoFromBirthDate(liveStudent.fecha_nacimiento) : "adulto")) as "adulto" | "infantil",
-      plan_activo: liveStudent.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`,
+      plan_activo: initialPlan,
       cuota_mensual: feeInfo.cuotaBase,
-      clases_restantes: typeof liveStudent.clases_restantes === "number" ? liveStudent.clases_restantes : null,
-      bono_caducidad: expMadridISO || "",
+      clases_restantes: initialClasesRestantes,
+      bono_caducidad: initialBonoCaducidad,
       nfc_token: liveStudent.nfc_token || "",
       estado: liveStudent.estado || "Activo",
       clases_asignadas: assignedIds
@@ -525,32 +544,64 @@ export default function AlumnosPage() {
       estado: formData.estado
     };
 
-    if (isBonoOrPromo || (typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0)) {
+    const snap = initialEditSnapshotRef.current;
+    const bonoFieldsModified =
+      !isEditing ||
+      !snap ||
+      formData.plan_activo !== snap.plan_activo ||
+      formData.clases_restantes !== snap.clases_restantes ||
+      formData.bono_caducidad !== snap.bono_caducidad;
+
+    const assignedClassesModified =
+      !isEditing ||
+      !snap ||
+      JSON.stringify([...formData.clases_asignadas].sort()) !==
+        JSON.stringify([...snap.clases_asignadas].sort());
+
+    if (bonoFieldsModified && (isBonoOrPromo || (typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0))) {
       if (formData.bono_caducidad && !finalPlan.toLowerCase().includes("promo") && !finalPlan.toLowerCase().includes("septiembre")) {
         payload.creado_en = subtractOneCalendarMonthMadrid(formData.bono_caducidad);
       }
 
-      // Si se está editando un alumno con bono retroactivo y el campo clases_restantes sigue en el total nominal (4, 8 o 10),
-      // descontar automáticamente las Open Classes ya reservadas desde la fecha de inicio del bono para evitar saldos inflados
+      // Si se está editando un alumno con bono retroactivo y el campo clases_restantes sigue en el total nominal (4, 8, 10, 12, 16),
+      // descontar automáticamente las Open Classes ya reservadas o asistidas desde la fecha de inicio del bono para evitar saldos inflados
       if (isEditing && editingId && isBonoOrPromo && payload.creado_en) {
-        const nominalMatch = finalPlan.match(/(\d+)/);
+        const nominalMatch = finalPlan.match(/\b(4|8|10|12|16)\b/);
         const nominalPack = nominalMatch ? parseInt(nominalMatch[1], 10) : 0;
         const startISO = String(payload.creado_en).slice(0, 10);
         const todayStr = getMadridDateISO();
 
-        if (nominalPack > 0 && clases_restantes === nominalPack && startISO < todayStr) {
+        if (nominalPack > 0 && clases_restantes === nominalPack && startISO <= todayStr) {
           try {
             const { data: usedRows } = await supabase
               .from("alumnos_clases")
-              .select("id, asignado_en, clases_cuadrante(nombre_clase)")
+              .select("id, clase_id, asignado_en, clases_cuadrante(nombre_clase)")
               .eq("alumno_id", editingId)
               .gte("asignado_en", `${startISO}T00:00:00`);
 
-            const openUsedCount = (usedRows || []).filter((r: any) => {
-              const cname = (r.clases_cuadrante?.nombre_clase || "").toUpperCase();
-              return cname.includes("OPEN") || cname.includes("FORMACI");
-            }).length;
+            const { data: attRows } = await supabase
+              .from("asistencias")
+              .select("id, clase_id, fecha_hora, clases_cuadrante(nombre_clase)")
+              .eq("alumno_id", editingId)
+              .gte("fecha_hora", `${startISO}T00:00:00`);
 
+            const sessionSet = new Set<string>();
+            for (const r of (usedRows || []) as any[]) {
+              const cname = (r.clases_cuadrante?.nombre_clase || "").toUpperCase();
+              if (cname.includes("OPEN") || cname.includes("FORMACI")) {
+                const d = String(r.asignado_en || "").slice(0, 10);
+                sessionSet.add(`${r.clase_id}::${d}`);
+              }
+            }
+            for (const a of (attRows || []) as any[]) {
+              const cname = (a.clases_cuadrante?.nombre_clase || "").toUpperCase();
+              if (cname.includes("OPEN") || cname.includes("FORMACI")) {
+                const d = String(a.fecha_hora || "").slice(0, 10);
+                sessionSet.add(`${a.clase_id}::${d}`);
+              }
+            }
+
+            const openUsedCount = sessionSet.size;
             if (openUsedCount > 0 && openUsedCount <= nominalPack) {
               clases_restantes = Math.max(0, nominalPack - openUsedCount);
             }
@@ -607,7 +658,7 @@ export default function AlumnosPage() {
 
     // Persist IBAN, Bono Caducidad and Fee overrides in local cache
     if (studentId) {
-      if (isBonoOrPromo && formData.bono_caducidad) {
+      if (bonoFieldsModified && isBonoOrPromo && formData.bono_caducidad) {
         const allBonos = getBonosAlumnos();
         const existingIdx = allBonos.findIndex(b => b.alumno_id === studentId);
         if (existingIdx >= 0) {
@@ -635,8 +686,8 @@ export default function AlumnosPage() {
       }
     }
 
-    // Update assigned classes (preserving Open Class session bookings)
-    if (studentId) {
+    // Update assigned classes ONLY if regular class selection changed (preserving Open Class session bookings)
+    if (studentId && assignedClassesModified) {
       try {
         // Fetch open class IDs to prevent deleting them
         const { data: openClasses } = await supabase
@@ -744,6 +795,8 @@ export default function AlumnosPage() {
   };
 
   const displayedModalClasses = availableClasses.filter(c => {
+    const cname = (c.nombre_clase || "").toUpperCase();
+    if (cname.includes("OPEN") || cname.includes("FORMACI")) return false;
     if (modalSedeFilter === "tejar") return c.sede === "tejar";
     if (modalSedeFilter === "castilla") return c.sede === "castilla";
     return true;

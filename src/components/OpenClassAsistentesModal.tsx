@@ -158,16 +158,7 @@ export default function OpenClassAsistentesModal({
           };
         });
 
-        // Merge with local reservations
-        const localList = getReservasPorClaseYSesion(clase.id, dateISO);
-        const mergedList = [...directList];
-        for (const loc of localList) {
-          if (!mergedList.some(m => m.alumno_id === loc.alumno_id)) {
-            mergedList.push(loc);
-          }
-        }
-
-        setReservas(mergedList);
+        setReservas(directList);
         setIsLoading(false);
         return;
       }
@@ -197,8 +188,7 @@ export default function OpenClassAsistentesModal({
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         if (!clase || !currentCalendarDay) return;
-        const list = getReservasPorClaseYSesion(clase.id, currentCalendarDay.dateISO);
-        setReservas(list);
+        loadReservas();
       }, 500);
     };
     window.addEventListener("df_reservas_updated", handleUpdated);
@@ -364,9 +354,20 @@ export default function OpenClassAsistentesModal({
     setConfirmCancelModal({ isOpen: false, reserva: null });
 
     try {
-      // 1. Cancel in service (allowing admin bypass for reception staff)
-      const didCancel = cancelarReservaOpenClass(reserva.id, { allowUnder24h: true });
-      if (!didCancel) {
+      // 1. Delete specific session enrollment in alumnos_clases FIRST and check count > 0
+      let deletedInDb = false;
+      if (reserva.alumno_id && reserva.clase_id && reserva.fecha_iso) {
+        const delResult = await deleteAlumnosClasesBySessionDate(
+          reserva.alumno_id,
+          reserva.clase_id,
+          reserva.fecha_iso
+        );
+        deletedInDb = Boolean(delResult.success && delResult.count > 0);
+      }
+
+      // 2. Cancel in local cache (allowing admin bypass for reception staff)
+      const didCancelLocal = cancelarReservaOpenClass(reserva.id, { allowUnder24h: true });
+      if (!deletedInDb && !didCancelLocal) {
         setStatusMessage({
           type: "error",
           text: `La reserva de ${reserva.alumno_nombre} ya figuraba como cancelada. No se ha modificado el saldo.`
@@ -375,8 +376,8 @@ export default function OpenClassAsistentesModal({
         return;
       }
 
-      // 2. Reintegrate class to student's balance in Supabase
-      if (reserva.alumno_id) {
+      // 3. Reintegrate class to student's balance in Supabase ONLY if deletedInDb confirmed row removal
+      if (reserva.alumno_id && deletedInDb) {
         const { data: studentDB } = await supabase
           .from("alumnos")
           .select("*")
@@ -396,24 +397,11 @@ export default function OpenClassAsistentesModal({
               .eq("id", studentDB.id);
           }
         }
-
-        // Clean up specific session enrollment in alumnos_clases safely
-        try {
-          if (reserva.alumno_id && reserva.clase_id && reserva.fecha_iso) {
-            await deleteAlumnosClasesBySessionDate(
-              reserva.alumno_id,
-              reserva.clase_id,
-              reserva.fecha_iso
-            );
-          }
-        } catch (e) {
-          console.warn("Could not delete from alumnos_clases:", e);
-        }
-
-        publishSyncEvent("df_reservas_updated");
       }
 
-      // 3. Log activity
+      publishSyncEvent("df_reservas_updated");
+
+      // 4. Log activity
       logActivity({
         origen: "recepcion",
         tipo_evento: "cancelacion_reserva",
@@ -483,19 +471,42 @@ export default function OpenClassAsistentesModal({
         return;
       }
 
-      // Create reservation
-      crearReservaOpenClass({
-        alumno_id: selectedStudentToAdd.id,
-        alumno_nombre: selectedStudentToAdd.nombre_completo,
-        alumno_email: selectedStudentToAdd.email,
-        alumno_telefono: selectedStudentToAdd.telefono,
-        alumno_dni: selectedStudentToAdd.dni,
-        alumno_plan: selectedStudentToAdd.plan_activo,
-        clase,
-        calendarDay: currentCalendarDay
-      });
+      // 1. Insert into alumnos_clases in Supabase FIRST
+      const classUUID = normalizeClaseId(clase.id);
+      const sessionDate = (currentCalendarDay?.dateISO || "2026-09-14").trim();
+      const sessionHour = (clase.hora_inicio || "19:00").trim();
+      const sessionISO = `${sessionDate}T${sessionHour}:00.000Z`;
 
-      // Deduct class if not unlimited
+      const { data: existingLink } = await supabase
+        .from("alumnos_clases")
+        .select("id")
+        .eq("alumno_id", selectedStudentToAdd.id)
+        .eq("clase_id", classUUID)
+        .gte("asignado_en", `${sessionDate}T00:00:00`)
+        .lte("asignado_en", `${sessionDate}T23:59:59`)
+        .maybeSingle();
+
+      if (existingLink) {
+        playSound(false);
+        setStatusMessage({
+          type: "error",
+          text: `El alumno ${selectedStudentToAdd.nombre_completo} ya figura inscrito en esta sesión en la base de datos.`
+        });
+        setIsSubmittingAdd(false);
+        return;
+      }
+
+      const { error: insertLinkErr } = await supabase.from("alumnos_clases").insert([{
+        alumno_id: selectedStudentToAdd.id,
+        clase_id: classUUID,
+        asignado_en: sessionISO
+      }]);
+
+      if (insertLinkErr) {
+        throw new Error(insertLinkErr.message || "Error al insertar la inscripción en Supabase.");
+      }
+
+      // 2. Deduct class if not unlimited ONLY AFTER alumnos_clases insert succeeded
       if (!isUnlimited) {
         const { data: freshDbS } = await supabase
           .from("alumnos")
@@ -513,30 +524,17 @@ export default function OpenClassAsistentesModal({
           .eq("id", selectedStudentToAdd.id);
       }
 
-      // Sync with alumnos_clases in Supabase if not already linked
-      try {
-        const classUUID = normalizeClaseId(clase.id);
-        const sessionDate = (currentCalendarDay?.dateISO || "2026-09-14").trim();
-        const sessionHour = (clase.hora_inicio || "19:00").trim();
-        const sessionISO = `${sessionDate}T${sessionHour}:00.000Z`;
-
-        const { data: existingLink } = await supabase
-          .from("alumnos_clases")
-          .select("id")
-          .eq("alumno_id", selectedStudentToAdd.id)
-          .eq("clase_id", classUUID)
-          .gte("asignado_en", `${sessionDate}T00:00:00`)
-          .lte("asignado_en", `${sessionDate}T23:59:59`)
-          .maybeSingle();
-
-        if (!existingLink) {
-          await supabase.from("alumnos_clases").insert([{
-            alumno_id: selectedStudentToAdd.id,
-            clase_id: classUUID,
-            asignado_en: sessionISO
-          }]);
-        }
-      } catch (e) {}
+      // 3. Create local reservation cache
+      crearReservaOpenClass({
+        alumno_id: selectedStudentToAdd.id,
+        alumno_nombre: selectedStudentToAdd.nombre_completo,
+        alumno_email: selectedStudentToAdd.email,
+        alumno_telefono: selectedStudentToAdd.telefono,
+        alumno_dni: selectedStudentToAdd.dni,
+        alumno_plan: selectedStudentToAdd.plan_activo,
+        clase,
+        calendarDay: currentCalendarDay
+      });
 
       playSound(true);
       setStatusMessage({

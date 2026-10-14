@@ -102,7 +102,10 @@ export function isCuotaImpagada(student: any): boolean {
  * Evaluates student access eligibility.
  * Adheres strictly to Requirement R1.1, PROJECT.md contracts, and e2e-tests.
  */
-export function evaluateReceptionAccess(student: any): AccessEvaluationResult {
+export function evaluateReceptionAccess(
+  student: any,
+  options?: { resolvedClassId?: string }
+): AccessEvaluationResult {
   // 1. Check if student exists
   if (!student) {
     return {
@@ -142,10 +145,24 @@ export function evaluateReceptionAccess(student: any): AccessEvaluationResult {
 
   // 4. Normalize and check plan status
   const planLower = (student.plan_activo || "").toLowerCase().trim();
+  const isExplicitRegularPlan = Boolean(
+    student.es_alumno_regular === true ||
+    planLower.includes("regular") ||
+    planLower.includes("mensual") ||
+    planLower.includes("ilimitad") ||
+    planLower.includes("cuota")
+  );
+  const isExplicitBonoPlan =
+    !isExplicitRegularPlan &&
+    (planLower.includes("bono") ||
+      planLower.includes("suelta") ||
+      planLower.includes("pack") ||
+      planLower.includes("promo"));
+
   const hasEnrolledClasses = Boolean(
     student.es_alumno_regular === true ||
-    (Array.isArray(student.alumnos_clases) && student.alumnos_clases.length > 0) ||
-    (Array.isArray(student.clases) && student.clases.length > 0)
+    (!isExplicitBonoPlan && Array.isArray(student.alumnos_clases) && student.alumnos_clases.length > 0) ||
+    (!isExplicitBonoPlan && Array.isArray(student.clases) && student.clases.length > 0)
   );
 
   const sinPlan = 
@@ -160,25 +177,44 @@ export function evaluateReceptionAccess(student: any): AccessEvaluationResult {
   // 5. Determine if student is on a bono or regular membership
   const isRegularOrUnlimited = 
     hasEnrolledClasses ||
-    planLower.includes("regular") || 
-    planLower.includes("mensual") || 
-    planLower.includes("ilimitad") || 
-    planLower.includes("cuota") ||
-    student.clases_restantes === null;
+    isExplicitRegularPlan ||
+    (!isExplicitBonoPlan && student.clases_restantes === null);
 
   const isBono = 
     !isRegularOrUnlimited && (
-      planLower.includes("bono") || 
-      planLower.includes("suelta") || 
-      planLower.includes("pack") ||
+      isExplicitBonoPlan ||
       (student.clases_restantes !== null && student.clases_restantes !== undefined)
     );
 
-  // 6. Check for exhausted bono (saldo <= 0) - ONLY for genuine bono students, NEVER for regular students
+  // 6. Check for expired or exhausted bono (saldo <= 0 without a pre-booked Open Class for today in Europe/Madrid)
+  const todayMadridISO = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Madrid",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+
+  const hasPreBookedToday = Boolean(
+    Array.isArray(student.alumnos_clases) &&
+    student.alumnos_clases.some(
+      (ac: any) =>
+        String(ac?.asignado_en || "").slice(0, 10) === todayMadridISO &&
+        (!options?.resolvedClassId || ac?.clase_id === options.resolvedClassId)
+    )
+  );
+
+  const expStr = String(student.bono_caducidad || student.fecha_caducidad_bono || "").trim().slice(0, 10);
+  const isPromoSeptiembre = planLower.includes("septiembre") || planLower.includes("promo sep");
+  const isBonoCaducado = isBono && (
+    (isPromoSeptiembre && todayMadridISO > "2026-09-30") ||
+    (/^\d{4}-\d{2}-\d{2}$/.test(expStr) && expStr < todayMadridISO)
+  );
+
   const bonoAgotado = isBono && (
-    student.clases_restantes === null || 
-    student.clases_restantes === undefined || 
-    student.clases_restantes <= 0
+    isBonoCaducado ||
+    ((student.clases_restantes === null || 
+      student.clases_restantes === undefined || 
+      student.clases_restantes <= 0) && !hasPreBookedToday)
   );
 
   if (sinPlan) {
@@ -198,8 +234,12 @@ export function evaluateReceptionAccess(student: any): AccessEvaluationResult {
       reason: "BONO_AGOTADO",
       overlayColor: "red",
       sound: "sawtooth",
-      message: `⛔ ACCESO DENEGADO: ${student.nombre_completo} está con BONO AGOTADO (0 clases restantes). Pasar por mostrador de recepción`,
-      motivoDetallado: `BONO AGOTADO (0 clases restantes en ${student.plan_activo || "Bono"})`
+      message: isBonoCaducado
+        ? `⛔ ACCESO DENEGADO: ${student.nombre_completo} tiene el BONO CADUCADO (${expStr || "vencido"}). Pasar por mostrador de recepción`
+        : `⛔ ACCESO DENEGADO: ${student.nombre_completo} está con BONO AGOTADO (0 clases restantes). Pasar por mostrador de recepción`,
+      motivoDetallado: isBonoCaducado
+        ? `BONO CADUCADO (${student.plan_activo || "Bono"})`
+        : `BONO AGOTADO (0 clases restantes en ${student.plan_activo || "Bono"})`
     };
   }
 

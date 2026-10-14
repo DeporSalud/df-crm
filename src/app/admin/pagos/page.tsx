@@ -37,8 +37,10 @@ import {
   isRegularClassStudent, 
   isTeacherProfile, 
   getCurrentSeason, 
-  isMatriculaValidForCurrentSeason 
+  isMatriculaValidForCurrentSeason,
+  calculateBonoExpirationDate
 } from "@/lib/matriculaService";
+import { getEndOfDayMadrid } from "@/lib/timezones";
 import { 
   PagoTransaccion, 
   MetodoCobro, 
@@ -226,7 +228,19 @@ export default function PagosYFacturacionPage() {
     }
 
     if (studentDB) {
-      const currentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
+      const dbPlanStr = String(studentDB.plan_activo || "").toLowerCase();
+      const dbEstadoStr = String(studentDB.estado || "").toLowerCase();
+      if (!dbPlanStr.includes("pendiente") && !dbEstadoStr.includes("pendiente")) {
+        setPendingRequests(prev => prev.filter(r => r.id !== req.id && r.student_id !== req.student_id));
+        loadData();
+        return;
+      }
+
+      const rawCurrentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
+      const rawExp = calculateBonoExpirationDate(studentDB);
+      const isExpired = Boolean(rawExp && Date.now() > getEndOfDayMadrid(rawExp).getTime());
+      const currentClasses = isExpired ? 0 : Math.max(0, rawCurrentClasses);
+
       const cleanPlan = (req.bono_nombre || "").replace(/\s*\(\+[0-9,.]+\s*€?\s*Matr[ií]cula\)/gi, "").trim();
       const isTeacher = isTeacherProfile(studentDB) || (req.bono_nombre || "").toLowerCase().includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
       const isFirstPurchase = !isTeacher && !isRegularClassStudent(studentDB) && (
@@ -238,7 +252,7 @@ export default function PagosYFacturacionPage() {
 
       const updateData: Record<string, any> = {
         plan_activo: cleanPlan || req.bono_nombre,
-        clases_restantes: currentClasses + clasesToAdd,
+        clases_restantes: clasesToAdd >= 999 ? 999 : currentClasses + clasesToAdd,
         creado_en: new Date().toISOString()
       };
       if (isFirstPurchase) {
@@ -252,7 +266,7 @@ export default function PagosYFacturacionPage() {
         console.warn("[Pagos] Supabase table doesn't have matricula columns yet, falling back:", updateErr.message);
         const { error: fallbackErr } = await supabase.from("alumnos").update({
           plan_activo: cleanPlan || req.bono_nombre,
-          clases_restantes: currentClasses + clasesToAdd,
+          clases_restantes: clasesToAdd >= 999 ? 999 : currentClasses + clasesToAdd,
           creado_en: new Date().toISOString()
         }).eq("id", studentDB.id);
         if (fallbackErr) {

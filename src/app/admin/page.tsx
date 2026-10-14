@@ -10,7 +10,8 @@ import { logActivity } from "@/lib/activityLogger";
 import { registrarNuevoPago, cobrarPagoPendiente } from "@/lib/pagosService";
 import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
 import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
-import { isRegularClassStudent, isTeacherProfile } from "@/lib/matriculaService";
+import { isRegularClassStudent, isTeacherProfile, calculateBonoExpirationDate } from "@/lib/matriculaService";
+import { getEndOfDayMadrid } from "@/lib/timezones";
 import { 
   Calendar, Users, Clock, Sparkles, CheckCircle2, ChevronRight, 
   CalendarDays, Flame, Building2, Edit3, Camera 
@@ -453,7 +454,7 @@ export default function AdminDashboardRecepcion() {
       
       let query = supabase
         .from("alumnos")
-        .select("*")
+        .select("*, alumnos_clases(clase_id, asignado_en, clases_cuadrante(id, nombre_clase, dia_semana, hora_inicio, sede))")
         .or(`nombre_completo.ilike.%${manualSearch}%,dni.ilike.%${manualSearch}%`)
         .limit(5);
         
@@ -691,19 +692,23 @@ export default function AdminDashboardRecepcion() {
 
     // 2. Clear pending status & add remaining classes in Supabase
     if (studentDB) {
-      const currentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
+      const dbPlanStr = String(studentDB.plan_activo || "").toLowerCase();
+      const dbEstadoStr = String(studentDB.estado || "").toLowerCase();
+      if (!dbPlanStr.includes("pendiente") && !dbEstadoStr.includes("pendiente")) {
+        setPendingBonoRequests(prev => prev.filter(r => r.id !== req.id && r.student_id !== req.student_id));
+        return;
+      }
+
+      const rawCurrentClasses = typeof studentDB.clases_restantes === "number" ? studentDB.clases_restantes : 0;
+      const rawExp = calculateBonoExpirationDate(studentDB);
+      const isExpired = Boolean(rawExp && Date.now() > getEndOfDayMadrid(rawExp).getTime());
+      const currentClasses = isExpired ? 0 : Math.max(0, rawCurrentClasses);
+
       const cleanPlan = (req.bono_nombre || "").replace(/\s*\(\+[0-9,.]+\s*€?\s*Matr[ií]cula\)/gi, "").trim();
-      const isTeacher = isTeacherProfile(studentDB) || (req.bono_nombre || "").toLowerCase().includes("docente") || (req.student_name || "").toLowerCase().includes("docente");
-      const isFirstPurchase = !isTeacher && !isRegularClassStudent(studentDB) && (
-        req.bono_nombre?.includes("Matrícula") || 
-        req.bono_nombre?.includes("Matricula") || 
-        req.is_first_bono || 
-        !studentDB.matricula_pagada
-      );
 
       const updateData: Record<string, any> = {
         plan_activo: cleanPlan || req.bono_nombre,
-        clases_restantes: currentClasses + clasesToAdd,
+        clases_restantes: clasesToAdd >= 999 ? 999 : currentClasses + clasesToAdd,
         creado_en: new Date().toISOString()
       };
 

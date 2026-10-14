@@ -966,9 +966,10 @@ export default function ProfesorPortal() {
           return;
         }
 
-        const isPrepaidOpenClass = isOpenClass(selectedClase) || Boolean(student.reserva_id);
+        const isOpenCls = isOpenClass(selectedClase);
+        const isPrepaidOpenClass = Boolean(student.reserva_id);
 
-        if (!isRegular && !isPrepaidOpenClass && typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
+        if (isOpenCls && !isRegular && !isPrepaidOpenClass && typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
           const newBalance = Math.max(0, student.clases_restantes - 1);
           await supabase
             .from("alumnos")
@@ -1020,7 +1021,7 @@ export default function ProfesorPortal() {
 
   // 5. Booking Open Class as a Teacher
   const handleTeacherOpenClassBooking = async (clase: any) => {
-    if (!teacherStudent?.id) return;
+    if (!teacherStudent?.id || savingId) return;
 
     if (!isOpenClass(clase)) {
       setModal({
@@ -1059,153 +1060,176 @@ export default function ProfesorPortal() {
       return;
     }
 
-    const hasUnlimited = (teacherStudent.plan_activo || "").toLowerCase().includes("ilimitad");
-    let currentBalance = typeof teacherStudent.clases_restantes === "number" ? teacherStudent.clases_restantes : 0;
-
+    setSavingId(clase.id);
     try {
-      const { data: freshDb } = await supabase
-        .from("alumnos")
-        .select("clases_restantes, plan_activo")
-        .eq("id", teacherStudent.id)
-        .maybeSingle();
-      if (freshDb && typeof freshDb.clases_restantes === "number") {
-        currentBalance = freshDb.clases_restantes;
+      const hasUnlimited = (teacherStudent.plan_activo || "").toLowerCase().includes("ilimitad");
+      let currentBalance = typeof teacherStudent.clases_restantes === "number" ? teacherStudent.clases_restantes : 0;
+
+      try {
+        const { data: freshDb } = await supabase
+          .from("alumnos")
+          .select("clases_restantes, plan_activo")
+          .eq("id", teacherStudent.id)
+          .maybeSingle();
+        if (freshDb && typeof freshDb.clases_restantes === "number") {
+          currentBalance = freshDb.clases_restantes;
+        }
+      } catch {}
+
+      if (!hasUnlimited && currentBalance <= 0) {
+        setModal({
+          isOpen: true,
+          title: "Bono Docente Requerido",
+          message: "No dispones de saldo de clases en tu Bono Docente para reservar esta Open Class. Puedes solicitar una recarga con 10% de descuento en la pestaña 'Comprar Bono'.",
+          type: "warning"
+        });
+        return;
       }
-    } catch {}
 
-    if (!hasUnlimited && currentBalance <= 0) {
-      setModal({
-        isOpen: true,
-        title: "Bono Docente Requerido",
-        message: "No dispones de saldo de clases en tu Bono Docente para reservar esta Open Class. Puedes solicitar una recarga con 10% de descuento en la pestaña 'Comprar Bono'.",
-        type: "warning"
-      });
-      return;
-    }
+      const classUUID = normalizeClaseId(clase.id);
+      const cleanDate = cleanDateISO(selectedCalendarDay.dateISO);
+      const sessionISO = `${cleanDate}T${clase.hora_inicio || "19:00"}:00.000Z`;
 
-    // Persistencia central en Supabase alumnos_clases para visualización inmediata en recepción
-    const classUUID = normalizeClaseId(clase.id);
-    const sessionISO = `${selectedCalendarDay.dateISO}T${clase.hora_inicio || "19:00"}:00.000Z`;
-    try {
+      const { data: existingRow } = await supabase
+        .from("alumnos_clases")
+        .select("id")
+        .eq("alumno_id", teacherStudent.id)
+        .eq("clase_id", classUUID)
+        .gte("asignado_en", `${cleanDate}T00:00:00`)
+        .lte("asignado_en", `${cleanDate}T23:59:59.999Z`)
+        .maybeSingle();
+
+      if (existingRow) {
+        setModal({
+          isOpen: true,
+          title: "ℹ️ Ya Inscrito",
+          message: "Ya tienes una plaza reservada para esta sesión.",
+          type: "info"
+        });
+        return;
+      }
+
+      // Persistencia central en Supabase alumnos_clases PRIMERO
       const { error: insErr } = await supabase.from("alumnos_clases").insert([{
         alumno_id: teacherStudent.id,
         clase_id: classUUID,
         asignado_en: sessionISO
       }]);
-      if (insErr && !insErr.message?.includes("duplicate")) {
-        console.warn("Notice: teacher enrollment in alumnos_clases:", insErr);
+      if (insErr) {
+        throw new Error(insErr.message || "Error al registrar la reserva en base de datos.");
       }
-    } catch (err) {
-      console.warn("Notice: teacher enrollment in alumnos_clases:", err);
-    }
 
-    if (!hasUnlimited && currentBalance > 0) {
-      const newCount = currentBalance - 1;
-      setTeacherStudent((prev: any) => ({ ...prev, clases_restantes: newCount }));
-      try {
+      if (!hasUnlimited && currentBalance > 0) {
+        const newCount = currentBalance - 1;
+        setTeacherStudent((prev: any) => ({ ...prev, clases_restantes: newCount }));
         await supabase
           .from("alumnos")
           .update({ clases_restantes: newCount })
           .eq("id", teacherStudent.id);
-      } catch (e) {
-        console.error("Error updating teacher classes:", e);
       }
+
+      crearReservaOpenClass({
+        alumno_id: teacherStudent.id,
+        alumno_nombre: `${selectedProfesor} (Docente)`,
+        clase,
+        calendarDay: selectedCalendarDay
+      });
+
+      setTeacherEnrolledClassIds(prev => Array.from(new Set([...prev, clase.id, classUUID])));
+      setOpenClassReservasVersion(v => v + 1);
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("df_reservas_updated"));
+      }
+
+      logActivity({
+        origen: "profesor",
+        tipo_evento: "asistencia_profesor",
+        descripcion: `Docente ${selectedProfesor} reservó plaza en ${clase.nombre_clase} con ${clase.profesor} para el ${selectedCalendarDay.dayName} ${selectedCalendarDay.dayNumber} de ${selectedCalendarDay.monthName}`,
+        usuario_afectado: selectedProfesor,
+        sede: isStudio1(clase.sede) ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
+      });
+
+      setModal({
+        isOpen: true,
+        title: "✓ Plaza Reservada con Éxito",
+        message: `Te has inscrito correctamente en ${clase.nombre_clase} con ${clase.profesor}.\n\n📅 Fecha: ${selectedCalendarDay.dayName} ${selectedCalendarDay.dayNumber} de ${selectedCalendarDay.monthName}\n⏰ Horario: ${clase.hora_inicio} - ${clase.hora_fin}h\n🚪 Sala: ${clase.sala || "Sala Principal"}\n\nYa apareces en la lista de asistencia del docente titular para esa sesión y en recepción.`,
+        type: "success"
+      });
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        title: "No se pudo completar la reserva",
+        message: err.message || "Error al procesar la reserva.",
+        type: "warning"
+      });
+    } finally {
+      setSavingId(null);
     }
-
-    crearReservaOpenClass({
-      alumno_id: teacherStudent.id,
-      alumno_nombre: `${selectedProfesor} (Docente)`,
-      clase,
-      calendarDay: selectedCalendarDay
-    });
-
-    setTeacherEnrolledClassIds(prev => Array.from(new Set([...prev, clase.id, classUUID])));
-    setOpenClassReservasVersion(v => v + 1);
-
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event("df_reservas_updated"));
-    }
-
-    logActivity({
-      origen: "profesor",
-      tipo_evento: "asistencia_profesor",
-      descripcion: `Docente ${selectedProfesor} reservó plaza en ${clase.nombre_clase} con ${clase.profesor} para el ${selectedCalendarDay.dayName} ${selectedCalendarDay.dayNumber} de ${selectedCalendarDay.monthName}`,
-      usuario_afectado: selectedProfesor,
-      sede: isStudio1(clase.sede) ? "Studio 1 Plaza El Tejar" : "Studio 2 Paseo Castilla"
-    });
-
-    setModal({
-      isOpen: true,
-      title: "✓ Plaza Reservada con Éxito",
-      message: `Te has inscrito correctamente en ${clase.nombre_clase} con ${clase.profesor}.\n\n📅 Fecha: ${selectedCalendarDay.dayName} ${selectedCalendarDay.dayNumber} de ${selectedCalendarDay.monthName}\n⏰ Horario: ${clase.hora_inicio} - ${clase.hora_fin}h\n🚪 Sala: ${clase.sala || "Sala Principal"}\n\nYa apareces en la lista de asistencia del docente titular para esa sesión y en recepción.`,
-      type: "success"
-    });
   };
 
   // Cancel Booking as a Teacher
   const handleTeacherCancelBooking = async (clase: any) => {
-    if (!teacherStudent?.id) return;
-    const all = getOpenClassReservas();
-    const classUUID = normalizeClaseId(clase.id);
-    const cleanISO = cleanDateISO(selectedCalendarDay.dateISO);
-
-    // Borrar de Supabase alumnos_clases para que recepción actualice el aforo
-    try {
-      await supabase
-        .from("alumnos_clases")
-        .delete()
-        .eq("alumno_id", teacherStudent.id)
-        .eq("clase_id", classUUID)
-        .gte("asignado_en", `${cleanISO}T00:00:00`)
-        .lte("asignado_en", `${cleanISO}T23:59:59.999Z`);
-    } catch (e) {
-      console.warn("Error deleting teacher enrollment from alumnos_clases:", e);
-    }
-
-    const found = all.find(r => 
-      r.alumno_id === teacherStudent.id && 
-      normalizeClaseId(r.clase_id) === classUUID && 
-      cleanDateISO(r.fecha_iso) === cleanISO && 
-      (r.estado === "Confirmada" || r.estado === "Asistida")
-    );
-
-    if (found) {
-      cancelarReservaOpenClass(found.id);
-    }
+    if (!teacherStudent?.id || savingId) return;
+    setSavingId(clase.id);
 
     try {
-      await deleteAlumnosClasesBySessionDate(
+      const all = getOpenClassReservas();
+      const classUUID = normalizeClaseId(clase.id);
+      const cleanISO = cleanDateISO(selectedCalendarDay.dateISO);
+
+      const delResult = await deleteAlumnosClasesBySessionDate(
         teacherStudent.id,
-        clase.id,
-        selectedCalendarDay.dateISO
+        classUUID,
+        cleanISO
       );
-    } catch (e) {
-      console.warn("Error deleting teacher reservation from alumnos_clases:", e);
-    }
+      const deletedInDb = Boolean(delResult.success && delResult.count > 0);
 
-    const hasUnlimited = (teacherStudent.plan_activo || "").toLowerCase().includes("ilimitad");
-    if (!hasUnlimited && typeof teacherStudent.clases_restantes === "number") {
-      const newCount = teacherStudent.clases_restantes + 1;
-      setTeacherStudent((prev: any) => ({ ...prev, clases_restantes: newCount }));
-      try {
+      const found = all.find(r => 
+        r.alumno_id === teacherStudent.id && 
+        normalizeClaseId(r.clase_id) === classUUID && 
+        cleanDateISO(r.fecha_iso) === cleanISO && 
+        (r.estado === "Confirmada" || r.estado === "Asistida")
+      );
+
+      if (found) {
+        cancelarReservaOpenClass(found.id);
+      }
+
+      const hasUnlimited = (teacherStudent.plan_activo || "").toLowerCase().includes("ilimitad");
+      if (deletedInDb && !hasUnlimited) {
+        const { data: freshDb } = await supabase
+          .from("alumnos")
+          .select("clases_restantes")
+          .eq("id", teacherStudent.id)
+          .maybeSingle();
+
+        const currentSaldo = typeof freshDb?.clases_restantes === "number"
+          ? freshDb.clases_restantes
+          : (typeof teacherStudent.clases_restantes === "number" ? teacherStudent.clases_restantes : 0);
+
+        const newCount = currentSaldo + 1;
+        setTeacherStudent((prev: any) => ({ ...prev, clases_restantes: newCount }));
         await supabase.from("alumnos").update({ clases_restantes: newCount }).eq("id", teacherStudent.id);
-      } catch (e) {}
+      }
+
+      setTeacherEnrolledClassIds(prev => prev.filter(id => id !== clase.id && id !== classUUID));
+      setOpenClassReservasVersion(v => v + 1);
+
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("df_reservas_updated"));
+      }
+      publishSyncEvent("df_reservas_updated");
+
+      setModal({
+        isOpen: true,
+        title: "Reserva Cancelada",
+        message: `Has cancelado tu inscripción para ${clase.nombre_clase} el ${selectedCalendarDay.dayName} ${selectedCalendarDay.dayNumber} de ${selectedCalendarDay.monthName}. Se ha reintegrado 1 clase a tu saldo docente.`,
+        type: "info"
+      });
+    } finally {
+      setSavingId(null);
     }
-
-    setTeacherEnrolledClassIds(prev => prev.filter(id => id !== clase.id && id !== classUUID));
-    setOpenClassReservasVersion(v => v + 1);
-
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event("df_reservas_updated"));
-    }
-    publishSyncEvent("df_reservas_updated");
-
-    setModal({
-      isOpen: true,
-      title: "Reserva Cancelada",
-      message: `Has cancelado tu inscripción para ${clase.nombre_clase} el ${selectedCalendarDay.dayName} ${selectedCalendarDay.dayNumber} de ${selectedCalendarDay.monthName}. Se ha reintegrado 1 clase a tu saldo docente.`,
-      type: "info"
-    });
   };
 
   const handleMarkAllPresent = async () => {
@@ -1237,11 +1261,12 @@ export default function ProfesorPortal() {
         : toMadridSessionISO(targetDate, selectedClase.hora_inicio || "18:00");
 
       const newCheckins: any[] = [];
+      const isOpenCls = isOpenClass(selectedClase);
       for (const student of studentsToMark) {
         const isRegular = isRegularMembership(student.plan_activo, student.clases_restantes);
-        const isPrepaidOpenClass = isOpenClass(selectedClase) || Boolean(student.reserva_id);
+        const isPrepaidOpenClass = Boolean(student.reserva_id);
 
-        if (!isRegular && !isPrepaidOpenClass && typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
+        if (isOpenCls && !isRegular && !isPrepaidOpenClass && typeof student.clases_restantes === "number" && student.clases_restantes > 0) {
           const newBalance = Math.max(0, student.clases_restantes - 1);
           await supabase
             .from("alumnos")

@@ -13,6 +13,7 @@
 
 // @ts-ignore
 import { getEndOfDayMadrid, getMadridDateISO } from "./timezones.ts";
+export { getEndOfDayMadrid, getMadridDateISO };
 
 export const PRECIO_MATRICULA_ANUAL = 15;
 
@@ -768,6 +769,7 @@ export const VERIFIED_BONO_PURCHASE_DATES: Record<string, string> = {
   "37eee42c-3cb3-4286-8420-27f10110c0c0": "2026-10-07", // Paula Carril Cano -> 07/11/2026
   "e9cc4200-aba2-4e67-8191-808c40e75621": "2026-10-07", // Marta García Vázquez -> 07/11/2026
   "c57fb3d0-525f-474a-8de7-d6d504b540be": "2026-10-15", // Lucía Muñoz -> 15/11/2026
+  "f9bac82e-467c-4f75-a118-671ed15bef66": "2026-10-14", // Mariana Nataly Nunes Nunes -> 14/11/2026
 };
 
 /**
@@ -815,10 +817,24 @@ export function subtractOneCalendarMonthMadrid(expirationISO: string): string {
  *    Corte exacto a las 23:59:59.999 hora peninsular España (Europe/Madrid).
  */
 export function calculateBonoExpirationDate(
-  student?: any,
-  storedCaducidad?: string | null
+  studentOrPlan?: any,
+  storedCaducidadOrCreadoEn?: string | null,
+  explicitCaducidad?: string | null,
+  explicitStudentId?: string | null
 ): Date | null {
-  if (!student) return null;
+  if (!studentOrPlan) return null;
+
+  const isPositional = typeof studentOrPlan === "string";
+  const student = isPositional
+    ? {
+        id: explicitStudentId || undefined,
+        plan_activo: studentOrPlan,
+        creado_en: storedCaducidadOrCreadoEn || undefined,
+        bono_caducidad: explicitCaducidad || undefined,
+        clases_restantes: 1,
+      }
+    : studentOrPlan;
+  const storedCaducidad = isPositional ? explicitCaducidad : storedCaducidadOrCreadoEn;
 
   const plan = (student.plan_activo || "").toLowerCase().trim();
   const classesRemaining = typeof student.clases_restantes === "number" ? student.clases_restantes : 0;
@@ -830,7 +846,7 @@ export function calculateBonoExpirationDate(
     plan.includes("suelta") || 
     classesRemaining > 0
   );
-  if (!isBono || classesRemaining <= 0) {
+  if (!isBono || (!isPositional && classesRemaining <= 0)) {
     return null;
   }
 

@@ -472,7 +472,7 @@ export function crearReservaOpenClass(data: {
 
   const dayCap = data.calendarDay.dayName.charAt(0) + data.calendarDay.dayName.slice(1).toLowerCase();
   const nueva: OpenClassReserva = {
-    id: "res_" + Date.now() + "_" + Math.floor(Math.random() * 10000),
+    id: `res_sb_${data.alumno_id}_${classUUID}_${cleanISO}`,
     alumno_id: data.alumno_id,
     alumno_nombre: data.alumno_nombre,
     alumno_email: data.alumno_email,
@@ -883,11 +883,11 @@ export function isReservaCancelable(reserva: { fecha_iso?: string; hora_inicio?:
     };
   }
 
-  if (horasRestantes <= 24) {
+  if (horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
     return {
       cancelable: false,
       horasRestantes,
-      motivo: "Faltan menos de 24 horas para el inicio de la clase. Según la normativa oficial, no es cancelable y la sesión se computa de tu bono."
+      motivo: `Faltan menos de ${OPEN_CLASS_CUTOFF_HOURS} horas para el inicio de la clase. Según la normativa oficial, no es cancelable y la sesión se computa de tu bono.`
     };
   }
 
@@ -904,11 +904,11 @@ export function cancelarReservaOpenClass(reservaId: string, options?: { allowUnd
     return false;
   }
 
-  // Reject cancellation if within 24 hours unless explicitly allowed (admin bypass)
+  // Reject cancellation if within 5 hours unless explicitly allowed (admin bypass)
   if (!options?.allowUnder24h) {
     const { cancelable, motivo } = isReservaCancelable(target);
     if (!cancelable) {
-      console.warn("Cancelación bloqueada por normativa de 24h:", motivo);
+      console.warn("Cancelación bloqueada por normativa de 5h:", motivo);
       return false;
     }
   }
@@ -1097,7 +1097,8 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
       });
     }
 
-    // Merge with current local reservations
+    // Authoritative sync: dbMappedReservas is the single source of truth for active reservations.
+    // Never resurrect local 'Confirmada' reservations that no longer exist in Supabase alumnos_clases.
     const local = getOpenClassReservas();
     const merged: OpenClassReserva[] = [...dbMappedReservas];
 
@@ -1114,14 +1115,11 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
           merged[matchIndex].asistido = true;
           merged[matchIndex].estado = "Asistida";
         }
-      } else {
-        // Only keep local reservations that do not originate from Supabase (res_sb_)
-        if (!l.id.startsWith("res_sb_")) {
-          merged.push({
-            ...l,
-            clase_id: normLocalClassId
-          });
-        }
+      } else if (l.estado === "Cancelada") {
+        merged.push({
+          ...l,
+          clase_id: normLocalClassId
+        });
       }
     }
 
@@ -1687,6 +1685,25 @@ export async function reconcileBonoConsumptionOnCheckIn(
   }
 
   try {
+    // Si se resolvió una clase específica, verificar que sea una Open Class (nunca descontar bono por asistir a clase regular)
+    if (resolvedClaseId) {
+      const normId = normalizeClaseId(resolvedClaseId);
+      const isDefaultOC = DEFAULT_STUDIO2_OPEN_CLASSES.some(c => c.id === normId) || Boolean(LEGACY_ID_MAP[resolvedClaseId]);
+      if (!isDefaultOC) {
+        const { data: clRow } = await supabase
+          .from("clases_cuadrante")
+          .select("nombre_clase")
+          .eq("id", normId)
+          .maybeSingle();
+        if (clRow && clRow.nombre_clase) {
+          const upper = clRow.nombre_clase.toUpperCase();
+          if (!upper.includes("OPEN") && !upper.includes("FORMACI")) {
+            return { deducted: false, newBalance: student.clases_restantes ?? null };
+          }
+        }
+      }
+    }
+
     const todayNow = new Date();
     const todayISO = `${todayNow.getFullYear()}-${String(todayNow.getMonth() + 1).padStart(2, "0")}-${String(todayNow.getDate()).padStart(2, "0")}`;
     const { startISO, endISO } = getMadridDayRangeUTC(todayISO);
@@ -1705,6 +1722,11 @@ export async function reconcileBonoConsumptionOnCheckIn(
     const currentBalance = typeof freshStudent?.clases_restantes === "number"
       ? freshStudent.clases_restantes
       : (typeof student.clases_restantes === "number" ? student.clases_restantes : 0);
+
+    if (currentBalance <= 0) {
+      student.clases_restantes = 0;
+      return { deducted: false, newBalance: 0 };
+    }
 
     // 2. Comprobar si ya tenía reserva hoy en alumnos_clases (lo que implica que ya se descontó al reservar)
     let acQuery = supabase
@@ -1729,16 +1751,19 @@ export async function reconcileBonoConsumptionOnCheckIn(
       return { deducted: false, newBalance: currentBalance };
     }
 
-    // 3. No tenía reserva previa para hoy (walk-in con bono): insertar en alumnos_clases para hoy y descontar 1 clase
+    // 3. No tenía reserva previa para hoy (walk-in con bono): insertar PRIMERO en alumnos_clases para hoy y solo si tiene éxito descontar 1 clase
     if (resolvedClaseId) {
       const normClassId = normalizeClaseId(resolvedClaseId);
       const cleanHour = (horaInicio || "19:00").trim();
       const sessionISO = `${todayISO}T${cleanHour.length === 5 ? cleanHour : "19:00"}:00+00:00`;
-      await supabase.from("alumnos_clases").insert([{
+      const { error: insErr } = await supabase.from("alumnos_clases").insert([{
         alumno_id: student.id,
         clase_id: normClassId,
         asignado_en: sessionISO
       }]);
+      if (insErr) {
+        return { deducted: false, newBalance: currentBalance };
+      }
     }
 
     const updatedBalance = Math.max(0, currentBalance - 1);
