@@ -45,7 +45,8 @@ import { registrarNuevoPago } from "@/lib/pagosService";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { supabase } from "@/lib/supabase/client";
-import { calculateBonoExpirationDate } from "@/lib/matriculaService";
+import { calculateBonoExpirationDate, subtractOneCalendarMonthMadrid } from "@/lib/matriculaService";
+import { getMadridDateISO } from "@/lib/timezones";
 
 export default function AdminVentajasPage() {
   const [items, setItems] = useState<VentajaItem[]>([]);
@@ -159,16 +160,14 @@ export default function AdminVentajasPage() {
           // Calculate expiry
           let fechaCaducidad = "2026-09-30";
           const localOverride = localBonos.find(lb => lb.alumno_id === s.id || lb.id === `bono_db_${s.id}`);
-          if (localOverride && localOverride.fecha_caducidad) {
-            fechaCaducidad = localOverride.fecha_caducidad;
-          } else if (planLower.includes("promo") || planLower.includes("septiembre")) {
+          if (planLower.includes("promo") || planLower.includes("septiembre")) {
             fechaCaducidad = "2026-09-30";
           } else {
-            const calculatedExp = calculateBonoExpirationDate(s);
+            const calculatedExp = calculateBonoExpirationDate(s, localOverride?.fecha_caducidad);
             if (calculatedExp) {
-              fechaCaducidad = calculatedExp.toISOString().slice(0, 10);
-            } else {
-              fechaCaducidad = "2026-11-01";
+              fechaCaducidad = getMadridDateISO(calculatedExp) || calculatedExp.toISOString().slice(0, 10);
+            } else if (localOverride && localOverride.fecha_caducidad) {
+              fechaCaducidad = localOverride.fecha_caducidad;
             }
           }
 
@@ -519,7 +518,10 @@ export default function AdminVentajasPage() {
         const newClasses = (targetBono.clases_restantes || 0) + recargaClases;
         await supabase
           .from("alumnos")
-          .update({ clases_restantes: newClasses })
+          .update({
+            clases_restantes: newClasses,
+            creado_en: new Date().toISOString()
+          })
           .eq("id", targetBono.alumno_id);
       } catch (e) {
         console.warn("Error updating Supabase clases_restantes on recarga:", e);
@@ -561,6 +563,16 @@ export default function AdminVentajasPage() {
   const handleProrrogarBono = async (bono: BonoAlumno) => {
     const updated = prorrogarBono(bono, 30);
     if (updated) {
+      if (bono.alumno_id) {
+        try {
+          await supabase
+            .from("alumnos")
+            .update({ creado_en: subtractOneCalendarMonthMadrid(updated.fecha_caducidad) })
+            .eq("id", bono.alumno_id);
+        } catch (e) {
+          console.warn("Error updating Supabase creado_en on prorrogar:", e);
+        }
+      }
       logActivity({
         origen: "recepcion",
         tipo_evento: "edicion_alumno",
@@ -591,7 +603,8 @@ export default function AdminVentajasPage() {
           .from("alumnos")
           .update({
             plan_activo: bonoFormTipo,
-            clases_restantes: bonoFormClases
+            clases_restantes: bonoFormClases,
+            creado_en: new Date().toISOString()
           })
           .eq("id", found.id);
       }

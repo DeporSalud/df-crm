@@ -699,7 +699,8 @@ export default function AdminDashboardRecepcion() {
 
       const updateData: Record<string, any> = {
         plan_activo: cleanPlan || req.bono_nombre,
-        clases_restantes: currentClasses + clasesToAdd
+        clases_restantes: currentClasses + clasesToAdd,
+        creado_en: new Date().toISOString()
       };
 
       const { error: updateErr } = await supabase.from("alumnos").update(updateData).eq("id", studentDB.id);

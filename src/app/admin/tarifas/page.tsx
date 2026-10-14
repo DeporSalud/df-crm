@@ -348,7 +348,7 @@ export default function TarifasPage() {
         <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-2.5 text-xs text-amber-200/90 shadow-sm">
           <Clock size={16} className="text-amber-400 shrink-0 mt-0.5" />
           <p className="leading-relaxed text-[11px]">
-            <strong>ℹ️ Política Oficial de Caducidad (Europe/Madrid):</strong> Los bonos tienen una validez de <strong>30 días naturales</strong> y su corte es exacto a las <strong>23:59:59</strong> hora peninsular española. Todos los bonos activos adquiridos en octubre son válidos como mínimo hasta el <strong>01/11/2026</strong> a las 23:59:59.
+            <strong>ℹ️ Política Oficial de Caducidad (Europe/Madrid):</strong> Los bonos tienen una validez exacta de <strong>1 mes natural desde la fecha de compra</strong> (ej. comprado el 5 de octubre → caduca el 5 de noviembre) y su corte es a las <strong>23:59:59</strong> hora peninsular española.
           </p>
         </div>
       )}

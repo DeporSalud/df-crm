@@ -238,7 +238,8 @@ export default function PagosYFacturacionPage() {
 
       const updateData: Record<string, any> = {
         plan_activo: cleanPlan || req.bono_nombre,
-        clases_restantes: currentClasses + clasesToAdd
+        clases_restantes: currentClasses + clasesToAdd,
+        creado_en: new Date().toISOString()
       };
       if (isFirstPurchase) {
         updateData.matricula_pagada = true;
@@ -251,7 +252,8 @@ export default function PagosYFacturacionPage() {
         console.warn("[Pagos] Supabase table doesn't have matricula columns yet, falling back:", updateErr.message);
         const { error: fallbackErr } = await supabase.from("alumnos").update({
           plan_activo: cleanPlan || req.bono_nombre,
-          clases_restantes: currentClasses + clasesToAdd
+          clases_restantes: currentClasses + clasesToAdd,
+          creado_en: new Date().toISOString()
         }).eq("id", studentDB.id);
         if (fallbackErr) {
           console.warn("[Pagos] Error in fallback update:", fallbackErr.message);

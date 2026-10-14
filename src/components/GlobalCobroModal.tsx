@@ -193,6 +193,7 @@ export default function GlobalCobroModal() {
         const cur = typeof selectedStudent.clases_restantes === "number" ? selectedStudent.clases_restantes : 0;
         updatePayload.clases_restantes = cur + addClasses;
         updatePayload.plan_activo = formConcepto.trim();
+        updatePayload.creado_en = new Date().toISOString();
       }
 
       if (needsMatriculaActivation || isMatriculaPayment) {
@@ -207,6 +208,7 @@ export default function GlobalCobroModal() {
             const fallbackPayload: Record<string, any> = {};
             if (updatePayload.clases_restantes !== undefined) fallbackPayload.clases_restantes = updatePayload.clases_restantes;
             if (updatePayload.plan_activo !== undefined) fallbackPayload.plan_activo = updatePayload.plan_activo;
+            if (updatePayload.creado_en !== undefined) fallbackPayload.creado_en = updatePayload.creado_en;
             if (Object.keys(fallbackPayload).length > 0) {
               supabase.from("alumnos").update(fallbackPayload).eq("id", selectedStudent.id);
             }

@@ -23,8 +23,13 @@ import { syncReservasFromSupabase } from "@/lib/openClassService";
 import { CheckCircle2, Info } from "lucide-react";
 
 import { getStoredIBAN, saveStoredIBAN, deleteStoredIBAN } from "@/lib/ibanStorage";
-import { isPromoSeptiembreBono, calculateBonoExpirationDate } from "@/lib/matriculaService";
-import { getBonosAlumnos } from "@/lib/ventajasService";
+import { 
+  isPromoSeptiembreBono, 
+  calculateBonoExpirationDate, 
+  subtractOneCalendarMonthMadrid,
+  addOneCalendarMonthMadrid 
+} from "@/lib/matriculaService";
+import { getBonosAlumnos, saveBonosAlumnos } from "@/lib/ventajasService";
 import { 
   studentMatchesSearchQuery, 
   normalizePhoneDigits, 
@@ -35,7 +40,8 @@ import {
   getBonoStatusBadgeMadrid, 
   calculateBonoDaysRemainingMadrid, 
   isBonoExpiringSoonMadrid, 
-  getEndOfDayMadrid 
+  getEndOfDayMadrid,
+  getMadridDateISO
 } from "@/lib/timezones";
 
 // Validation Helpers
@@ -162,6 +168,8 @@ export default function AlumnosPage() {
     tipo_alumno: "adulto" as "adulto" | "infantil",
     plan_activo: "Sin Plan Activo",
     cuota_mensual: 30,
+    clases_restantes: null as number | null,
+    bono_caducidad: "",
     nfc_token: "",
     estado: "Activo",
     clases_asignadas: [] as string[]
@@ -333,6 +341,8 @@ export default function AlumnosPage() {
       : [];
     const studentIban = student.iban || getStoredIBAN(student.id);
     const feeInfo = getStudentFee(student);
+    const rawExp = calculateBonoExpirationDate(student, bonosCaducidadMap[student.id]);
+    const expMadridISO = rawExp ? getMadridDateISO(rawExp) : "";
 
     setFormData({
       sede: student.sede || "tejar",
@@ -346,6 +356,8 @@ export default function AlumnosPage() {
       tipo_alumno: (student.tipo_alumno || (student.fecha_nacimiento ? getTipoAlumnoFromBirthDate(student.fecha_nacimiento) : "adulto")) as "adulto" | "infantil",
       plan_activo: student.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`,
       cuota_mensual: feeInfo.cuotaBase,
+      clases_restantes: typeof student.clases_restantes === "number" ? student.clases_restantes : null,
+      bono_caducidad: expMadridISO || "",
       nfc_token: student.nfc_token || "",
       estado: student.estado || "Activo",
       clases_asignadas: assignedIds
@@ -468,22 +480,25 @@ export default function AlumnosPage() {
       return;
     }
     
-    let clases_restantes = 0;
-    if (formData.plan_activo === "Bono 4 clases") {
-      clases_restantes = 4;
-    } else if (formData.plan_activo === "Bono 8 clases") {
-      clases_restantes = 8;
-    } else if (formData.plan_activo === "Bono 10 clases") {
-      clases_restantes = 10;
-    } else if (formData.plan_activo === "Mensualidad Ilimitada") {
-      clases_restantes = 999;
-    } else if (formData.plan_activo === "Clase Suelta") {
-      clases_restantes = 1;
+    let clases_restantes = typeof formData.clases_restantes === "number" ? formData.clases_restantes : 0;
+    const planLowerForm = formData.plan_activo.toLowerCase();
+    if (formData.clases_restantes === null) {
+      if (planLowerForm.includes("bono 4")) {
+        clases_restantes = 4;
+      } else if (planLowerForm.includes("bono 8")) {
+        clases_restantes = 8;
+      } else if (planLowerForm.includes("bono 10")) {
+        clases_restantes = 10;
+      } else if (planLowerForm.includes("ilimitad")) {
+        clases_restantes = 999;
+      } else if (planLowerForm.includes("suelta")) {
+        clases_restantes = 1;
+      }
     }
 
     // Ensure regular students have their custom cuota in plan_activo
     let finalPlan = formData.plan_activo;
-    const isBonoOrPromo = finalPlan.toLowerCase().includes("bono") || finalPlan.toLowerCase().includes("promo") || finalPlan.toLowerCase().includes("suelta");
+    const isBonoOrPromo = finalPlan.toLowerCase().includes("bono") || finalPlan.toLowerCase().includes("promo") || finalPlan.toLowerCase().includes("suelta") || finalPlan.toLowerCase().includes("pase");
     if (!isBonoOrPromo && formData.cuota_mensual > 0) {
       finalPlan = `Clases Regulares (${formData.cuota_mensual}€/mes)`;
     }
@@ -501,6 +516,13 @@ export default function AlumnosPage() {
       nfc_token: formData.nfc_token.trim() || null,
       estado: formData.estado
     };
+
+    if (isBonoOrPromo || (typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0)) {
+      payload.clases_restantes = clases_restantes;
+      if (formData.bono_caducidad && !finalPlan.toLowerCase().includes("promo") && !finalPlan.toLowerCase().includes("septiembre")) {
+        payload.creado_en = subtractOneCalendarMonthMadrid(formData.bono_caducidad);
+      }
+    }
 
     let error: any = null;
     let studentId = editingId;
@@ -546,8 +568,21 @@ export default function AlumnosPage() {
       return;
     }
 
-    // Persist IBAN and Fee overrides in local cache
+    // Persist IBAN, Bono Caducidad and Fee overrides in local cache
     if (studentId) {
+      if (isBonoOrPromo && formData.bono_caducidad) {
+        const allBonos = getBonosAlumnos();
+        const existingIdx = allBonos.findIndex(b => b.alumno_id === studentId);
+        if (existingIdx >= 0) {
+          allBonos[existingIdx] = {
+            ...allBonos[existingIdx],
+            fecha_caducidad: formData.bono_caducidad,
+            clases_restantes: clases_restantes
+          };
+          saveBonosAlumnos(allBonos);
+        }
+        setBonosCaducidadMap(prev => ({ ...prev, [studentId]: formData.bono_caducidad }));
+      }
       saveStoredIBAN(studentId, formData.iban);
       if (formData.cuota_mensual > 0) {
         saveStudentFeeOverride(studentId, formData.cuota_mensual);
@@ -1575,6 +1610,25 @@ export default function AlumnosPage() {
                         <option value="Activo">Activo</option>
                         <option value="Inactivo">Inactivo</option>
                       </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Clases Restantes (Bono)</label>
+                      <input 
+                        type="number"
+                        min={0}
+                        value={formData.clases_restantes ?? 0}
+                        onChange={(e) => setFormData({...formData, clases_restantes: parseInt(e.target.value) || 0})}
+                        className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-sm font-bold font-mono rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Caducidad del Bono (1 mes desde compra)</label>
+                      <input 
+                        type="date"
+                        value={formData.bono_caducidad || ""}
+                        onChange={(e) => setFormData({...formData, bono_caducidad: e.target.value})}
+                        className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-amber-300 text-sm font-bold font-mono rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors"
+                      />
                     </div>
                     <div className="md:col-span-2">
                       <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Sede Principal *</label>

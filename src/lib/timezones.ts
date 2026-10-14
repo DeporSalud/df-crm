@@ -205,11 +205,6 @@ function calculateCalendarDaysDiffMadrid(todayStr: string, expStr: string): numb
  * Hardened Rules:
  * 1. Cutoff is always at 23:59:59.999 Europe/Madrid of the expiration date.
  * 2. On the day of expiration itself, 0 days remain ("Caduca HOY").
- * 3. October 30-day bonos shield:
- *    30-day bonos activated in October (e.g. valid through November 1st, 2026) are shielded
- *    from premature "Caduca MAÑANA" (1 day) or 7-day warnings prior to November 1st.
- *    Prior to 2026-11-01, this function guarantees remaining days > 7 to suppress false urgency.
- *    Starting November 1st, 2026, it transitions cleanly to 0 days ("Caduca HOY").
  */
 export function calculateBonoDaysRemainingMadrid(
   expirationDate: string | Date | null | undefined,
@@ -220,21 +215,11 @@ export function calculateBonoDaysRemainingMadrid(
   const todayMadrid = getMadridDateISO(fromDate);
   if (!expMadrid || !todayMadrid) return 0;
 
-  const rawDiff = calculateCalendarDaysDiffMadrid(todayMadrid, expMadrid);
-
-  // October 30-day bonos shield:
-  // If evaluated prior to November 1st, 2026, bonos expiring on or after Nov 1
-  // must not show premature warnings (<= 7 days or Caduca MAÑANA).
-  if (todayMadrid < "2026-11-01" && expMadrid >= "2026-11-01") {
-    return Math.max(rawDiff, 8);
-  }
-
-  return rawDiff;
+  return calculateCalendarDaysDiffMadrid(todayMadrid, expMadrid);
 }
 
 /**
  * Checks if a bono is within its genuine expiration warning window (<= 7 days and >= 0 days).
- * Respects the October shield: returns false prior to November 1st for October bonos.
  */
 export function isBonoExpiringSoonMadrid(
   expirationDate: string | Date | null | undefined,
@@ -244,11 +229,6 @@ export function isBonoExpiringSoonMadrid(
   const expMadrid = getMadridDateISO(expirationDate);
   const todayMadrid = getMadridDateISO(fromDate);
   if (!expMadrid || !todayMadrid) return false;
-
-  // Prior to November 1st, October bonos valid for Nov 1 or later do not expire soon
-  if (todayMadrid < "2026-11-01" && expMadrid >= "2026-11-01") {
-    return false;
-  }
 
   const daysLeft = calculateBonoDaysRemainingMadrid(expirationDate, fromDate);
   return daysLeft <= 7 && daysLeft >= 0;

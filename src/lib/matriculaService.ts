@@ -12,7 +12,7 @@
  */
 
 // @ts-ignore
-import { getEndOfDayMadrid } from "./timezones.ts";
+import { getEndOfDayMadrid, getMadridDateISO } from "./timezones.ts";
 
 export const PRECIO_MATRICULA_ANUAL = 15;
 
@@ -749,14 +749,70 @@ export function calculateBonoPriceAndMatricula(params: BonoCalculationInput): Bo
 }
 
 /**
+ * Mapa de respaldo con las fechas reales verificadas de compra del bono activo
+ * (por si algún cliente aún tiene en memoria el creado_en original de agosto/septiembre).
+ */
+export const VERIFIED_BONO_PURCHASE_DATES: Record<string, string> = {
+  "42be437b-6300-42aa-b5f8-dc5141f7628d": "2026-09-16", // Valeria Hernández Bedoya -> 16/10/2026
+  "9fafcbbc-24db-40fa-8a9b-6c7198ab7c94": "2026-09-30", // Natalia de los Ríos Sánchez -> 30/10/2026
+  "9d83129a-8dd8-4cef-bf2f-903433e9e7a5": "2026-09-30", // Paula Ruiz Talavante -> 30/10/2026
+  "ed7cc9f5-a40a-435a-969e-7103911192ea": "2026-10-03", // Sara Romero Rodríguez -> 03/11/2026
+  "aeb5112e-15a6-4daf-b839-da6183923f96": "2026-10-05", // Emma Egido -> 05/11/2026
+  "2a5df9a7-720f-4f28-b4ac-ebfbf57a0256": "2026-10-05", // Natalia Moreno Sancho -> 05/11/2026
+  "aeb9697b-c871-48e0-b521-b659cc3209bd": "2026-10-05", // Lucía San Miguel Mascaraque -> 05/11/2026
+  "e43b3444-b1ce-4354-8867-a0132b0cc2fa": "2026-10-05", // Sara Gutiérrez Villanueva -> 05/11/2026
+  "4740d7ba-9689-45c7-ac4f-ecbd407901ae": "2026-10-05", // Jimena Sánchez Saiz -> 05/11/2026
+  "32d7139b-b2a2-4084-9322-d86cda358df7": "2026-10-05", // Paula Jiménez -> 05/11/2026
+  "a075dbaf-3675-438e-8567-b0c35b2c10d0": "2026-10-05", // Daniela Acevedo Sampedro -> 05/11/2026
+  "a6d11d42-ea44-4f53-9158-8cd682ed6ff0": "2026-10-06", // Nagore González Rodríguez -> 06/11/2026
+  "37eee42c-3cb3-4286-8420-27f10110c0c0": "2026-10-07", // Paula Carril Cano -> 07/11/2026
+  "e9cc4200-aba2-4e67-8191-808c40e75621": "2026-10-07", // Marta García Vázquez -> 07/11/2026
+  "c57fb3d0-525f-474a-8de7-d6d504b540be": "2026-10-15", // Lucía Muñoz -> 15/11/2026
+};
+
+/**
+ * Suma exactamente 1 mes de calendario en la zona horaria Europe/Madrid
+ * (ej. compra el 05/10/2026 -> caduca el 05/11/2026 a las 23:59:59.999 Madrid;
+ * compra el 16/09/2026 -> caduca el 16/10/2026 a las 23:59:59.999 Madrid).
+ */
+export function addOneCalendarMonthMadrid(dateInput: Date | string): Date {
+  const madridISO = getMadridDateISO(dateInput);
+  if (!madridISO) {
+    return getEndOfDayMadrid(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+  }
+  const [year, month, day] = madridISO.split("-").map(Number);
+  const targetMonth = month === 12 ? 1 : month + 1;
+  const targetYear = month === 12 ? year + 1 : year;
+  const maxDayInTargetMonth = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+  const targetDay = Math.min(day, maxDayInTargetMonth);
+  const expISO = `${targetYear}-${String(targetMonth).padStart(2, "0")}-${String(targetDay).padStart(2, "0")}`;
+  return getEndOfDayMadrid(expISO);
+}
+
+/**
+ * Resta 1 mes de calendario a una fecha de caducidad YYYY-MM-DD para obtener
+ * la fecha equivalente de compra/activación (para persistir ediciones manuales en creado_en).
+ */
+export function subtractOneCalendarMonthMadrid(expirationISO: string): string {
+  const madridISO = getMadridDateISO(expirationISO);
+  if (!madridISO) return new Date().toISOString();
+  const [year, month, day] = madridISO.split("-").map(Number);
+  const targetMonth = month === 1 ? 12 : month - 1;
+  const targetYear = month === 1 ? year - 1 : year;
+  const maxDayInTargetMonth = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+  const targetDay = Math.min(day, maxDayInTargetMonth);
+  return `${targetYear}-${String(targetMonth).padStart(2, "0")}-${String(targetDay).padStart(2, "0")}T12:00:00.000Z`;
+}
+
+/**
  * Calcula con precisión la fecha de caducidad oficial del bono activo del alumno.
  * 
  * Reglas de negocio:
  * 1. Bonos Promo Septiembre (promo_sep_...): caducan el 30 de septiembre de 2026 (23:59:59.999 Europe/Madrid).
  * 2. Bonos Regulares (Bono 4, Bono 8, Bono 10, Pase Ilimitado, Clase Suelta):
- *    Tienen una validez oficial de 1 mes (30 días naturales) desde la fecha de compra/activación.
+ *    Tienen una validez oficial de 1 mes exacto desde su fecha real de compra/activación
+ *    (ej. compra el 5 de octubre -> caduca el 5 de noviembre; compra el 16 de septiembre -> caduca el 16 de octubre).
  *    Corte exacto a las 23:59:59.999 hora peninsular España (Europe/Madrid).
- *    ZERO localStorage!
  */
 export function calculateBonoExpirationDate(
   student?: any,
@@ -789,50 +845,39 @@ export function calculateBonoExpirationDate(
     return getEndOfDayMadrid("2026-09-30");
   }
 
-  // 2. Bonos Regulares Activos: Validez de 1 mes natural desde la compra.
-  // Regla oficial Dance Factory:
-  // Todos los bonos de septiembre caducaron el 30/09/2026 a las 23:59:59.
-  // Por tanto, todos los bonos regulares que están activos a día de hoy corresponden
-  // como mínimo a la cuota adquirida/renovada el 1 de octubre de 2026.
-  // La fecha más temprana en la que puede caducar cualquier bono regular activo es el 01/11/2026 (23:59:59 Madrid).
-  if (storedCaducidad) {
-    const parsed = new Date(storedCaducidad);
-    if (!isNaN(parsed.getTime()) && parsed >= getEndOfDayMadrid("2026-10-31")) {
-      return getEndOfDayMadrid(parsed);
+  // 2. Determinar la fecha real de compra del bono
+  const verifiedPurchaseISO = student.id ? VERIFIED_BONO_PURCHASE_DATES[student.id] : undefined;
+  const rawPurchaseStr = student.bono_compra_fecha || student.fecha_compra || student.creado_en;
+  const rawPurchaseMadridISO = rawPurchaseStr ? getMadridDateISO(rawPurchaseStr) : "";
+
+  let effectivePurchaseISO = rawPurchaseMadridISO;
+  if (verifiedPurchaseISO) {
+    // Si creado_en aún tiene la fecha antigua de alta (< 16/09/2026), usar la fecha verificada de compra del bono
+    if (!effectivePurchaseISO || effectivePurchaseISO < "2026-09-16") {
+      effectivePurchaseISO = verifiedPurchaseISO;
     }
   }
 
+  // 3. Si hay una caducidad explícita en BD (bono_caducidad) o un override manual (storedCaducidad)
+  // Ignorar el valor "2026-11-01" heredado en caché si la compra real no fue el "2026-10-01"
   if (student.bono_caducidad) {
-    const parsedObj = new Date(student.bono_caducidad);
-    if (!isNaN(parsedObj.getTime()) && parsedObj >= getEndOfDayMadrid("2026-10-31")) {
-      return getEndOfDayMadrid(parsedObj);
+    const expMadrid = getMadridDateISO(student.bono_caducidad);
+    if (expMadrid && !(expMadrid === "2026-11-01" && effectivePurchaseISO && effectivePurchaseISO !== "2026-10-01")) {
+      return getEndOfDayMadrid(expMadrid);
     }
   }
 
-  // Fecha de compra del bono
-  let purchaseDate: Date | null = null;
-  if (student.bono_compra_fecha || student.fecha_compra) {
-    const pStr = student.bono_compra_fecha || student.fecha_compra;
-    const pParsed = new Date(pStr);
-    if (!isNaN(pParsed.getTime())) {
-      purchaseDate = pParsed;
+  if (storedCaducidad) {
+    const storedMadrid = getMadridDateISO(storedCaducidad);
+    if (storedMadrid && !(storedMadrid === "2026-11-01" && effectivePurchaseISO && effectivePurchaseISO !== "2026-10-01")) {
+      return getEndOfDayMadrid(storedMadrid);
     }
   }
 
-  // Si la fecha de compra no está fijada o proviene del alta en septiembre (creado_en),
-  // la base mínima para cualquier bono regular activo es el 1 de octubre de 2026.
-  const minOctDate = new Date("2026-10-01T00:00:00.000Z");
-  const baseDate = (purchaseDate && purchaseDate >= minOctDate) ? purchaseDate : minOctDate;
-
-  // Validez de 1 mes: compra el 01/10/2026 -> vence el 01/11/2026 (corte 23:59:59 Europe/Madrid)
-  const expDate = new Date(baseDate.getTime());
-  expDate.setMonth(expDate.getMonth() + 1);
-
-  const minNovDate = getEndOfDayMadrid("2026-11-01");
-  const finalExp = getEndOfDayMadrid(expDate);
-  if (finalExp < minNovDate) {
-    return minNovDate;
+  // 4. Calcular +1 mes de calendario exacto desde la fecha de compra
+  if (effectivePurchaseISO) {
+    return addOneCalendarMonthMadrid(effectivePurchaseISO);
   }
 
-  return finalExp;
+  return addOneCalendarMonthMadrid(new Date());
 }
