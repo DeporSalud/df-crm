@@ -558,7 +558,10 @@ export default function AdminDashboardRecepcion() {
     setFlashState('success');
     setTimeout(() => setFlashState(null), 1500);
 
-    const remainingTextStr = isRegularOrUnlimited 
+    const isTeacher = isTeacherProfile(student);
+    const remainingTextStr = isTeacher
+      ? 'Docente Oficial Dance Factory'
+      : isRegularOrUnlimited 
       ? 'Mensualidad Regular' 
       : `Bono (${student.clases_restantes ?? 0} clases de saldo)`;
     const classDetailStr = resolved.claseNombre ? ` • ${resolved.claseNombre}` : '';
@@ -570,8 +573,10 @@ export default function AdminDashboardRecepcion() {
     // Audit log
     logActivity({
       origen: "recepcion",
-      tipo_evento: "checkin",
-      descripcion: `Validación de acceso QR/NFC (${remainingTextStr}${classDetailStr})`,
+      tipo_evento: isTeacher ? "asistencia_profesor" : "checkin",
+      descripcion: isTeacher
+        ? `Validación de acceso QR/NFC de Profesor/a: ${student.nombre_completo}`
+        : `Validación de acceso QR/NFC (${remainingTextStr}${classDetailStr})`,
       usuario_afectado: student.nombre_completo,
       sede: sedeDisplay
     });
@@ -584,7 +589,9 @@ export default function AdminDashboardRecepcion() {
 
     setStatusMessage({ 
       type: 'success', 
-      text: `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr}${sedeNotice}${timingNotice})` 
+      text: isTeacher
+        ? `✅ Entrada validada para docente: ${student.nombre_completo} (Acceso Profesor/a a Salas & Torno)`
+        : `✅ Entrada validada para ${student.nombre_completo}. (${remainingTextStr}${classDetailStr}${sedeNotice}${timingNotice})` 
     });
 
     publishSyncEvent("df_checkin_success", { ...student, resolvedClass: resolved });

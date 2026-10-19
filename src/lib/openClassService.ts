@@ -1,6 +1,23 @@
 import { supabase } from "@/lib/supabase/client";
 import { getMadridHoursRemaining, getMadridDayRangeUTC, toMadridDate } from "@/lib/timezones";
 import { publishSyncEvent } from "./syncEventBus";
+import { logActivity } from "@/lib/activityLogger";
+export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: string): boolean {
+  if (!student && !emailOrId && !userRole) return false;
+  const plan = (student?.plan_activo || "").toLowerCase();
+  const name = (student?.nombre_completo || student?.name || "").toLowerCase();
+  const email = (student?.email || emailOrId || "").toLowerCase();
+  const role = (student?.rol || userRole || "").toLowerCase();
+  const dni = (student?.dni || "").toUpperCase();
+  const nfc = String(student?.nfc_token || "").toUpperCase();
+
+  if (role === "profesor" || role === "docente" || role === "admin" || role === "administrador") return true;
+  if (plan.includes("docente") || plan.includes("profesor") || plan.includes("profesora")) return true;
+  if (email.endsWith("@dancefactory.es") && !email.startsWith("alumno")) return true;
+  if (dni.startsWith("PROF-") || dni.startsWith("DOC-")) return true;
+  if (nfc.startsWith("PROF-")) return true;
+  return false;
+}
 
 export interface OpenClassReserva {
   id: string;
@@ -45,6 +62,36 @@ export const LEGACY_ID_MAP: Record<string, string> = {
   "oc_miercoles_1": "1d7df61b-a65e-4f35-82b2-3d34242abb87",
   "oc_miercoles_2": "6a374f52-f6d8-447c-be48-e8fe3eca8faf",
   "oc_jueves_1": "39807014-ee30-4112-99cf-6b361c820834",
+};
+
+export const TEACHER_DB_ID_MAP: Record<string, string> = {
+  "1001": "c57fb3d0-525f-474a-8de7-d6d504b540be", // Lucía Muñoz
+  "LUCIA MUNOZ": "c57fb3d0-525f-474a-8de7-d6d504b540be",
+  "LUCÍA MUÑOZ": "c57fb3d0-525f-474a-8de7-d6d504b540be",
+  "1002": "2d95e851-b927-494b-9558-d7ed6d447a20", // Lucía Zamorano
+  "LUCIA ZAMORANO": "2d95e851-b927-494b-9558-d7ed6d447a20",
+  "LUCÍA ZAMORANO": "2d95e851-b927-494b-9558-d7ed6d447a20",
+  "1003": "7a100300-0000-4000-a000-000000001003", // Andrea Soto
+  "ANDREA SOTO": "7a100300-0000-4000-a000-000000001003",
+  "1004": "80c59814-1ab4-4793-9039-e8fe1c5ef681", // Eva Leiva
+  "EVA LEIVA": "80c59814-1ab4-4793-9039-e8fe1c5ef681",
+  "1005": "7a100500-0000-4000-a000-000000001005", // Lucas López
+  "LUCAS LOPEZ": "7a100500-0000-4000-a000-000000001005",
+  "LUCAS LÓPEZ": "7a100500-0000-4000-a000-000000001005",
+  "1006": "32d7139b-b2a2-4084-9322-d86cda358df7", // Paula Jiménez
+  "PAULA JIMENEZ": "32d7139b-b2a2-4084-9322-d86cda358df7",
+  "PAULA JIMÉNEZ": "32d7139b-b2a2-4084-9322-d86cda358df7",
+  "1007": "7a100700-0000-4000-a000-000000001007", // Abel y Nayara
+  "1008": "7a100800-0000-4000-a000-000000001008", // Darío Humberto
+  "1009": "7a100900-0000-4000-a000-000000001009", // Nerea Olivares
+  "1010": "7a101000-0000-4000-a000-000000001010", // Alejandro Rovina
+  "1011": "7a101100-0000-4000-a000-000000001011", // Nil Barberá
+  "1012": "145547d1-643c-40aa-9144-305893e8f64c", // Mario Gadea
+  "1013": "0812eb2d-bcb5-4f9e-b690-1beaafcd3e61", // Daniela Mérida
+  "1014": "e9cc4200-aba2-4e67-8191-808c40e75621", // Marta García Vázquez
+  "2026": "ffd8f04a-5f63-4c8b-b638-9f9483df8d3c", // Ruth Domínguez
+  "9998": "ffd8f04a-5f63-4c8b-b638-9f9483df8d3c",
+  "9999": "ffd8f04a-5f63-4c8b-b638-9f9483df8d3c"
 };
 
 export function normalizeClaseId(id: string): string {
@@ -537,13 +584,40 @@ export interface OpenClassSessionStatus {
 }
 
 /**
+ * Conjunto de sesiones suspendidas persistidas en localStorage.
+ */
+export function getSuspendedSessions(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem("df_suspended_sessions_v1");
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Comprueba si una sesión específica está suspendida manualmente por Administración.
+ */
+export function isSesionSuspendida(claseId: string, fechaISO: string): boolean {
+  if (typeof window === "undefined") return false;
+  const sessionKey = `${normalizeClaseId(claseId)}_${cleanDateISO(fechaISO)}`;
+  const list = getSuspendedSessions();
+  return list.includes(sessionKey);
+}
+
+/**
  * Helper canonical evaluator for Open Class cutoff rules.
+ * NOTA: A petición de Administración (Lucía), la regla automática de corte a las 5h
+ * fue eliminada para no suspender clases automáticamente. Las sesiones sólo se suspenden
+ * cuando Administración lo ejecuta manualmente.
  */
 export function evaluateOpenClassCutoff(
   hoursRemaining: number,
   studentCount: number,
   arg3: number = 20,
-  arg4?: number
+  arg4?: number,
+  isSuspended?: boolean
 ) {
   const minStudents = typeof arg4 === "number" ? arg3 : OPEN_CLASS_MIN_STUDENTS;
   const maxCapacity = typeof arg4 === "number" ? arg4 : (typeof arg3 === "number" ? arg3 : 20);
@@ -558,44 +632,41 @@ export function evaluateOpenClassCutoff(
     };
   }
 
-  const isFull = studentCount >= maxCapacity;
-
-  // Under 5 hours rule: auto-suspension if < 4 students; stays OPEN if >= 4 students
-  if (hoursRemaining < OPEN_CLASS_CUTOFF_HOURS) {
-    if (studentCount < minStudents) {
-      return {
-        status: "suspendida_aforo_minimo" as const,
-        puedeReservar: false,
-        refundRequired: true,
-        badgeText: `⚠️ Suspendida (mín. ${minStudents} pers.)`,
-        reason: `Clase suspendida: No se alcanzó el mínimo de ${minStudents} personas a las ${OPEN_CLASS_CUTOFF_HOURS}h previas.`
-      };
-    } else {
-      return {
-        status: "confirmada" as const,
-        puedeReservar: !isFull,
-        refundRequired: false,
-        badgeText: isFull ? "Aforo Completo" : `✓ Confirmada (${studentCount}/${maxCapacity})`,
-        reason: isFull ? "Aforo completo" : "Abierta para reservas"
-      };
-    }
+  if (isSuspended) {
+    return {
+      status: "suspendida_aforo_minimo" as const,
+      puedeReservar: false,
+      refundRequired: false,
+      badgeText: "⚠️ Clase Suspendida",
+      reason: "Clase suspendida por Administración."
+    };
   }
 
-  // 5 hours or more remaining
+  const isFull = studentCount >= maxCapacity;
+
+  if (studentCount >= minStudents) {
+    return {
+      status: "confirmada" as const,
+      puedeReservar: !isFull,
+      refundRequired: false,
+      badgeText: isFull ? "Aforo Completo" : `✓ Confirmada (${studentCount}/${maxCapacity})`,
+      reason: isFull ? "Aforo completo" : "Abierta para reservas"
+    };
+  }
+
   return {
-    status: studentCount >= minStudents ? ("confirmada" as const) : ("abierta" as const),
+    status: "abierta" as const,
     puedeReservar: !isFull,
     refundRequired: false,
-    badgeText: studentCount >= minStudents ? `✓ Confirmada (${studentCount}/${maxCapacity})` : `${studentCount}/${minStudents} mín. (corte 5h)`,
+    badgeText: `${studentCount}/${minStudents} inscritos`,
     reason: isFull ? "Aforo completo" : "Abierta para reservas"
   };
 }
 
 /**
  * Regla de negocio oficial de Dance Factory:
- * Si quedan menos de 5 horas para la clase:
- * - Con < 4 personas: la sesión queda suspendida por aforo mínimo y se reembolsa el saldo a los alumnos.
- * - Con >= 4 personas: la sesión permanece ABIERTA y activa (puedeReservar: true) hasta el inicio o completar 20 plazas.
+ * Las sesiones permanecen ABIERTAS y activas (puedeReservar: true) hasta su inicio o completar aforo.
+ * La suspensión de clases es manual y exclusiva de Administración.
  */
 export function getOpenClassSessionStatus(
   claseId: string,
@@ -621,38 +692,21 @@ export function getOpenClassSessionStatus(
     };
   }
 
-  // REGLA DE LAS 5 HORAS PREVIAS (CORTE DE AFORO MÍNIMO)
-  if (horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
-    if (reservasCount < OPEN_CLASS_MIN_STUDENTS) {
-      return {
-        status: "suspendida_aforo_minimo",
-        horasRestantes,
-        reservasCount,
-        minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
-        puedeReservar: false,
-        refundRequired: true,
-        motivoBloqueo: `Clase suspendida: No se alcanzó el mínimo de ${OPEN_CLASS_MIN_STUDENTS} personas a las ${OPEN_CLASS_CUTOFF_HOURS}h previas de la sesión. Saldo devuelto a tu bono.`,
-        badgeText: `⚠️ Suspendida (mín. ${OPEN_CLASS_MIN_STUDENTS} pers.)`,
-        badgeColor: "bg-red-500/20 text-red-300 border border-red-500/40"
-      };
-    } else {
-      return {
-        status: "confirmada",
-        horasRestantes,
-        reservasCount,
-        minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
-        puedeReservar: !isFull,
-        refundRequired: false,
-        motivoBloqueo: isFull ? "Aforo completo" : undefined,
-        badgeText: isFull ? "Aforo Completo" : `✓ Confirmada (${reservasCount}/${aforoMaximo})`,
-        badgeColor: isFull 
-          ? "bg-red-500/20 text-red-300 border border-red-500/30" 
-          : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
-      };
-    }
+  // SUSPENSIÓN MANUAL POR ADMINISTRACIÓN
+  if (isSesionSuspendida(claseId, fechaISO)) {
+    return {
+      status: "suspendida_aforo_minimo",
+      horasRestantes,
+      reservasCount,
+      minimoRequerido: OPEN_CLASS_MIN_STUDENTS,
+      puedeReservar: false,
+      refundRequired: false,
+      motivoBloqueo: "Clase suspendida por Administración.",
+      badgeText: "⚠️ Suspendida por Administración",
+      badgeColor: "bg-red-500/20 text-red-300 border border-red-500/40"
+    };
   }
 
-  // Faltan 5 horas o más
   const hasMin = reservasCount >= OPEN_CLASS_MIN_STUDENTS;
   return {
     status: hasMin ? "confirmada" : "abierta",
@@ -662,10 +716,14 @@ export function getOpenClassSessionStatus(
     puedeReservar: !isFull,
     refundRequired: false,
     motivoBloqueo: isFull ? "Aforo completo" : undefined,
-    badgeText: hasMin
-      ? `✓ Confirmada (${reservasCount}/${aforoMaximo})`
-      : `${reservasCount}/${OPEN_CLASS_MIN_STUDENTS} mín. (corte 5h)`,
-    badgeColor: hasMin
+    badgeText: isFull 
+      ? "Aforo Completo" 
+      : hasMin 
+      ? `✓ Confirmada (${reservasCount}/${aforoMaximo})` 
+      : `${reservasCount}/${OPEN_CLASS_MIN_STUDENTS} mín.`,
+    badgeColor: isFull
+      ? "bg-red-500/20 text-red-300 border border-red-500/30"
+      : hasMin
       ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
       : "bg-amber-500/15 text-amber-300 border border-amber-500/30"
   };
@@ -731,138 +789,173 @@ export async function deleteAlumnosClasesBySessionDate(
   return { success: true, count: count || 0 };
 }
 
-let isAutoSuspensionProcessing = false;
-
 /**
- * Detecta sesiones dentro de las 5 horas previas con menos de 4 alumnos,
- * cancela la sesión y reembolsa automáticamente 1 clase al bono del alumno en Supabase.
- * 
- * Reglas de seguridad e idempotencia:
- * 1. Opera ÚNICAMENTE sobre sesiones FUTURAS (horasRestantes > 0 && horasRestantes < OPEN_CLASS_CUTOFF_HOURS).
- * 2. Utiliza un registro persistente (df_suspended_sessions_v1) para garantizar que una sesión jamás se suspenda ni reembolse más de una vez.
- * 3. Al reembolsar, elimina el registro en alumnos_clases en Supabase de forma segura por fecha (deleteAlumnosClasesBySessionDate).
+ * Suspende manualmente una sesión por decisión de Administración:
+ * 1. Marca la sesión en df_suspended_sessions_v1.
+ * 2. Cancela las reservas existentes y reembolsa atómicamente 1 clase en Supabase (deleteAlumnosClasesBySessionDate).
+ * 3. Registra auditoría con logActivity.
+ * 4. Emite eventos locales y cross-device (df_reservas_updated) vía syncEventBus.
  */
-export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ canceladasCount: number; alumnosReembolsados: string[] }> {
-  if (typeof window === "undefined") return { canceladasCount: 0, alumnosReembolsados: [] };
-  
-  if (isAutoSuspensionProcessing) {
-    return { canceladasCount: 0, alumnosReembolsados: [] };
+export async function suspenderSesionManualmente(
+  claseId: string,
+  fechaISO: string,
+  motivo: string = "Suspendida por Administración",
+  claseNombre?: string
+): Promise<{ success: boolean; count: number; alumnosReembolsados: string[]; message: string }> {
+  if (typeof window === "undefined") {
+    return { success: false, count: 0, alumnosReembolsados: [], message: "Entorno no compatible." };
   }
-  isAutoSuspensionProcessing = true;
 
+  const cleanISO = cleanDateISO(fechaISO);
+  const normClassId = normalizeClaseId(claseId);
+  const sessionKey = `${normClassId}_${cleanISO}`;
+
+  // 1. Sincronizar SIEMPRE desde Supabase antes de proceder
   try {
-    // 0. Sincronizar SIEMPRE desde Supabase antes de evaluar el aforo para nunca evaluar sobre un localStorage parcial o desactualizado
-    try {
-      await syncReservasFromSupabase();
-    } catch (syncErr) {
-      console.warn("[verificarYSuspenderSesionesBajoAforo] No se pudo sincronizar con Supabase, abortando evaluación:", syncErr);
-      return { canceladasCount: 0, alumnosReembolsados: [] };
-    }
+    await syncReservasFromSupabase();
+  } catch (syncErr) {
+    console.warn("[suspenderSesionManualmente] Error sincronizando con Supabase:", syncErr);
+  }
 
-    // Conjunto de sesiones ya suspendidas previamente
-    let suspendedSessions: string[] = [];
-    try {
-      const raw = localStorage.getItem("df_suspended_sessions_v1");
-      if (raw) suspendedSessions = JSON.parse(raw);
-    } catch {}
-    const suspendedSet = new Set(suspendedSessions);
+  // 2. Registrar en conjunto de suspendidas
+  const suspendedSessions = getSuspendedSessions();
+  const suspendedSet = new Set(suspendedSessions);
+  suspendedSet.add(sessionKey);
+  try {
+    localStorage.setItem("df_suspended_sessions_v1", JSON.stringify(Array.from(suspendedSet)));
+  } catch {}
 
-    const current = getOpenClassReservas();
-    let updated = false;
-    const reembolsados: string[] = [];
+  // 3. Procesar reservas existentes de la sesión
+  const current = getOpenClassReservas();
+  let updated = false;
+  const reembolsados: string[] = [];
 
-    const sessionsMap: Record<string, OpenClassReserva[]> = {};
-    current.forEach(r => {
+  for (const r of current) {
+    if (normalizeClaseId(r.clase_id) === normClassId && cleanDateISO(r.fecha_iso) === cleanISO) {
       if (r.estado === "Confirmada") {
-        const key = `${normalizeClaseId(r.clase_id)}_${cleanDateISO(r.fecha_iso)}`;
-        if (!sessionsMap[key]) sessionsMap[key] = [];
-        sessionsMap[key].push(r);
-      }
-    });
+        r.estado = "Cancelada";
+        r.asistido = false;
+        updated = true;
 
-    for (const [sessionKey, reservas] of Object.entries(sessionsMap)) {
-      // Si la sesión ya fue suspendida y reembolsada, no volver a procesar
-      if (suspendedSet.has(sessionKey)) continue;
+        try {
+          const delResult = await deleteAlumnosClasesBySessionDate(r.alumno_id, normClassId, cleanISO);
+          if (delResult.success && delResult.count > 0) {
+            reembolsados.push(r.alumno_nombre || r.alumno_id);
 
-      if (reservas.length > 0 && reservas.length < OPEN_CLASS_MIN_STUDENTS) {
-        const sample = reservas[0];
-        const cleanISO = cleanDateISO(sample.fecha_iso);
-        const normClassId = normalizeClaseId(sample.clase_id);
-        const horasRestantes = getHorasRestantesParaSesion(cleanISO, sample.hora_inicio);
-        
-        // ÚNICAMENTE sesiones futuras dentro del margen de 5 horas previas (< 5h)
-        if (horasRestantes > 0 && horasRestantes < OPEN_CLASS_CUTOFF_HOURS) {
-          // Doble verificación autoritativa directa en Supabase alumnos_clases antes de suspender
-          const { startISO, endISO } = getMadridDayRangeUTC(cleanISO);
-          const literalStart = `${cleanISO}T00:00:00.000Z`;
-          const literalEnd = `${cleanISO}T23:59:59.999Z`;
-          const minBound = startISO < literalStart ? startISO : literalStart;
-          const maxBound = endISO > literalEnd ? endISO : literalEnd;
+            const { data: st } = await supabase
+              .from("alumnos")
+              .select("id, clases_restantes, plan_activo")
+              .eq("id", r.alumno_id)
+              .maybeSingle();
 
-          const { data: dbSessionRows, error: dbCountErr } = await supabase
-            .from("alumnos_clases")
-            .select("id, alumno_id")
-            .eq("clase_id", normClassId)
-            .gte("asignado_en", minBound)
-            .lte("asignado_en", maxBound);
-
-          // Si hubo error de red o si en Supabase hay >= 4 alumnos reales, JAMÁS suspender la clase
-          if (dbCountErr || !dbSessionRows || dbSessionRows.length >= OPEN_CLASS_MIN_STUDENTS) {
-            continue;
-          }
-
-          suspendedSet.add(sessionKey);
-
-          for (const r of reservas) {
-            r.estado = "Cancelada";
-            r.asistido = false;
-            updated = true;
-
-            // Reembolsar 1 clase en Supabase ÚNICAMENTE si la fila se elimina realmente de alumnos_clases (idempotencia multi-dispositivo)
-            try {
-              // Safe deletion in alumnos_clases filtered strictly by session date
-              const delResult = await deleteAlumnosClasesBySessionDate(r.alumno_id, r.clase_id, cleanISO);
-
-              if (delResult.success && delResult.count > 0) {
-                reembolsados.push(r.alumno_nombre || r.alumno_id);
-
-                const { data: st } = await supabase
-                  .from("alumnos")
-                  .select("id, clases_restantes, plan_activo")
-                  .eq("id", r.alumno_id)
-                  .maybeSingle();
-
-                if (st && typeof st.clases_restantes === "number") {
-                  const planLower = (st.plan_activo || "").toLowerCase();
-                  const isUnlimited = planLower.includes("ilimitad");
-                  if (!isUnlimited) {
-                    await supabase.from("alumnos").update({
-                      clases_restantes: st.clases_restantes + 1
-                    }).eq("id", st.id);
-                  }
-                }
+            if (st && typeof st.clases_restantes === "number") {
+              const planLower = (st.plan_activo || "").toLowerCase();
+              const isUnlimited = planLower.includes("ilimitad");
+              if (!isUnlimited) {
+                await supabase.from("alumnos").update({
+                  clases_restantes: st.clases_restantes + 1
+                }).eq("id", st.id);
               }
-            } catch (e) {
-              console.error("Error reembolsando saldo a alumno por aforo mínimo:", e);
             }
           }
+        } catch (err) {
+          console.error("[suspenderSesionManualmente] Error reembolsando alumno:", err);
         }
       }
     }
-
-    if (updated) {
-      try {
-        localStorage.setItem("df_suspended_sessions_v1", JSON.stringify(Array.from(suspendedSet)));
-      } catch {}
-      saveOpenClassReservas(current);
-      window.dispatchEvent(new Event("df_reservas_updated"));
-      publishSyncEvent("df_reservas_updated");
-    }
-
-    return { canceladasCount: reembolsados.length, alumnosReembolsados: reembolsados };
-  } finally {
-    isAutoSuspensionProcessing = false;
   }
+
+  if (updated) {
+    saveOpenClassReservas(current);
+  }
+
+  // 4. Registrar en log de auditoría
+  try {
+    await logActivity({
+      origen: "recepcion",
+      tipo_evento: "clase_suspendida",
+      descripcion: `Clase suspendida manualmente por Administración: ${claseNombre || normClassId} para el ${cleanISO}. ${reembolsados.length} alumnos reembolsados. Motivo: ${motivo}`,
+      usuario_afectado: "Administración Dance Factory",
+      sede: "Dance Factory"
+    });
+  } catch (logErr) {
+    console.warn("[suspenderSesionManualmente] Error registrando auditoría:", logErr);
+  }
+
+  // 5. Difundir evento de sincronización multi-dispositivo y multi-pestaña
+  try {
+    window.dispatchEvent(new Event("df_reservas_updated"));
+    publishSyncEvent("df_reservas_updated", {
+      sessionKey,
+      claseId: normClassId,
+      fechaISO: cleanISO,
+      action: "suspended"
+    });
+  } catch {}
+
+  return {
+    success: true,
+    count: reembolsados.length,
+    alumnosReembolsados: reembolsados,
+    message: `Sesión suspendida con éxito. Se ha reembolsado la clase a ${reembolsados.length} alumno(s).`
+  };
+}
+
+/**
+ * Reactiva (reanuda) una sesión previamente suspendida por Administración.
+ */
+export async function reactivarSesionSuspendida(
+  claseId: string,
+  fechaISO: string,
+  claseNombre?: string
+): Promise<{ success: boolean; message: string }> {
+  if (typeof window === "undefined") {
+    return { success: false, message: "Entorno no compatible." };
+  }
+
+  const cleanISO = cleanDateISO(fechaISO);
+  const normClassId = normalizeClaseId(claseId);
+  const sessionKey = `${normClassId}_${cleanISO}`;
+
+  const suspendedSessions = getSuspendedSessions();
+  const filtered = suspendedSessions.filter(k => k !== sessionKey);
+  try {
+    localStorage.setItem("df_suspended_sessions_v1", JSON.stringify(filtered));
+  } catch {}
+
+  try {
+    await logActivity({
+      origen: "recepcion",
+      tipo_evento: "clase_reactivada",
+      descripcion: `Sesión reactivada manualmente por Administración: ${claseNombre || normClassId} para el ${cleanISO}.`,
+      usuario_afectado: "Administración Dance Factory",
+      sede: "Dance Factory"
+    });
+  } catch {}
+
+  try {
+    window.dispatchEvent(new Event("df_reservas_updated"));
+    publishSyncEvent("df_reservas_updated", {
+      sessionKey,
+      claseId: normClassId,
+      fechaISO: cleanISO,
+      action: "reactivated"
+    });
+  } catch {}
+
+  return {
+    success: true,
+    message: "Sesión reanudada con éxito. Ya está abierta de nuevo para reservas."
+  };
+}
+
+/**
+ * Mantenido por retrocompatibilidad de interfaz.
+ * Nota oficial: A petición de Lucía (Administración), la regla automática de corte a las 5 horas fue retirada.
+ * Las suspensiones de clases son ahora 100% manuales ejecutadas por Administración.
+ */
+export async function verificarYSuspenderSesionesBajoAforo(): Promise<{ canceladasCount: number; alumnosReembolsados: string[] }> {
+  return { canceladasCount: 0, alumnosReembolsados: [] };
 }
 
 /**
@@ -1289,9 +1382,13 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     if (data) return await resolveActiveSiblingStudent(data);
   }
 
-  // 2. Normalizar teclado español y prefijos
+  // 2. Normalizar teclado español y prefijos (incluye prefijos de profesor DF-TEACHER-, DF-PROFESOR-)
   const normalized = trimmed.replace(/[/\\':_.]/g, "-").trim();
   const cleanToken = normalized
+    .replace(/^DF-TEACHER-/i, "")
+    .replace(/^DF-PROFESOR-/i, "")
+    .replace(/^TEACHER-/i, "")
+    .replace(/^PROFESOR-/i, "")
     .replace(/^DF-STUDENT-/i, "")
     .replace(/^DF-ALUMNO-/i, "")
     .replace(/^STUDENT-/i, "")
@@ -1301,7 +1398,7 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
 
   const pureToken = trimmed
     .replace(/[^a-zA-Z0-9]/g, "")
-    .replace(/^(DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, "")
+    .replace(/^(DFTEACHER|DFPROFESOR|TEACHER|PROFESOR|DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, "")
     .trim();
 
   const candidates = Array.from(new Set([
@@ -1310,10 +1407,19 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     normalized,
     trimmed,
     `DF-${cleanToken}`,
-    `DF-${pureToken}`
+    `DF-${pureToken}`,
+    `PROF-${cleanToken}`,
+    `PROF-${pureToken}`
   ])).filter(Boolean);
 
   for (const token of candidates) {
+    // 2.0 Mapping de IDs/PINs de Profesores (ej. 1001, 1005, etc.)
+    const mappedTeacherId = TEACHER_DB_ID_MAP[token] || TEACHER_DB_ID_MAP[token.toUpperCase()];
+    if (mappedTeacherId) {
+      const { data: byTeacherId } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("id", mappedTeacherId).maybeSingle();
+      if (byTeacherId) return await resolveActiveSiblingStudent(byTeacherId);
+    }
+
     // Exact nfc_token
     const { data: byNfc } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("nfc_token", token).limit(1).maybeSingle();
     if (byNfc) return await resolveActiveSiblingStudent(byNfc);
@@ -1670,6 +1776,11 @@ export async function reconcileBonoConsumptionOnCheckIn(
   horaInicio?: string | null
 ): Promise<{ deducted: boolean; newBalance: number | null }> {
   if (!student?.id) return { deducted: false, newBalance: student?.clases_restantes ?? null };
+
+  // Docentes y profesores JAMÁS consumen clases de bono al validar acceso en torno
+  if (isTeacherProfile(student)) {
+    return { deducted: false, newBalance: student?.clases_restantes ?? null };
+  }
 
   const planLower = (student.plan_activo || "").toLowerCase().trim();
   const isRegularOrUnlimited =

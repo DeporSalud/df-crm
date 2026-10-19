@@ -6,8 +6,9 @@ import {
   UserCheck, Check, Clock, Users, ShieldAlert, Sparkles, Calendar, Search, 
   Lock, LogOut, KeyRound, ArrowLeft, ChevronRight, Flame, Ticket, GraduationCap, 
   CreditCard, Building2, Trash2, AlertTriangle, AlertCircle, Tag, CheckCircle2, ShieldCheck, X,
-  CalendarDays, BarChart3, MessageCircle, Filter
+  CalendarDays, BarChart3, MessageCircle, Filter, QrCode
 } from "lucide-react";
+import { QRCodeCanvas } from "qrcode.react";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
 import { 
@@ -252,10 +253,14 @@ export default function ProfesorPortal() {
   const [pinError, setPinError] = useState<string>("");
   
   const [selectedProfesor, setSelectedProfesor] = useState<string>("LUCÍA MUÑOZ");
-  const [activeTab, setActiveTab] = useState<"mis_clases" | "open_classes" | "comprar_bono">("mis_clases");
+  const [activeTab, setActiveTab] = useState<"mis_clases" | "open_classes" | "comprar_bono" | "perfil">("mis_clases");
   
   // Teacher's own student record in `alumnos` (to track their bono balance and Open Class enrollments)
   const [teacherStudent, setTeacherStudent] = useState<any | null>(null);
+  const [showQrModal, setShowQrModal] = useState<boolean>(false);
+
+  const teacherNfcToken = teacherStudent?.nfc_token || (typeof window !== "undefined" && sessionStorage.getItem("df_profesor_pin") ? `PROF-${sessionStorage.getItem("df_profesor_pin")}` : "PROF-1001");
+  const teacherQrValue = `DF-TEACHER-${teacherNfcToken}`;
 
   // Mis Clases (Teacher classes)
   const [clasesProfesor, setClasesProfesor] = useState<any[]>([]);
@@ -1742,6 +1747,17 @@ export default function ProfesorPortal() {
                 </span>
               </div>
             </div>
+
+            {/* Mi QR Torno */}
+            <button
+              type="button"
+              onClick={() => setShowQrModal(true)}
+              className="flex items-center gap-1.5 bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/30 text-cyan-300 px-3 py-1.5 rounded-xl shrink-0 cursor-pointer transition-colors shadow-sm font-bold text-xs"
+              title="Ver mi código QR de acceso a tornos y salas"
+            >
+              <QrCode size={15} />
+              <span className="hidden sm:inline">Mi QR Torno</span>
+            </button>
           </div>
         </header>
 
@@ -2672,6 +2688,106 @@ export default function ProfesorPortal() {
             </div>
           )}
 
+          {/* ==================================================== */}
+          {/* MÓDULO 4: PERFIL DOCENTE & PASE DIGITAL QR */}
+          {/* ==================================================== */}
+          {activeTab === "perfil" && (
+            <div className="space-y-5">
+              {/* Carnet Digital QR de Acceso para Profesores */}
+              <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-3xl p-6 shadow-2xl text-center space-y-4">
+                <div className="flex items-center justify-center gap-2 text-[var(--color-secondary)] text-xs font-semibold uppercase tracking-wider">
+                  <QrCode size={16} />
+                  <span>Pase Digital de Acceso a Torno & Salas (Docente)</span>
+                </div>
+
+                {/* QR Container (Blindado contra modo oscuro forzado e inversión de Android/Samsung) */}
+                <div 
+                  className="p-4 bg-white rounded-2xl inline-block shadow-xl shadow-black/40 border-4 border-cyan-400/30 qr-container"
+                  style={{
+                    forcedColorAdjust: "none",
+                    WebkitPrintColorAdjust: "exact",
+                    colorScheme: "light",
+                    backgroundColor: "#ffffff",
+                    isolation: "isolate",
+                    filter: "none"
+                  }}
+                >
+                  <QRCodeCanvas
+                    value={teacherQrValue}
+                    size={180}
+                    level="H"
+                    bgColor="#ffffff"
+                    fgColor="#000000"
+                    includeMargin={false}
+                    style={{
+                      display: "block",
+                      borderRadius: "8px",
+                      forcedColorAdjust: "none",
+                      filter: "none"
+                    }}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-center gap-2">
+                    <span className="text-xs text-slate-400">Identificador Torno:</span>
+                    <span className="text-sm font-mono font-bold text-white tracking-widest bg-slate-900/80 px-2.5 py-0.5 rounded-lg border border-slate-700">
+                      {teacherNfcToken}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--color-text-secondary)] max-w-sm mx-auto">
+                    Acerca este código al lector del torno en <strong>Studio 1 (Plaza El Tejar)</strong> o <strong>Studio 2 (Paseo Castilla)</strong> para desbloquear el paso y registrar tu asistencia como profesor/a.
+                  </p>
+                </div>
+
+                <div className="pt-2 flex items-center justify-center gap-2">
+                  <span className="px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
+                    <CheckCircle2 size={12} />
+                    Acceso Torno & Salas Habilitado
+                  </span>
+                </div>
+              </div>
+
+              {/* Perfil & Datos Docentes */}
+              <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-6 shadow-xl space-y-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[var(--color-secondary)] to-[var(--color-primary)] flex items-center justify-center text-white font-bold text-2xl shadow-lg">
+                    {selectedProfesor.split(" ").slice(0, 2).map(n => n[0]).join("")}
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-white font-[family-name:var(--font-heading)]">
+                      {selectedProfesor}
+                    </h2>
+                    <span className="inline-block px-2.5 py-0.5 bg-[var(--color-secondary)]/15 text-[var(--color-secondary)] text-[11px] font-semibold rounded-full border border-[var(--color-secondary)]/25 mt-1">
+                      Docente Oficial Dance Factory
+                    </span>
+                  </div>
+                </div>
+
+                <div className="border-t border-[var(--color-border)] pt-4 space-y-2.5 text-xs text-slate-300">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Sede Asignada:</span>
+                    <strong className="text-white">
+                      {teacherStudent?.sede === "tejar" ? "Studio 1 (Plaza El Tejar)" : "Studio 2 (Paseo Castilla)"}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Email Corporativo:</span>
+                    <strong className="text-white">{teacherStudent?.email || `${selectedProfesor.toLowerCase().replace(/\s+/g, ".")}@dancefactory.es`}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Saldo Open Class Docente:</span>
+                    <strong className="text-cyan-400 font-mono">{teacherStudent?.clases_restantes || 0} clases</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Token Acceso NFC / QR:</span>
+                    <strong className="text-cyan-400 font-mono">{teacherNfcToken}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
         </main>
       </div>
 
@@ -3106,7 +3222,87 @@ export default function ProfesorPortal() {
           <Tag size={20} className={activeTab === "comprar_bono" ? "scale-110 transition-transform" : ""} />
           <span className="text-[10px] mt-1 font-semibold">Bonos</span>
         </button>
+
+        <button
+          onClick={() => {
+            setActiveTab("perfil");
+            setSelectedClase(null);
+          }}
+          className={`flex flex-col items-center py-1 px-4 transition-colors ${
+            activeTab === "perfil"
+              ? "text-[var(--color-secondary)] font-bold"
+              : "text-[var(--color-text-secondary)] hover:text-white"
+          }`}
+        >
+          <QrCode size={20} className={activeTab === "perfil" ? "scale-110 transition-transform" : ""} />
+          <span className="text-[10px] mt-1 font-semibold">Perfil & QR</span>
+        </button>
       </nav>
+
+      {/* Modal Rápido: Mi QR Torno */}
+      {showQrModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="relative w-full max-w-xs bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-3xl p-6 shadow-2xl text-center space-y-4 animate-in zoom-in-95 duration-200">
+            <button
+              onClick={() => setShowQrModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white text-sm font-bold cursor-pointer"
+            >
+              ✕
+            </button>
+
+            <div className="space-y-1">
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
+                Pase Docente de Acceso
+              </span>
+              <h3 className="text-base font-bold text-white pt-1">{selectedProfesor}</h3>
+              <p className="text-[11px] text-slate-400">Lector de Torno / Recepción</p>
+            </div>
+
+            <div 
+              className="p-4 bg-white rounded-2xl inline-block shadow-xl shadow-black/40 border-4 border-cyan-400/30 qr-container"
+              style={{
+                forcedColorAdjust: "none",
+                WebkitPrintColorAdjust: "exact",
+                colorScheme: "light",
+                backgroundColor: "#ffffff",
+                isolation: "isolate",
+                filter: "none"
+              }}
+            >
+              <QRCodeCanvas
+                value={teacherQrValue}
+                size={180}
+                level="H"
+                bgColor="#ffffff"
+                fgColor="#000000"
+                includeMargin={false}
+                style={{
+                  display: "block",
+                  borderRadius: "8px",
+                  forcedColorAdjust: "none",
+                  filter: "none"
+                }}
+              />
+            </div>
+
+            <div className="space-y-1 text-center">
+              <p className="text-xs font-mono font-bold text-cyan-400">
+                Token: {teacherNfcToken}
+              </p>
+              <p className="text-[11px] text-slate-400 leading-tight">
+                Acerca este código al escáner del torno para abrir el acceso.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setShowQrModal(false)}
+              className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition-colors cursor-pointer"
+            >
+              Cerrar
+            </button>
+          </div>
+        </div>
+      )}
 
     </div>
   );

@@ -5,6 +5,23 @@
  * Compliant with Milestone 2 Requirement R1.1.
  */
 
+export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: string): boolean {
+  if (!student && !emailOrId && !userRole) return false;
+  const plan = (student?.plan_activo || "").toLowerCase();
+  const name = (student?.nombre_completo || student?.name || "").toLowerCase();
+  const email = (student?.email || emailOrId || "").toLowerCase();
+  const role = (student?.rol || userRole || "").toLowerCase();
+  const dni = (student?.dni || "").toUpperCase();
+  const nfc = String(student?.nfc_token || "").toUpperCase();
+
+  if (role === "profesor" || role === "docente" || role === "admin" || role === "administrador") return true;
+  if (plan.includes("docente") || plan.includes("profesor") || plan.includes("profesora")) return true;
+  if (email.endsWith("@dancefactory.es") && !email.startsWith("alumno")) return true;
+  if (dni.startsWith("PROF-") || dni.startsWith("DOC-")) return true;
+  if (nfc.startsWith("PROF-")) return true;
+  return false;
+}
+
 export type AccessDenialReason = 
   | "ALUMNO_NO_ENCONTRADO"
   | "ESTADO_INACTIVO"
@@ -115,6 +132,18 @@ export function evaluateReceptionAccess(
       sound: "sawtooth",
       message: "⛔ ACCESO DENEGADO: Código no reconocido o alumno inexistente. Pasar por mostrador de recepción",
       motivoDetallado: "Alumno no encontrado"
+    };
+  }
+
+  // 1.1 Si es profesor/docente, autorizar acceso inmediatamente (Pase Digital de Profesor para torno)
+  if (isTeacherProfile(student)) {
+    return {
+      granted: true,
+      reason: "ACCESO_AUTORIZADO",
+      overlayColor: "green",
+      sound: "sine",
+      message: `✓ ACCESO AUTORIZADO (Docente): Bienvenido/a profesor/a ${student.nombre_completo || "Docente"}`,
+      motivoDetallado: "Acceso Docente Autorizado (Pase Digital de Profesor)"
     };
   }
 

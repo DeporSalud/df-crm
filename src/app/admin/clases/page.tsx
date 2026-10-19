@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { subscribeSyncEvent, publishSyncEvent } from "@/lib/syncEventBus";
-import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2, AlertTriangle, RefreshCw } from "lucide-react";
 import AppModal, { ModalState } from "@/components/AppModal";
 import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
 import { 
@@ -16,7 +16,11 @@ import {
   getNextUpcomingSessionDate,
   CalendarDayItem,
   LEGACY_ID_MAP,
-  DEFAULT_STUDIO2_OPEN_CLASSES 
+  DEFAULT_STUDIO2_OPEN_CLASSES,
+  isSesionSuspendida,
+  suspenderSesionManualmente,
+  reactivarSesionSuspendida,
+  getTodayISO
 } from "@/lib/openClassService";
 import { logActivity } from "@/lib/activityLogger";
 
@@ -176,6 +180,107 @@ export default function ClasesPage() {
   
   // Modal State for Dialogs / Alerts / Confirmations
   const [modal, setModal] = useState<ModalState>({ isOpen: false, message: "" });
+
+  // Dedicated Open Class Session Suspension Modal State
+  const [suspendModalState, setSuspendModalState] = useState<{
+    isOpen: boolean;
+    clase: ClaseCuadrante | null;
+    selectedDateISO: string;
+    reason: string;
+    isProcessing: boolean;
+  }>({
+    isOpen: false,
+    clase: null,
+    selectedDateISO: "",
+    reason: "Decisión de Dirección / Imprevisto técnico",
+    isProcessing: false
+  });
+
+  const handlePromptSuspendOpenClass = (clase: ClaseCuadrante) => {
+    const sessions = getUpcomingSessionsForClass(clase, 8);
+    const todayISO = getTodayISO();
+    const todayOrUpcoming = sessions.find(s => s.dateISO >= todayISO);
+    const chosenDate = todayOrUpcoming ? todayOrUpcoming.dateISO : (sessions[0]?.dateISO || todayISO);
+    setSuspendModalState({
+      isOpen: true,
+      clase,
+      selectedDateISO: chosenDate,
+      reason: "Decisión de Dirección / Imprevisto técnico",
+      isProcessing: false
+    });
+  };
+
+  const handleExecuteSuspendSessionFromTable = async () => {
+    if (!suspendModalState.clase || !suspendModalState.selectedDateISO) return;
+    setSuspendModalState(prev => ({ ...prev, isProcessing: true }));
+    try {
+      const res = await suspenderSesionManualmente(
+        suspendModalState.clase.id,
+        suspendModalState.selectedDateISO,
+        suspendModalState.reason
+      );
+      if (res.success) {
+        logActivity({
+          origen: "recepcion",
+          tipo_evento: "cancelacion_reserva",
+          descripcion: `Administración suspendió manualmente sesión de "${suspendModalState.clase.nombre_clase}" (${suspendModalState.selectedDateISO}). Motivo: ${suspendModalState.reason}. Se cancelaron ${res.count} reservas.`,
+          usuario_afectado: suspendModalState.clase.profesor || "Alumnos Open Class",
+          sede: getStudioDisplayName(suspendModalState.clase.sede)
+        });
+        setModal({
+          isOpen: true,
+          title: "Sesión Suspendida",
+          message: `La sesión del ${suspendModalState.selectedDateISO} ha sido suspendida. Se cancelaron ${res.count} reservas y se reintegraron las clases a los alumnos.`,
+          type: "success",
+          confirmText: "Entendido"
+        });
+        setSuspendModalState(prev => ({ ...prev, isOpen: false, isProcessing: false }));
+        fetchClasesAndEnrollments();
+      } else {
+        throw new Error("No se pudo suspender la sesión.");
+      }
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        title: "Error al Suspender",
+        message: err.message || "Error al suspender la sesión.",
+        type: "warning",
+        confirmText: "Cerrar"
+      });
+      setSuspendModalState(prev => ({ ...prev, isProcessing: false }));
+    }
+  };
+
+  const handleExecuteReactivateSessionFromTable = async () => {
+    if (!suspendModalState.clase || !suspendModalState.selectedDateISO) return;
+    setSuspendModalState(prev => ({ ...prev, isProcessing: true }));
+    try {
+      const res = await reactivarSesionSuspendida(
+        suspendModalState.clase.id,
+        suspendModalState.selectedDateISO
+      );
+      if (res.success) {
+        setModal({
+          isOpen: true,
+          title: "Sesión Reactivada",
+          message: `La sesión del ${suspendModalState.selectedDateISO} vuelve a estar activa y admite reservas.`,
+          type: "success",
+          confirmText: "Entendido"
+        });
+        setSuspendModalState(prev => ({ ...prev, isOpen: false, isProcessing: false }));
+        fetchClasesAndEnrollments();
+      }
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        title: "Error al Reactivar",
+        message: err.message || "Error al reactivar la sesión.",
+        type: "warning",
+        confirmText: "Cerrar"
+      });
+      setSuspendModalState(prev => ({ ...prev, isProcessing: false }));
+    }
+  };
 
   const { activeSede } = useSede();
 
@@ -817,20 +922,27 @@ export default function ClasesPage() {
                             <span className="text-[9.5px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-300 border border-purple-500/20">
                               Open Class • Sin matrícula
                             </span>
-                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border inline-flex items-center gap-1.5 ${
-                              isFull
-                                ? "bg-[var(--color-danger)]/10 text-[var(--color-danger)] border-[var(--color-danger)]/30"
-                                : ocReservasCount > 0 
-                                ? "bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 shadow-sm shadow-cyan-500/10" 
-                                : "bg-[var(--color-bg)] text-[var(--color-text-secondary)] border-[var(--color-border)]"
-                            }`}>
-                              <Calendar size={12} className={ocReservasCount > 0 ? "text-cyan-400" : "text-slate-400"} />
-                              <span>
-                                {ocIsToday
-                                  ? `Hoy: ${ocReservasCount} / ${maxCap} reservas`
-                                  : `Próx. ${ocDayItem?.fullLabel}: ${ocReservasCount} / ${maxCap} reservas`}
+                            {ocDayItem && isSesionSuspendida(item.id, ocDayItem.dateISO) ? (
+                              <span className="px-2.5 py-0.5 rounded-full text-xs font-bold border inline-flex items-center gap-1.5 bg-rose-500/15 text-rose-300 border-rose-500/40 shadow-sm">
+                                <AlertTriangle size={12} className="text-rose-400" />
+                                <span>{ocIsToday ? "Hoy: Suspendida" : `Próx. ${ocDayItem?.fullLabel}: Suspendida`}</span>
                               </span>
-                            </span>
+                            ) : (
+                              <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border inline-flex items-center gap-1.5 ${
+                                isFull
+                                  ? "bg-[var(--color-danger)]/10 text-[var(--color-danger)] border-[var(--color-danger)]/30"
+                                  : ocReservasCount > 0 
+                                  ? "bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 shadow-sm shadow-cyan-500/10" 
+                                  : "bg-[var(--color-bg)] text-[var(--color-text-secondary)] border-[var(--color-border)]"
+                              }`}>
+                                <Calendar size={12} className={ocReservasCount > 0 ? "text-cyan-400" : "text-slate-400"} />
+                                <span>
+                                  {ocIsToday
+                                    ? `Hoy: ${ocReservasCount} / ${maxCap} reservas`
+                                    : `Próx. ${ocDayItem?.fullLabel}: ${ocReservasCount} / ${maxCap} reservas`}
+                                </span>
+                              </span>
+                            )}
                           </div>
                         ) : (
                           <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border inline-flex items-center gap-1.5 ${
@@ -852,16 +964,26 @@ export default function ClasesPage() {
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex justify-end gap-1.5">
-                          {/* BOTÓN VER ALUMNOS / RESERVAS */}
+                          {/* BOTÓN VER ALUMNOS / RESERVAS / SUSPENDER */}
                           {isOC ? (
-                            <button 
-                              onClick={() => handleViewRoster(item)}
-                              className="flex items-center gap-1 text-cyan-300 hover:bg-cyan-500 hover:text-slate-950 transition-all text-xs font-bold bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/30 shadow-sm cursor-pointer"
-                              title="Ver reservas y asistentes de esta Open Class"
-                            >
-                              <Calendar className="w-3.5 h-3.5" />
-                              <span>Ver Reservas</span>
-                            </button>
+                            <>
+                              <button 
+                                onClick={() => handleViewRoster(item)}
+                                className="flex items-center gap-1 text-cyan-300 hover:bg-cyan-500 hover:text-slate-950 transition-all text-xs font-bold bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/30 shadow-sm cursor-pointer"
+                                title="Ver reservas y asistentes de esta Open Class"
+                              >
+                                <Calendar className="w-3.5 h-3.5" />
+                                <span>Ver Reservas</span>
+                              </button>
+                              <button 
+                                onClick={() => handlePromptSuspendOpenClass(item)}
+                                className="flex items-center gap-1 text-rose-300 hover:bg-rose-500 hover:text-white transition-all text-xs font-bold bg-rose-500/10 px-2 py-1 rounded-lg border border-rose-500/30 shadow-sm cursor-pointer"
+                                title="Suspender o reactivar sesiones de esta Open Class"
+                              >
+                                <AlertTriangle className="w-3.5 h-3.5" />
+                                <span>Suspender</span>
+                              </button>
+                            </>
                           ) : (
                             <button 
                               onClick={() => handleViewRoster(item)}
@@ -1272,6 +1394,189 @@ export default function ClasesPage() {
           fetchClasesAndEnrollments();
         }}
       />
+
+      {/* Modal especializado para Suspensión / Reactivación Manual de Sesiones Open Class */}
+      {suspendModalState.isOpen && suspendModalState.clase && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-5 border-b border-[var(--color-border)] flex items-center justify-between bg-gradient-to-r from-[var(--color-bg)] to-[var(--color-bg-card)]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-500/15 text-rose-400 flex items-center justify-center border border-rose-500/30 shrink-0">
+                  <AlertTriangle size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white font-[family-name:var(--font-heading)]">
+                    Gestión de Suspensión de Sesión
+                  </h3>
+                  <p className="text-xs text-slate-400 truncate max-w-xs">
+                    {suspendModalState.clase.nombre_clase} • {suspendModalState.clase.profesor}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSuspendModalState(prev => ({ ...prev, isOpen: false }))}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
+                  1. Selecciona la Fecha de la Sesión:
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {getUpcomingSessionsForClass(suspendModalState.clase, 6).map((session) => {
+                    const isSusp = isSesionSuspendida(suspendModalState.clase!.id, session.dateISO);
+                    const isSelected = suspendModalState.selectedDateISO === session.dateISO;
+                    const resCount = getSesionReservasCount(suspendModalState.clase!.id, session.dateISO);
+
+                    return (
+                      <button
+                        key={session.dateISO}
+                        type="button"
+                        onClick={() => setSuspendModalState(prev => ({ ...prev, selectedDateISO: session.dateISO }))}
+                        className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
+                          isSelected
+                            ? isSusp
+                              ? "bg-rose-500/20 border-rose-500 ring-2 ring-rose-400/50"
+                              : "bg-cyan-500/20 border-cyan-400 ring-2 ring-cyan-400/50"
+                            : isSusp
+                            ? "bg-rose-950/30 border-rose-500/30 opacity-70 hover:opacity-100"
+                            : "bg-[var(--color-bg)] border-[var(--color-border)] hover:border-slate-500"
+                        }`}
+                      >
+                        <div className="text-[11px] font-bold text-white flex items-center justify-between">
+                          <span>{session.dayShort} {session.dayNumber} {session.monthShort}</span>
+                          {isSusp ? (
+                            <span className="text-[9px] font-mono px-1 rounded bg-rose-500/30 text-rose-300">SUSP</span>
+                          ) : (
+                            <span className="text-[9px] font-mono text-cyan-400">{resCount} res</span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-400 block mt-0.5">
+                          {session.isToday ? "Hoy" : session.fullLabel}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Status & Action according to selection */}
+              {(() => {
+                const isSelectedSuspended = isSesionSuspendida(
+                  suspendModalState.clase.id,
+                  suspendModalState.selectedDateISO
+                );
+                const countEnrolled = getSesionReservasCount(
+                  suspendModalState.clase.id,
+                  suspendModalState.selectedDateISO
+                );
+
+                if (isSelectedSuspended) {
+                  return (
+                    <div className="p-4 rounded-xl bg-rose-950/30 border border-rose-500/40 text-xs text-rose-200 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="text-rose-400 shrink-0" size={16} />
+                        <strong className="text-rose-200">Esta sesión ya está suspendida por Administración</strong>
+                      </div>
+                      <p className="text-[11px] text-rose-300/90 leading-relaxed">
+                        Fecha: <strong>{suspendModalState.selectedDateISO}</strong>. Las reservas fueron canceladas y los bonos reembolsados. Si deseas habilitarla nuevamente, pulsa reactivar.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={suspendModalState.isProcessing}
+                        onClick={handleExecuteReactivateSessionFromTable}
+                        className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        {suspendModalState.isProcessing ? (
+                          <>
+                            <RefreshCw size={14} className="animate-spin" />
+                            <span>Reactivando...</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 size={14} />
+                            <span>Reactivar Sesión Seleccionada</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-3">
+                    <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <strong className="text-amber-300">Sesión Abierta: {suspendModalState.selectedDateISO}</strong>
+                        <span className="font-mono font-bold text-white bg-slate-900/60 px-2 py-0.5 rounded border border-amber-500/30">
+                          {countEnrolled} alumno(s) inscritos
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                        Al suspender, el sistema cancelará automáticamente las {countEnrolled} reservas y <strong className="text-emerald-300">reembolsará +1 clase a sus bonos de Supabase</strong>.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
+                        2. Motivo de Suspensión:
+                      </label>
+                      <select
+                        value={suspendModalState.reason}
+                        onChange={(e) => setSuspendModalState(prev => ({ ...prev, reason: e.target.value }))}
+                        className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs rounded-xl px-3 py-2.5 outline-none focus:border-rose-400"
+                      >
+                        <option value="Decisión de Dirección / Imprevisto">Decisión de Dirección / Imprevisto</option>
+                        <option value="Baja / Indisposición del Docente">Baja / Indisposición del Docente</option>
+                        <option value="Mantenimiento / Obras en Sala">Mantenimiento / Obras en Sala</option>
+                        <option value="Fuerza Mayor / Causa Meteorológica">Fuerza Mayor / Causa Meteorológica</option>
+                        <option value="Otro motivo administrativo">Otro motivo administrativo</option>
+                      </select>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={suspendModalState.isProcessing}
+                      onClick={handleExecuteSuspendSessionFromTable}
+                      className="w-full py-2.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition-all shadow-lg shadow-rose-600/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      {suspendModalState.isProcessing ? (
+                        <>
+                          <RefreshCw size={14} className="animate-spin" />
+                          <span>Suspendiendo...</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle size={14} />
+                          <span>Confirmar Suspensión y Devolver Bonos</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-[var(--color-border)] bg-[var(--color-bg)] flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSuspendModalState(prev => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* AppModal Component for confirmation and alerts */}
       <AppModal modal={modal} onClose={() => setModal(prev => ({ ...prev, isOpen: false }))} />
