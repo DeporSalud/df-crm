@@ -874,8 +874,7 @@ export function calculateBonoExpirationDate(
     }
   }
 
-  // 3. Si hay una caducidad explícita en BD (bono_caducidad) o un override manual (storedCaducidad)
-  // Ignorar el valor "2026-11-01" heredado en caché si la compra real no fue el "2026-10-01"
+  // 3. Si hay una caducidad explícita en BD (bono_caducidad)
   if (student.bono_caducidad) {
     const expMadrid = getMadridDateISO(student.bono_caducidad);
     if (expMadrid && !(expMadrid === "2026-11-01" && effectivePurchaseISO && effectivePurchaseISO !== "2026-10-01")) {
@@ -883,16 +882,17 @@ export function calculateBonoExpirationDate(
     }
   }
 
-  if (storedCaducidad) {
-    const storedMadrid = getMadridDateISO(storedCaducidad);
-    if (storedMadrid && !(storedMadrid === "2026-11-01" && effectivePurchaseISO && effectivePurchaseISO !== "2026-10-01")) {
-      return getEndOfDayMadrid(storedMadrid);
-    }
-  }
-
-  // 4. Calcular +1 mes de calendario exacto desde la fecha de compra
+  // 4. Calcular +1 mes de calendario exacto desde la fecha real de compra (fuente canónica oficial)
   if (effectivePurchaseISO) {
     return addOneCalendarMonthMadrid(effectivePurchaseISO);
+  }
+
+  // 5. Fallback a override manual (storedCaducidad) ÚNICAMENTE si no se conoce la fecha de compra en BD
+  if (storedCaducidad) {
+    const storedMadrid = getMadridDateISO(storedCaducidad);
+    if (storedMadrid) {
+      return getEndOfDayMadrid(storedMadrid);
+    }
   }
 
   return addOneCalendarMonthMadrid(new Date());
