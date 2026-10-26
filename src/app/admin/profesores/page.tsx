@@ -449,22 +449,22 @@ export default function AdminProfesoresPage() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-[var(--color-bg-hover)] border-b border-[var(--color-border)]">
-                <th className="py-3.5 px-5 text-xs font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
+                <th className="py-3 px-4 text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
                   Profesor/a
                 </th>
-                <th className="py-3.5 px-4 text-xs font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
+                <th className="py-3 px-3 text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
                   Sede Base
                 </th>
-                <th className="py-3.5 px-4 text-xs font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
+                <th className="py-3 px-3 text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
                   Clases Asignadas
                 </th>
-                <th className="py-3.5 px-4 text-xs font-bold text-[var(--color-text-secondary)] uppercase tracking-wider text-center">
+                <th className="py-3 px-3 text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider text-center">
                   PIN Docente
                 </th>
-                <th className="py-3.5 px-4 text-xs font-bold text-[var(--color-text-secondary)] uppercase tracking-wider text-center">
-                  Estado Acceso
+                <th className="py-3 px-3 text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider text-center">
+                  Estado
                 </th>
-                <th className="py-3.5 px-5 text-xs font-bold text-[var(--color-text-secondary)] uppercase tracking-wider text-right">
+                <th className="py-3 px-4 text-[11px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider text-right">
                   Acciones
                 </th>
               </tr>
@@ -494,10 +494,10 @@ export default function AdminProfesoresPage() {
                         !teacher.active ? "opacity-70" : ""
                       }`}
                     >
-                      <td className="py-3.5 px-5">
-                        <div className="flex items-center gap-3">
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2.5">
                           <div
-                            className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
+                            className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
                               teacher.active
                                 ? "bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-accent)] text-white"
                                 : "bg-slate-800 text-slate-400 border border-slate-700"
@@ -505,40 +505,42 @@ export default function AdminProfesoresPage() {
                           >
                             {initials}
                           </div>
-                          <div>
-                            <div className="font-bold text-sm text-[var(--color-text-title)]">
+                          <div className="min-w-0">
+                            <div className="font-bold text-sm text-[var(--color-text-title)] truncate max-w-[180px]">
                               {teacher.displayName}
                             </div>
-                            <div className="text-[11px] text-[var(--color-text-secondary)] flex items-center gap-2">
-                              <span>{teacher.especialidad}</span>
-                              {teacher.email && (
-                                <span className="hidden sm:inline text-slate-500">• {teacher.email}</span>
-                              )}
+                            <div className="text-[11px] text-[var(--color-text-secondary)] truncate max-w-[180px]">
+                              {teacher.especialidad}
                             </div>
+                            {teacher.email && (
+                              <div className="text-[10px] text-slate-500 truncate max-w-[180px]">
+                                {teacher.email}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
 
-                      <td className="py-3.5 px-4">
-                        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-secondary)] bg-[var(--color-bg)] px-2.5 py-1 rounded-lg border border-[var(--color-border)]">
-                          <Building2 size={12} className="text-[var(--color-primary)]" />
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--color-text-secondary)] bg-[var(--color-bg)] px-2 py-1 rounded-lg border border-[var(--color-border)]">
+                          <Building2 size={11} className="text-[var(--color-primary)] shrink-0" />
                           {teacher.sede === "tejar"
-                            ? "Studio 1 (Tejar)"
+                            ? "S1 · Tejar"
                             : teacher.sede === "castilla"
-                            ? "Studio 2 (Castilla)"
+                            ? "S2 · Castilla"
                             : "Ambas Sedes"}
                         </span>
                       </td>
 
-                      <td className="py-3.5 px-4">
+                      <td className="py-3 px-3">
                         {assignedClasses.length === 0 ? (
-                          <span className="text-xs text-slate-500 italic">Sin clases en cuadrante</span>
+                          <span className="text-[11px] text-slate-500 italic">Sin clases</span>
                         ) : (
-                          <div className="space-y-1">
-                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded-md border border-cyan-500/20">
+                          <div className="space-y-0.5 max-w-[190px]">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded-md border border-cyan-500/20">
                               {assignedClasses.length} {assignedClasses.length === 1 ? "clase" : "clases"}
                             </span>
-                            <div className="text-[11px] text-[var(--color-text-secondary)] max-w-xs truncate">
+                            <div className="text-[11px] text-[var(--color-text-secondary)] truncate" title={assignedClasses.map((c) => `${c.dia_semana} ${c.hora_inicio} (${c.nombre_clase})`).join(" · ")}>
                               {assignedClasses
                                 .map((c) => `${c.dia_semana.slice(0, 3)} ${c.hora_inicio} (${c.nombre_clase})`)
                                 .join(" · ")}
@@ -547,54 +549,54 @@ export default function AdminProfesoresPage() {
                         )}
                       </td>
 
-                      <td className="py-3.5 px-4 text-center">
-                        <div className="inline-flex items-center gap-1.5 bg-[var(--color-bg)] border border-[var(--color-border)] px-3 py-1.5 rounded-xl">
-                          <KeyRound size={13} className="text-[var(--color-primary)]" />
-                          <span className="font-mono font-bold text-sm tracking-widest text-[var(--color-text-title)]">
+                      <td className="py-3 px-3 text-center whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1.5 bg-[var(--color-bg)] border border-[var(--color-border)] px-2.5 py-1 rounded-xl">
+                          <KeyRound size={12} className="text-[var(--color-primary)]" />
+                          <span className="font-mono font-bold text-xs tracking-widest text-[var(--color-text-title)]">
                             {showAllPins ? teacher.pin : "••••"}
                           </span>
                           <button
                             onClick={() => handleCopyPin(teacher)}
-                            className="ml-1 text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors cursor-pointer"
+                            className="ml-0.5 text-[var(--color-text-secondary)] hover:text-[var(--color-primary)] transition-colors cursor-pointer"
                             title="Copiar mensaje con PIN para enviar al profesor"
                           >
                             {copiedId === teacher.uuid ? (
-                              <Check size={13} className="text-emerald-400" />
+                              <Check size={12} className="text-emerald-400" />
                             ) : (
-                              <Copy size={13} />
+                              <Copy size={12} />
                             )}
                           </button>
                         </div>
                       </td>
 
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3 px-3 text-center whitespace-nowrap">
                         {teacher.active ? (
-                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/30">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                             Activo
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-rose-400 bg-rose-500/10 px-2.5 py-1 rounded-full border border-rose-500/30">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/30">
                             <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
                             Sin Acceso
                           </span>
                         )}
                       </td>
 
-                      <td className="py-3.5 px-5 text-right">
-                        <div className="inline-flex items-center justify-end gap-2">
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center justify-end gap-1.5">
                           <button
                             onClick={() => handleOpenEdit(teacher)}
-                            className="px-2.5 py-1.5 rounded-lg bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border)] text-xs font-semibold text-[var(--color-text-title)] flex items-center gap-1.5 transition-colors cursor-pointer"
+                            className="px-2 py-1.5 rounded-lg bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border)] text-[11px] font-semibold text-[var(--color-text-title)] flex items-center gap-1 transition-colors cursor-pointer"
                             title="Editar nombre, PIN o datos"
                           >
-                            <Edit3 size={13} />
+                            <Edit3 size={12} />
                             <span>Editar</span>
                           </button>
 
                           <button
                             onClick={() => handleToggleAccess(teacher)}
-                            className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                            className={`px-2 py-1.5 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer ${
                               teacher.active
                                 ? "bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/30 text-rose-400"
                                 : "bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-400"
@@ -605,8 +607,8 @@ export default function AdminProfesoresPage() {
                                 : "Reactivar acceso con su PIN"
                             }
                           >
-                            <Power size={13} />
-                            <span>{teacher.active ? "Dar de baja" : "Reactivar"}</span>
+                            <Power size={12} />
+                            <span>{teacher.active ? "Baja" : "Reactivar"}</span>
                           </button>
                         </div>
                       </td>
