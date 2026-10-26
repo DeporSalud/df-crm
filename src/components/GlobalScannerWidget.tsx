@@ -84,7 +84,7 @@ export default function GlobalScannerWidget() {
   // Hardware Scanner Debouncer (>= 2.5s) (R1.3)
   const debouncerRef = useRef(new HardwareScannerDebouncer(2500));
 
-  // Sync df_checkin_denied across windows and BroadcastChannel
+  // Sync df_checkin_denied, df_checkin_denied_close, and auto-repaired df_checkin_success across windows
   useEffect(() => {
     const handleDenied = (e: any) => {
       const detail = e.detail || e;
@@ -98,20 +98,64 @@ export default function GlobalScannerWidget() {
       });
     };
 
+    const handleDeniedClose = () => {
+      setAccessDeniedState((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+    };
+
+    const handleAutoRepairSuccess = (e: any) => {
+      const detail = e?.detail || e;
+      if (!detail?.autoRepaired) return;
+      setAccessDeniedState((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+
+      const st = detail.alumno || detail;
+      const resolved = detail.resolvedClass || detail.resolved;
+      const horaActual = new Date().toLocaleTimeString("es-ES", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+      const fechaActual = new Date().toLocaleDateString("es-ES", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric"
+      });
+
+      const successEvt: ScanEntranceEvent = {
+        id: "scan_" + Date.now(),
+        studentId: st?.id || "",
+        nombreCompleto: st?.nombre_completo || "Alumna autorizada",
+        planActivo: st?.plan_activo || "Clases Regulares",
+        clasesRestantes: st?.clases_restantes ?? null,
+        estado: "Activo",
+        hora: horaActual,
+        fecha: fechaActual,
+        status: "success",
+        mensaje: `✓ Autorizado en 1 clic • ${resolved?.claseNombre || "Acceso a instalaciones"}`
+      };
+      showNotification(successEvt);
+      setRecentEntrances((prev) => [successEvt, ...prev.slice(0, 29)]);
+    };
+
     window.addEventListener("df_checkin_denied" as any, handleDenied);
+    window.addEventListener("df_checkin_denied_close" as any, handleDeniedClose);
+    window.addEventListener("df_checkin_success" as any, handleAutoRepairSuccess);
 
     let bc: BroadcastChannel | null = null;
     try {
       bc = new BroadcastChannel("dance_factory_sync");
       bc.onmessage = (evt) => {
         if (evt.data?.type === "df_checkin_denied") {
-          handleDenied(evt.data);
+          handleDenied(evt.data.detail || evt.data);
+        } else if (evt.data?.type === "df_checkin_denied_close") {
+          handleDeniedClose();
         }
       };
     } catch {}
 
     return () => {
       window.removeEventListener("df_checkin_denied" as any, handleDenied);
+      window.removeEventListener("df_checkin_denied_close" as any, handleDeniedClose);
+      window.removeEventListener("df_checkin_success" as any, handleAutoRepairSuccess);
       if (bc) bc.close();
     };
   }, []);
@@ -358,6 +402,10 @@ export default function GlobalScannerWidget() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const now = Date.now();
       const target = e.target as HTMLElement | null;
+      if (target && typeof target.closest === "function" && target.closest('[data-ignore-scanner="true"]')) {
+        keyBuffer = "";
+        return;
+      }
       const isInput = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
 
       // Si el tiempo entre teclas es muy rápido (< 50ms), es característico de un lector hardware

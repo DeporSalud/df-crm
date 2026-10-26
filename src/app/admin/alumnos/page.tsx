@@ -105,7 +105,22 @@ export default function AlumnosPage() {
   const [historyTab, setHistoryTab] = useState<"pagos" | "reservas" | "asistencias" | "ficha">("pagos");
   const [historyPayments, setHistoryPayments] = useState<any[]>([]);
   const [historyReservas, setHistoryReservas] = useState<any[]>([]);
-  const { activeSede } = useSede();
+  const { activeSede, setActiveSede } = useSede();
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlSearch = params.get("search");
+      const urlSede = params.get("sede");
+      if (urlSearch) {
+        setSearchTerm(urlSearch);
+      }
+      if (urlSede === "consolidado" && activeSede !== "consolidado") {
+        setActiveSede("consolidado");
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Bonos Caducidad Map
   const [bonosCaducidadMap, setBonosCaducidadMap] = useState<Record<string, string>>({});
@@ -224,11 +239,13 @@ export default function AlumnosPage() {
     };
     window.addEventListener("df_student_fees_updated", handleUpdate);
     window.addEventListener("df_pagos_updated", handleUpdate);
+    window.addEventListener("df_alumnos_updated", handleUpdate);
     window.addEventListener("storage", handleUpdate);
 
     return () => {
       window.removeEventListener("df_student_fees_updated", handleUpdate);
       window.removeEventListener("df_pagos_updated", handleUpdate);
+      window.removeEventListener("df_alumnos_updated", handleUpdate);
       window.removeEventListener("storage", handleUpdate);
     };
   }, [activeSede]);
@@ -526,12 +543,17 @@ export default function AlumnosPage() {
       }
     }
 
-    // Ensure regular students have their custom cuota in plan_activo
+    // Ensure regular students have their custom cuota in plan_activo and NEVER get clases_restantes = 0
     let finalPlan = formData.plan_activo;
     const isBonoOrPromo = finalPlan.toLowerCase().includes("bono") || finalPlan.toLowerCase().includes("promo") || finalPlan.toLowerCase().includes("suelta") || finalPlan.toLowerCase().includes("pase");
     if (!isBonoOrPromo && formData.cuota_mensual > 0) {
       finalPlan = `Clases Regulares (${formData.cuota_mensual}€/mes)`;
     }
+    const isRegularMonthlyPlan =
+      !isBonoOrPromo &&
+      (finalPlan.toLowerCase().includes("regular") ||
+        finalPlan.toLowerCase().includes("mensual") ||
+        finalPlan.toLowerCase().includes("ilimitad"));
 
     // Prepare clean payload containing only columns present in Supabase 'alumnos' table
     const snap = initialEditSnapshotRef.current;
@@ -560,7 +582,9 @@ export default function AlumnosPage() {
       JSON.stringify([...formData.clases_asignadas].sort()) !==
         JSON.stringify([...snap.clases_asignadas].sort());
 
-    if (bonoFieldsModified && (isBonoOrPromo || (typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0))) {
+    if (isRegularMonthlyPlan) {
+      payload.clases_restantes = null;
+    } else if (bonoFieldsModified && (isBonoOrPromo || (typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0))) {
       if (formData.bono_caducidad && !finalPlan.toLowerCase().includes("promo") && !finalPlan.toLowerCase().includes("septiembre")) {
         payload.creado_en = subtractOneCalendarMonthMadrid(formData.bono_caducidad);
       }
@@ -634,7 +658,10 @@ export default function AlumnosPage() {
       }
       error = updateError;
     } else {
-      let insertPayload: Record<string, any> = { ...payload, clases_restantes };
+      let insertPayload: Record<string, any> = {
+        ...payload,
+        clases_restantes: isRegularMonthlyPlan ? null : clases_restantes
+      };
       let { data, error: insertError } = await supabase.from("alumnos").insert([insertPayload]).select("id").single();
       
       while (insertError && insertError.code === "PGRST204" && insertError.message) {

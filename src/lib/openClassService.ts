@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase/client";
 import { getMadridHoursRemaining, getMadridDayRangeUTC, toMadridDate } from "@/lib/timezones";
 import { publishSyncEvent } from "./syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
+import { parseLinkedAltAuth } from "@/lib/teacherRegistryService";
 export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: string): boolean {
   if (!student && !emailOrId && !userRole) return false;
   const plan = (student?.plan_activo || "").toLowerCase();
@@ -1442,6 +1443,27 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
       const { data: byId } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("id", token).limit(1).maybeSingle();
       if (byId) return await resolveActiveSiblingStudent(byId);
+    }
+
+    // Linked secondary token / UUID / email stored in DF_ALT_AUTH (from 1-click reception account linking)
+    if (token.length >= 3) {
+      const { data: byAltAuth } = await supabase
+        .from("alumnos")
+        .select("*, alumnos_clases(*)")
+        .ilike("direccion", `%DF_ALT_AUTH:%${token}%`);
+      if (byAltAuth && byAltAuth.length > 0) {
+        const lowerTok = token.toLowerCase();
+        const verifiedMatch = byAltAuth.find((s: any) => {
+          const alt = typeof parseLinkedAltAuth === "function" ? parseLinkedAltAuth(s.direccion) : null;
+          if (!alt) return false;
+          return (
+            alt.tokens?.some((t) => t.toLowerCase() === lowerTok) ||
+            alt.ids?.some((i) => i.toLowerCase() === lowerTok) ||
+            alt.emails?.some((e) => e.toLowerCase() === lowerTok)
+          );
+        });
+        if (verifiedMatch) return await resolveActiveSiblingStudent(verifiedMatch);
+      }
     }
   }
 

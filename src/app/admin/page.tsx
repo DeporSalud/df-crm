@@ -403,6 +403,11 @@ export default function AdminDashboardRecepcion() {
           type: 'success', 
           text: `✅ Entrada validada para ${detail.nombre_completo}. (${remainingTextStr}${classDetailStr})` 
         });
+        if (detail.autoRepaired) {
+          setAccessDeniedState((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+          setFlashState('success');
+          setTimeout(() => setFlashState(null), 1800);
+        }
       }
       debouncedRefresh();
     });
@@ -423,9 +428,15 @@ export default function AdminDashboardRecepcion() {
       setAccessDeniedState({
         isOpen: true,
         studentName: detail?.student?.nombre_completo || detail?.studentName,
+        student: detail?.student,
+        reason: detail?.reason,
         motivo: detail?.motivo || detail?.message,
         rawCode: detail?.rawCode
       });
+    });
+
+    const unsubDeniedClose = subscribeSyncEvent("df_checkin_denied_close", () => {
+      setAccessDeniedState((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
     });
 
     return () => {
@@ -434,6 +445,7 @@ export default function AdminDashboardRecepcion() {
       unsubPagos();
       unsubBonos();
       unsubDenied();
+      unsubDeniedClose();
     };
   }, [debouncedRefresh]);
 
@@ -629,6 +641,8 @@ export default function AdminDashboardRecepcion() {
       setAccessDeniedState({
         isOpen: true,
         studentName: undefined,
+        student: undefined,
+        reason: "ALUMNO_NO_ENCONTRADO",
         motivo: "Código escaneado no reconocido o alumno inexistente",
         rawCode: rawCode
       });

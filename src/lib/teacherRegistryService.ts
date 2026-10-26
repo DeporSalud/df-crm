@@ -23,7 +23,14 @@ export interface TeacherRecord {
 }
 
 export const TEACHER_META_MARKER = "DF_TEACHER_META:";
+export const ALT_AUTH_MARKER = "DF_ALT_AUTH:";
 const REGISTRY_CACHE_KEY = "df_teachers_registry_cache_v2";
+
+export interface LinkedAltAuth {
+  emails?: string[];
+  tokens?: string[];
+  ids?: string[];
+}
 
 export function normalizeTeacherName(text?: string | null): string {
   return (text || "")
@@ -48,19 +55,45 @@ export function toTitleCaseName(text?: string | null): string {
 
 export function extractCleanAddress(raw?: string | null): string {
   if (!raw) return "";
-  const idx = raw.indexOf(TEACHER_META_MARKER);
-  if (idx === -1) return raw.trim();
-  return raw
-    .slice(0, idx)
-    .replace(/\|\|\s*$/, "")
-    .trim();
+  let text = raw;
+  for (const marker of [TEACHER_META_MARKER, ALT_AUTH_MARKER]) {
+    const idx = text.indexOf(marker);
+    if (idx !== -1) {
+      text = text.slice(0, idx).replace(/\|\|\s*$/, "");
+    }
+  }
+  return text.replace(/\|\|\s*$/, "").trim();
+}
+
+export function parseLinkedAltAuth(raw?: string | null): LinkedAltAuth | null {
+  if (!raw) return null;
+  const idx = raw.indexOf(ALT_AUTH_MARKER);
+  if (idx === -1) return null;
+  const after = raw.slice(idx + ALT_AUTH_MARKER.length);
+  const nextMarkerIdx = after.indexOf("||DF_");
+  const jsonPart = (nextMarkerIdx === -1 ? after : after.slice(0, nextMarkerIdx)).trim();
+  try {
+    const parsed = JSON.parse(jsonPart);
+    if (parsed && typeof parsed === "object") {
+      return {
+        emails: Array.isArray(parsed.emails) ? parsed.emails.map((e: any) => String(e).toLowerCase().trim()).filter(Boolean) : [],
+        tokens: Array.isArray(parsed.tokens) ? parsed.tokens.map((t: any) => String(t).trim()).filter(Boolean) : [],
+        ids: Array.isArray(parsed.ids) ? parsed.ids.map((i: any) => String(i).trim()).filter(Boolean) : []
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 export function parseTeacherMeta(raw?: string | null): TeacherMeta | null {
   if (!raw) return null;
   const idx = raw.indexOf(TEACHER_META_MARKER);
   if (idx === -1) return null;
-  const jsonPart = raw.slice(idx + TEACHER_META_MARKER.length).trim();
+  const after = raw.slice(idx + TEACHER_META_MARKER.length);
+  const nextMarkerIdx = after.indexOf("||DF_");
+  const jsonPart = (nextMarkerIdx === -1 ? after : after.slice(0, nextMarkerIdx)).trim();
   try {
     const parsed = JSON.parse(jsonPart);
     if (parsed && typeof parsed === "object" && typeof parsed.pin === "string") {
@@ -78,16 +111,51 @@ export function parseTeacherMeta(raw?: string | null): TeacherMeta | null {
   return null;
 }
 
-export function buildAddressWithTeacherMeta(cleanAddress: string, meta: TeacherMeta): string {
+function serializeAddressSegments(
+  cleanAddress: string,
+  teacherMeta: TeacherMeta | null,
+  altAuth: LinkedAltAuth | null
+): string {
+  const parts: string[] = [];
   const clean = extractCleanAddress(cleanAddress);
-  const metaJson = `${TEACHER_META_MARKER}${JSON.stringify({
-    pin: meta.pin,
-    active: meta.active,
-    especialidad: meta.especialidad || "Danza & Formación",
-    sede: meta.sede || "castilla",
-    ...(meta.isAdmin ? { isAdmin: true } : {})
-  })}`;
-  return clean ? `${clean} ||${metaJson}` : metaJson;
+  if (clean) parts.push(clean);
+  if (teacherMeta) {
+    parts.push(`${TEACHER_META_MARKER}${JSON.stringify({
+      pin: teacherMeta.pin,
+      active: teacherMeta.active,
+      especialidad: teacherMeta.especialidad || "Danza & Formación",
+      sede: teacherMeta.sede || "castilla",
+      ...(teacherMeta.isAdmin ? { isAdmin: true } : {})
+    })}`);
+  }
+  const emails = Array.from(new Set((altAuth?.emails || []).map((e) => e.toLowerCase().trim()).filter(Boolean)));
+  const tokens = Array.from(new Set((altAuth?.tokens || []).map((t) => t.trim()).filter(Boolean)));
+  const ids = Array.from(new Set((altAuth?.ids || []).map((i) => i.trim()).filter(Boolean)));
+  if (emails.length > 0 || tokens.length > 0 || ids.length > 0) {
+    parts.push(`${ALT_AUTH_MARKER}${JSON.stringify({ emails, tokens, ids })}`);
+  }
+  return parts.join(" ||");
+}
+
+export function appendLinkedAltAuth(
+  existingRaw: string | null | undefined,
+  additions: LinkedAltAuth
+): string | null {
+  const clean = extractCleanAddress(existingRaw);
+  const teacherMeta = parseTeacherMeta(existingRaw);
+  const prevAlt = parseLinkedAltAuth(existingRaw);
+  const merged: LinkedAltAuth = {
+    emails: [...(prevAlt?.emails || []), ...(additions.emails || [])],
+    tokens: [...(prevAlt?.tokens || []), ...(additions.tokens || [])],
+    ids: [...(prevAlt?.ids || []), ...(additions.ids || [])]
+  };
+  const res = serializeAddressSegments(clean, teacherMeta, merged);
+  return res || null;
+}
+
+export function buildAddressWithTeacherMeta(cleanAddress: string, meta: TeacherMeta): string {
+  const existingAlt = parseLinkedAltAuth(cleanAddress);
+  return serializeAddressSegments(cleanAddress, meta, existingAlt);
 }
 
 export function preserveTeacherMetaOnAddressSave(
@@ -95,11 +163,9 @@ export function preserveTeacherMetaOnAddressSave(
   existingRaw?: string | null
 ): string | null {
   const existingMeta = parseTeacherMeta(existingRaw);
-  const clean = extractCleanAddress(newCleanAddress);
-  if (!existingMeta) {
-    return clean || null;
-  }
-  return buildAddressWithTeacherMeta(clean, existingMeta);
+  const existingAlt = parseLinkedAltAuth(existingRaw);
+  const res = serializeAddressSegments(newCleanAddress, existingMeta, existingAlt);
+  return res || null;
 }
 
 /**

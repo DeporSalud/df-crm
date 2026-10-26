@@ -75,7 +75,7 @@ export default function RecepcionScanWidget({
     isOpen: false
   });
 
-  // Multi-channel sync for df_checkin_denied
+  // Multi-channel sync for df_checkin_denied, close, and 1-click auto-repair
   useEffect(() => {
     const handleDenied = (e: any) => {
       const detail = e.detail || e;
@@ -89,23 +89,61 @@ export default function RecepcionScanWidget({
       });
     };
 
+    const handleDeniedClose = () => {
+      setAccessDeniedState((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+    };
+
+    const handleAutoRepairSuccess = (e: any) => {
+      const detail = e?.detail || e;
+      if (!detail?.autoRepaired) return;
+      setAccessDeniedState((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+
+      const st = detail.alumno || detail;
+      const resolved = detail.resolved || detail.resolvedClass;
+      const horaActual = new Date().toLocaleTimeString('es-ES', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+      const resultado: ScanResult = {
+        status: 'success',
+        nombre: st?.nombre_completo,
+        plan: st?.plan_activo || 'Cuota Activa',
+        mensaje: resolved?.claseNombre ? `Entrada autorizada: ${resolved.claseNombre}` : 'Entrada autorizada en 1 clic',
+        detalle: detail.repairNote || 'Autorizado desde recepción',
+        timingStatus: resolved?.timingStatus,
+        timingMinutes: resolved?.timingMinutes,
+        timingMessage: resolved?.timingMessage,
+        timestamp: horaActual
+      };
+      setLastScan(resultado);
+      setHistorialReciente((prev) => [resultado, ...prev.slice(0, 9)]);
+      if (onCheckInSuccess) onCheckInSuccess();
+    };
+
     window.addEventListener("df_checkin_denied" as any, handleDenied);
+    window.addEventListener("df_checkin_denied_close" as any, handleDeniedClose);
+    window.addEventListener("df_checkin_success" as any, handleAutoRepairSuccess);
 
     let bc: BroadcastChannel | null = null;
     try {
       bc = new BroadcastChannel("dance_factory_sync");
       bc.onmessage = (evt) => {
         if (evt.data?.type === "df_checkin_denied") {
-          handleDenied(evt.data);
+          handleDenied(evt.data.detail || evt.data);
+        } else if (evt.data?.type === "df_checkin_denied_close") {
+          handleDeniedClose();
         }
       };
     } catch {}
 
     return () => {
       window.removeEventListener("df_checkin_denied" as any, handleDenied);
+      window.removeEventListener("df_checkin_denied_close" as any, handleDeniedClose);
+      window.removeEventListener("df_checkin_success" as any, handleAutoRepairSuccess);
       if (bc) bc.close();
     };
-  }, []);
+  }, [onCheckInSuccess]);
 
   const procesarLecturaQR = async (rawCode: string) => {
     const trimmed = rawCode.trim();
