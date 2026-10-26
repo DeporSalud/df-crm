@@ -20,6 +20,7 @@ import { exportAlumnosCSV, parseAlumnosCSV } from "@/lib/csvUtils";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
 import { syncReservasFromSupabase } from "@/lib/openClassService";
+import { extractCleanAddress, preserveTeacherMetaOnAddressSave } from "@/lib/teacherRegistryService";
 import { CheckCircle2, Info } from "lucide-react";
 
 import { getStoredIBAN, saveStoredIBAN, deleteStoredIBAN } from "@/lib/ibanStorage";
@@ -300,6 +301,7 @@ export default function AlumnosPage() {
     clases_restantes: number | null;
     bono_caducidad: string;
     clases_asignadas: string[];
+    raw_direccion?: string;
   } | null>(null);
 
   const handleOpenCreate = async () => {
@@ -368,7 +370,8 @@ export default function AlumnosPage() {
       plan_activo: initialPlan,
       clases_restantes: initialClasesRestantes,
       bono_caducidad: initialBonoCaducidad,
-      clases_asignadas: [...assignedIds]
+      clases_asignadas: [...assignedIds],
+      raw_direccion: liveStudent.direccion || ""
     };
 
     setFormData({
@@ -377,7 +380,7 @@ export default function AlumnosPage() {
       telefono: liveStudent.telefono || "",
       email: liveStudent.email || "",
       dni: liveStudent.dni || "",
-      direccion: liveStudent.direccion || "",
+      direccion: extractCleanAddress(liveStudent.direccion),
       iban: studentIban || "",
       fecha_nacimiento: liveStudent.fecha_nacimiento || "",
       tipo_alumno: (liveStudent.tipo_alumno || (liveStudent.fecha_nacimiento ? getTipoAlumnoFromBirthDate(liveStudent.fecha_nacimiento) : "adulto")) as "adulto" | "infantil",
@@ -531,20 +534,19 @@ export default function AlumnosPage() {
     }
 
     // Prepare clean payload containing only columns present in Supabase 'alumnos' table
+    const snap = initialEditSnapshotRef.current;
     const payload: Record<string, any> = {
       sede: formData.sede || (activeSede !== "consolidado" ? activeSede : "tejar"),
       nombre_completo: formData.nombre_completo.trim(),
       telefono: normalizePhoneDigits(formData.telefono) || formData.telefono.trim(),
       email: normalizeEmail(formData.email) || null,
       dni: normalizeDNI(formData.dni) || null,
-      direccion: formData.direccion.trim() || null,
+      direccion: isEditing ? preserveTeacherMetaOnAddressSave(formData.direccion, snap?.raw_direccion) : (formData.direccion.trim() || null),
       fecha_nacimiento: formData.fecha_nacimiento || null,
       plan_activo: finalPlan,
       nfc_token: formData.nfc_token.trim() || null,
       estado: formData.estado
     };
-
-    const snap = initialEditSnapshotRef.current;
     const bonoFieldsModified =
       !isEditing ||
       !snap ||
@@ -944,7 +946,7 @@ export default function AlumnosPage() {
                       </td>
                       <td className="py-3 px-4 text-xs text-[var(--color-text-secondary)]">
                         <div>{student.telefono}</div>
-                        <div className="text-[11px] text-slate-400 truncate max-w-[150px]">{student.email || student.direccion}</div>
+                        <div className="text-[11px] text-slate-400 truncate max-w-[150px]">{student.email || extractCleanAddress(student.direccion)}</div>
                       </td>
                       <td className="py-3 px-4 text-xs text-[var(--color-text-body)]">
                         {isRegular ? (
@@ -1375,7 +1377,7 @@ export default function AlumnosPage() {
 
                     <div className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] col-span-2 space-y-1">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Dirección Domicilio</span>
-                      <strong className="text-white text-sm block">{historyStudent.direccion || "Sin dirección registrada"}</strong>
+                      <strong className="text-white text-sm block">{extractCleanAddress(historyStudent.direccion) || "Sin dirección registrada"}</strong>
                     </div>
 
                     <div className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] col-span-2 space-y-1">

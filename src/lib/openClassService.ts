@@ -5,12 +5,13 @@ import { logActivity } from "@/lib/activityLogger";
 export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: string): boolean {
   if (!student && !emailOrId && !userRole) return false;
   const plan = (student?.plan_activo || "").toLowerCase();
-  const name = (student?.nombre_completo || student?.name || "").toLowerCase();
   const email = (student?.email || emailOrId || "").toLowerCase();
   const role = (student?.rol || userRole || "").toLowerCase();
   const dni = (student?.dni || "").toUpperCase();
   const nfc = String(student?.nfc_token || "").toUpperCase();
+  const dir = String(student?.direccion || "");
 
+  if (dir.includes("DF_TEACHER_META:")) return true;
   if (role === "profesor" || role === "docente" || role === "admin" || role === "administrador") return true;
   if (plan.includes("docente") || plan.includes("profesor") || plan.includes("profesora")) return true;
   if (email.endsWith("@dancefactory.es") && !email.startsWith("alumno")) return true;
@@ -71,8 +72,6 @@ export const TEACHER_DB_ID_MAP: Record<string, string> = {
   "1002": "2d95e851-b927-494b-9558-d7ed6d447a20", // Lucía Zamorano
   "LUCIA ZAMORANO": "2d95e851-b927-494b-9558-d7ed6d447a20",
   "LUCÍA ZAMORANO": "2d95e851-b927-494b-9558-d7ed6d447a20",
-  "1003": "7a100300-0000-4000-a000-000000001003", // Andrea Soto
-  "ANDREA SOTO": "7a100300-0000-4000-a000-000000001003",
   "1004": "80c59814-1ab4-4793-9039-e8fe1c5ef681", // Eva Leiva
   "EVA LEIVA": "80c59814-1ab4-4793-9039-e8fe1c5ef681",
   "1005": "7a100500-0000-4000-a000-000000001005", // Lucas López
@@ -88,7 +87,12 @@ export const TEACHER_DB_ID_MAP: Record<string, string> = {
   "1011": "7a101100-0000-4000-a000-000000001011", // Nil Barberá
   "1012": "145547d1-643c-40aa-9144-305893e8f64c", // Mario Gadea
   "1013": "0812eb2d-bcb5-4f9e-b690-1beaafcd3e61", // Daniela Mérida
+  "DANIELA MERIDA": "0812eb2d-bcb5-4f9e-b690-1beaafcd3e61",
+  "DANIELA MÉRIDA": "0812eb2d-bcb5-4f9e-b690-1beaafcd3e61",
   "1014": "e9cc4200-aba2-4e67-8191-808c40e75621", // Marta García Vázquez
+  "1015": "7a101500-0000-4000-a000-000000001015", // Blanca Elías
+  "BLANCA ELIAS": "7a101500-0000-4000-a000-000000001015",
+  "BLANCA ELÍAS": "7a101500-0000-4000-a000-000000001015",
   "2026": "ffd8f04a-5f63-4c8b-b638-9f9483df8d3c", // Ruth Domínguez
   "9998": "ffd8f04a-5f63-4c8b-b638-9f9483df8d3c",
   "9999": "ffd8f04a-5f63-4c8b-b638-9f9483df8d3c"
@@ -101,9 +105,9 @@ export function normalizeClaseId(id: string): string {
 
 export const DEFAULT_STUDIO2_OPEN_CLASSES = [
   {
-    id: "71b12578-d254-4354-bb1c-e0ebfd0178aa", // Andrea Soto
+    id: "71b12578-d254-4354-bb1c-e0ebfd0178aa", // Daniela Mérida
     nombre_clase: "OPEN CLASS COMERCIAL",
-    profesor: "Andrea Soto",
+    profesor: "Daniela Mérida",
     dia_semana: "LUNES",
     hora_inicio: "19:00",
     hora_fin: "20:00",

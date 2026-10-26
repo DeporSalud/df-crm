@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { subscribeSyncEvent, publishSyncEvent } from "@/lib/syncEventBus";
-import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2, AlertTriangle, RefreshCw } from "lucide-react";
+import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2, AlertTriangle, RefreshCw, KeyRound } from "lucide-react";
 import AppModal, { ModalState } from "@/components/AppModal";
 import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
 import { 
@@ -23,6 +24,12 @@ import {
   getTodayISO
 } from "@/lib/openClassService";
 import { logActivity } from "@/lib/activityLogger";
+import {
+  TeacherRecord,
+  getInitialTeacherRecords,
+  fetchActiveTeachersFromSupabase,
+  normalizeTeacherName
+} from "@/lib/teacherRegistryService";
 
 interface ClaseCuadrante {
   id: string;
@@ -296,27 +303,39 @@ export default function ClasesPage() {
 
   const [formData, setFormData] = useState(initialFormState);
 
-  // Lista consolidada de profesores para autocompletado y selección rápida
+  const [activeTeacherRecords, setActiveTeacherRecords] = useState<TeacherRecord[]>(() =>
+    getInitialTeacherRecords(true)
+  );
+
+  useEffect(() => {
+    const syncTeachers = async () => {
+      const list = await fetchActiveTeachersFromSupabase();
+      setActiveTeacherRecords(list);
+    };
+    syncTeachers();
+    window.addEventListener("df_teachers_updated", syncTeachers);
+    return () => window.removeEventListener("df_teachers_updated", syncTeachers);
+  }, []);
+
+  // Lista consolidada de profesores activos para autocompletado y selección rápida
   const profesoresDisponibles = useMemo(() => {
-    const defaults = [
-      "Andrea Soto",
-      "Lucía Zamorano",
-      "Lucía Muñoz",
-      "Eva Leiva",
-      "Lucas López",
-      "Paula Jiménez",
-      "Marta Garcia Vázquez",
-      "Abel y Nayara",
-      "Darío Humberto",
-      "Nerea Olivares",
-      "Alejandro Rovina",
-      "Nil Barberá",
-      "Mario Gadea",
-      "Carlos & Carmen"
-    ];
-    const fromClases = clases.map(c => (c.profesor || "").trim()).filter(Boolean);
-    return Array.from(new Set([...defaults, ...fromClases])).sort((a, b) => a.localeCompare(b, "es"));
-  }, [clases]);
+    const byNorm = new Map<string, string>();
+    for (const t of activeTeacherRecords) {
+      if (t.isAdmin || !t.active) continue;
+      const norm = normalizeTeacherName(t.displayName || t.name);
+      if (norm && !byNorm.has(norm)) {
+        byNorm.set(norm, t.displayName || t.name);
+      }
+    }
+    for (const c of clases) {
+      const raw = (c.profesor || "").trim();
+      const norm = normalizeTeacherName(raw);
+      if (norm && !byNorm.has(norm) && norm !== "ANDREA SOTO") {
+        byNorm.set(norm, raw);
+      }
+    }
+    return Array.from(byNorm.values()).sort((a, b) => a.localeCompare(b, "es"));
+  }, [activeTeacherRecords, clases]);
 
   const fetchClasesAndEnrollments = useCallback(async () => {
     setIsLoading(true);
@@ -838,6 +857,15 @@ export default function ClasesPage() {
             />
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-[var(--color-text-secondary)]" />
           </div>
+
+          <Link
+            href="/admin/profesores"
+            className="bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border)] text-[var(--color-text-title)] px-3 py-2 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            title="Añadir nuevos profesores o desactivar accesos (PIN)"
+          >
+            <KeyRound size={14} className="text-[var(--color-primary)]" />
+            <span>Profesores y PINs</span>
+          </Link>
 
           <button 
             onClick={handleOpenCreate}

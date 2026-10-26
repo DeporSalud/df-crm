@@ -112,27 +112,27 @@ const DEFAULT_STAFF: StaffUser[] = [
   },
   {
     id: "staff_6",
-    nombre_completo: "Andrea Soto",
-    email: "andrea.soto@dancefactory.es",
-    telefono: "655 667 788",
+    nombre_completo: "Blanca Elías",
+    email: "blanca.elias@dancefactory.es",
+    telefono: "600 000 000",
     rol: "profesor",
-    permiso_sede: "consolidado",
-    pin: "1003",
+    permiso_sede: "castilla",
+    pin: "1015",
     estado: "activo",
-    creado_en: "2026-08-10T12:00:00.000Z",
-    notas: "Docente Junior Pro & Danza Urbana"
+    creado_en: "2026-10-26T09:00:00.000Z",
+    notas: "Docente Comercial Junior Ini. & Junior Pro"
   },
   {
     id: "staff_7",
-    nombre_completo: "Carlos & Carmen",
-    email: "carlos.carmen@dancefactory.es",
-    telefono: "666 778 899",
+    nombre_completo: "Daniela Mérida",
+    email: "daniela.merida@dancefactory.es",
+    telefono: "600 000 000",
     rol: "profesor",
     permiso_sede: "castilla",
-    pin: "1007",
+    pin: "1013",
     estado: "activo",
     creado_en: "2026-08-10T12:00:00.000Z",
-    notas: "Docentes Bachata Sensual & Ritmos Latinos"
+    notas: "Docente Urbano Adultos, Comercial Youth Pro & Open Class"
   }
 ];
 

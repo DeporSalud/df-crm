@@ -44,93 +44,13 @@ import {
   getMadridDayRangeUTC,
   isSameMadridDay
 } from "@/lib/timezones";
-
-const TEACHER_PINS: Record<string, { name: string; isAdmin?: boolean }> = {
-  "9999": { name: "ADMINISTRADOR MASTER", isAdmin: true },
-  "2026": { name: "RUTH DOMÍNGUEZ", isAdmin: true },
-  "1001": { name: "LUCÍA MUÑOZ" },
-  "1002": { name: "LUCÍA ZAMORANO" },
-  "1003": { name: "ANDREA SOTO" },
-  "1004": { name: "EVA LEIVA" },
-  "1005": { name: "LUCAS LÓPEZ" },
-  "1006": { name: "PAULA JIMÉNEZ" },
-  "1007": { name: "ABEL Y NAYARA" },
-  "1008": { name: "DARÍO HUMBERTO" },
-  "1009": { name: "NEREA OLIVARES" },
-  "1010": { name: "ALEJANDRO ROVINA" },
-  "1011": { name: "NIL BARBERÁ" },
-  "1012": { name: "MARIO GADEA" },
-  "1013": { name: "DANIELA MÉRIDA" },
-  "1014": { name: "MARTA GARCÍA VÁZQUEZ" }
-};
-
-const TEACHER_DB_ID_MAP: Record<string, string> = {
-  // 1001: Lucía Muñoz
-  "LUCIA MUNOZ": "c57fb3d0-525f-474a-8de7-d6d504b540be",
-  "LUCÍA MUÑOZ": "c57fb3d0-525f-474a-8de7-d6d504b540be",
-  "1001": "c57fb3d0-525f-474a-8de7-d6d504b540be",
-
-  // 1002: Lucía Zamorano
-  "LUCIA ZAMORANO": "2d95e851-b927-494b-9558-d7ed6d447a20",
-  "LUCÍA ZAMORANO": "2d95e851-b927-494b-9558-d7ed6d447a20",
-  "1002": "2d95e851-b927-494b-9558-d7ed6d447a20",
-
-  // 1003: Andrea Soto
-  "ANDREA SOTO": "7a100300-0000-4000-a000-000000001003",
-  "1003": "7a100300-0000-4000-a000-000000001003",
-
-  // 1004: Eva Leiva
-  "EVA LEIVA": "80c59814-1ab4-4793-9039-e8fe1c5ef681",
-  "1004": "80c59814-1ab4-4793-9039-e8fe1c5ef681",
-
-  // 1005: Lucas López
-  "LUCAS LOPEZ": "7a100500-0000-4000-a000-000000001005",
-  "LUCAS LÓPEZ": "7a100500-0000-4000-a000-000000001005",
-  "1005": "7a100500-0000-4000-a000-000000001005",
-
-  // 1006: Paula Jiménez
-  "PAULA JIMENEZ": "32d7139b-b2a2-4084-9322-d86cda358df7",
-  "PAULA JIMÉNEZ": "32d7139b-b2a2-4084-9322-d86cda358df7",
-  "1006": "32d7139b-b2a2-4084-9322-d86cda358df7",
-
-  // 1007: Abel y Nayara
-  "ABEL Y NAYARA": "7a100700-0000-4000-a000-000000001007",
-  "1007": "7a100700-0000-4000-a000-000000001007",
-
-  // 1008: Darío Humberto
-  "DARIO HUMBERTO": "7a100800-0000-4000-a000-000000001008",
-  "DARÍO HUMBERTO": "7a100800-0000-4000-a000-000000001008",
-  "1008": "7a100800-0000-4000-a000-000000001008",
-
-  // 1009: Nerea Olivares
-  "NEREA OLIVARES": "7a100900-0000-4000-a000-000000001009",
-  "1009": "7a100900-0000-4000-a000-000000001009",
-
-  // 1010: Alejandro Rovina
-  "ALEJANDRO ROVINA": "7a101000-0000-4000-a000-000000001010",
-  "1010": "7a101000-0000-4000-a000-000000001010",
-
-  // 1011: Nil Barberá
-  "NIL BARBERA": "7a101100-0000-4000-a000-000000001011",
-  "NIL BARBERÁ": "7a101100-0000-4000-a000-000000001011",
-  "1011": "7a101100-0000-4000-a000-000000001011",
-
-  // 1012: Mario Gadea
-  "MARIO GADEA": "145547d1-643c-40aa-9144-305893e8f64c",
-  "1012": "145547d1-643c-40aa-9144-305893e8f64c",
-
-  // 1013: Daniela Mérida
-  "DANIELA MERIDA": "0812eb2d-bcb5-4f9e-b690-1beaafcd3e61",
-  "DANIELA MÉRIDA": "0812eb2d-bcb5-4f9e-b690-1beaafcd3e61",
-  "1013": "0812eb2d-bcb5-4f9e-b690-1beaafcd3e61",
-
-  // 1014: Marta García Vázquez
-  "MARTA GARCIA": "e9cc4200-aba2-4e67-8191-808c40e75621",
-  "MARTA GARCÍA": "e9cc4200-aba2-4e67-8191-808c40e75621",
-  "MARTA GARCIA VAZQUEZ": "e9cc4200-aba2-4e67-8191-808c40e75621",
-  "MARTA GARCÍA VÁZQUEZ": "e9cc4200-aba2-4e67-8191-808c40e75621",
-  "1014": "e9cc4200-aba2-4e67-8191-808c40e75621"
-};
+import {
+  TeacherRecord,
+  getInitialTeacherRecords,
+  fetchAllTeachersFromSupabase,
+  buildTeacherPinMap,
+  buildTeacherUuidMap
+} from "@/lib/teacherRegistryService";
 
 // Safe haptic feedback helper
 const triggerHaptic = (pattern: number | number[] = 15) => {
@@ -301,23 +221,18 @@ export default function ProfesorPortal() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>({ isOpen: false, message: "" });
 
-  const profesoresDisponibles = [
-    "LUCÍA MUÑOZ",
-    "LUCÍA ZAMORANO",
-    "ANDREA SOTO",
-    "EVA LEIVA",
-    "LUCAS LÓPEZ",
-    "PAULA JIMÉNEZ",
-    "ABEL Y NAYARA",
-    "DARÍO HUMBERTO",
-    "NEREA OLIVARES",
-    "ALEJANDRO ROVINA",
-    "NIL BARBERÁ",
-    "MARIO GADEA",
-    "DANIELA MÉRIDA",
-    "MARTA GARCÍA VÁZQUEZ",
-    "RUTH DOMÍNGUEZ"
-  ];
+  const [teacherRecords, setTeacherRecords] = useState<TeacherRecord[]>(() =>
+    getInitialTeacherRecords(false)
+  );
+
+  const teacherPinMap = useMemo(() => buildTeacherPinMap(teacherRecords), [teacherRecords]);
+  const teacherUuidMap = useMemo(() => buildTeacherUuidMap(teacherRecords), [teacherRecords]);
+
+  const profesoresDisponibles = useMemo(() => {
+    return teacherRecords
+      .filter((t) => t.active && t.pin !== "9999")
+      .map((t) => t.name);
+  }, [teacherRecords]);
 
   const systemDays = ["DOMINGO", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO"];
   const todayStr = systemDays[new Date().getDay()];
@@ -381,17 +296,47 @@ export default function ProfesorPortal() {
     }
   ];
 
-  // Check saved PIN session on mount
+  // Sync teacher registry from Supabase & validate saved PIN session
   useEffect(() => {
+    let mounted = true;
+    const syncAndValidate = async () => {
+      const fresh = await fetchAllTeachersFromSupabase();
+      if (!mounted) return;
+      setTeacherRecords(fresh);
+      const freshPinMap = buildTeacherPinMap(fresh);
+      const savedPin = sessionStorage.getItem("df_profesor_pin");
+      if (savedPin) {
+        if (freshPinMap[savedPin]) {
+          const teacherInfo = freshPinMap[savedPin];
+          setIsAuthenticated(true);
+          setIsAdmin(!!teacherInfo.isAdmin);
+          if (!teacherInfo.isAdmin) {
+            setSelectedProfesor(teacherInfo.name);
+          }
+        } else {
+          sessionStorage.removeItem("df_profesor_pin");
+          setIsAuthenticated(false);
+          setIsAdmin(false);
+        }
+      }
+    };
+
     const savedPin = sessionStorage.getItem("df_profesor_pin");
-    if (savedPin && TEACHER_PINS[savedPin]) {
-      const teacherInfo = TEACHER_PINS[savedPin];
+    if (savedPin && teacherPinMap[savedPin]) {
+      const teacherInfo = teacherPinMap[savedPin];
       setIsAuthenticated(true);
       setIsAdmin(!!teacherInfo.isAdmin);
       if (!teacherInfo.isAdmin) {
         setSelectedProfesor(teacherInfo.name);
       }
+    } else if (savedPin) {
+      sessionStorage.removeItem("df_profesor_pin");
     }
+
+    syncAndValidate();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // Handle PIN Keypad input
@@ -420,8 +365,14 @@ export default function ProfesorPortal() {
     setPinInput("");
   };
 
-  const validatePin = (pin: string) => {
-    const teacherInfo = TEACHER_PINS[pin];
+  const validatePin = async (pin: string) => {
+    let currentMap = teacherPinMap;
+    if (!currentMap[pin]) {
+      const refreshed = await fetchAllTeachersFromSupabase();
+      setTeacherRecords(refreshed);
+      currentMap = buildTeacherPinMap(refreshed);
+    }
+    const teacherInfo = currentMap[pin];
     if (teacherInfo) {
       triggerHaptic([20, 20]);
       setIsAuthenticated(true);
@@ -435,7 +386,7 @@ export default function ProfesorPortal() {
       setPinError("");
     } else {
       triggerHaptic([40, 30, 40]);
-      setPinError("Código PIN incorrecto. Revisa e inténtalo de nuevo.");
+      setPinError("Código PIN incorrecto o acceso desactivado.");
       setTimeout(() => {
         setPinInput("");
       }, 600);
@@ -507,7 +458,7 @@ export default function ProfesorPortal() {
     if (!selectedProfesor) return;
 
     const normProf = normalizeText(selectedProfesor);
-    const explicitUUID = TEACHER_DB_ID_MAP[normProf] || TEACHER_DB_ID_MAP[selectedProfesor.toUpperCase().trim()] || (pinInput ? TEACHER_DB_ID_MAP[pinInput] : undefined);
+    const explicitUUID = teacherUuidMap[normProf] || teacherUuidMap[selectedProfesor.toUpperCase().trim()] || (pinInput ? teacherUuidMap[pinInput] : undefined);
 
     let existing: any = null;
 

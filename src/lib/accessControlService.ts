@@ -13,7 +13,9 @@ export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: s
   const role = (student?.rol || userRole || "").toLowerCase();
   const dni = (student?.dni || "").toUpperCase();
   const nfc = String(student?.nfc_token || "").toUpperCase();
+  const dir = String(student?.direccion || "");
 
+  if (dir.includes("DF_TEACHER_META:")) return true;
   if (role === "profesor" || role === "docente" || role === "admin" || role === "administrador") return true;
   if (plan.includes("docente") || plan.includes("profesor") || plan.includes("profesora")) return true;
   if (email.endsWith("@dancefactory.es") && !email.startsWith("alumno")) return true;
