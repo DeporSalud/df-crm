@@ -500,17 +500,36 @@ export interface ContabilizarRemesaResult {
 }
 
 /**
+ * Canonical student identity matcher (sibling-safe):
+ * - If BOTH `student.id` and `p.alumno_id` exist and are non-empty, identity is decided
+ *   EXCLUSIVELY by `p.alumno_id.trim() === student.id.trim()` (returns `false` immediately
+ *   when UUIDs differ, even if two minor sisters share their mother/father's DNI).
+ * - Fallback by normalized `nombre_completo` is used ONLY when either `p.alumno_id` or `student.id`
+ *   is missing (e.g. legacy seed records or manual desk entries without student ID).
+ */
+export function doesPaymentMatchStudent(
+  p: { alumno_id?: string | null; alumno_nombre?: string | null },
+  student: { id?: string | null; nombre_completo?: string | null }
+): boolean {
+  const stuId = (student?.id || "").trim();
+  const payId = (p?.alumno_id || "").trim();
+  if (stuId && payId) {
+    return payId === stuId;
+  }
+  const stuName = normalizeIdentityText(student?.nombre_completo);
+  const payName = normalizeIdentityText(p?.alumno_nombre);
+  return Boolean(stuName && payName && payName === stuName);
+}
+
+/**
  * Checks whether an existing payment is an active ("Cobrado") monthly fee for targetMonth
- * matching the student by ID, normalized DNI, or normalized full name.
+ * matching the student via canonical sibling-safe identity (`doesPaymentMatchStudent`).
  */
 export function hasExistingMonthlyPaymentForPeriod(
   pagos: PagoTransaccion[],
   candidate: { id?: string; dni?: string; nombre_completo?: string },
   periodoMes: string
 ): boolean {
-  const candId = (candidate.id || "").trim();
-  const candDni = normalizeIdentityText(candidate.dni);
-  const candName = normalizeIdentityText(candidate.nombre_completo);
   const [targetYear, targetMonth] = (periodoMes || "").split("-");
   const keywords = MONTH_KEYWORDS_BY_NUM[targetMonth] || [];
 
@@ -518,10 +537,7 @@ export function hasExistingMonthlyPaymentForPeriod(
     if (p.estado !== "Cobrado") return false;
     if (p.categoria !== "mensualidad") return false;
 
-    const matchesId = Boolean(candId && p.alumno_id && p.alumno_id.trim() === candId);
-    const matchesDni = Boolean(candDni && p.alumno_dni && normalizeIdentityText(p.alumno_dni) === candDni);
-    const matchesName = Boolean(candName && p.alumno_nombre && normalizeIdentityText(p.alumno_nombre) === candName);
-    if (!matchesId && !matchesDni && !matchesName) return false;
+    if (!doesPaymentMatchStudent(p, candidate)) return false;
 
     // Strict accounting rule: if p.periodo_mes is defined, match strictly against periodoMes
     if (p.periodo_mes) {

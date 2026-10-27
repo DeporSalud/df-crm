@@ -55,6 +55,7 @@ import {
   getSeasonMonthTitle,
   getDefaultRemesaMonth,
   normalizeSedePago,
+  doesPaymentMatchStudent,
   contabilizarRemesaMensualSEPA,
   ContabilizarRemesaResult,
   getHistorialPagos, 
@@ -476,8 +477,6 @@ export default function PagosYFacturacionPage() {
     if (!student) return undefined;
     const [yearNum, monthNum] = selectedMonth.split("-");
     const keywords = MONTH_KEYWORDS_BY_NUM[monthNum || ""] || [];
-    const stuNameNorm = normalizeComparable(student.nombre_completo);
-    const stuDniNorm = normalizeComparable(student.dni);
 
     return pagos.find(p => {
       // Must be a confirmed / completed transaction
@@ -492,11 +491,8 @@ export default function PagosYFacturacionPage() {
         !p.id.startsWith("sepa_");
       if (!isDeskOrManual) return false;
 
-      // Match student identity
-      const matchesId = Boolean(student.id && p.alumno_id && p.alumno_id === student.id);
-      const matchesDni = Boolean(stuDniNorm && p.alumno_dni && normalizeComparable(p.alumno_dni) === stuDniNorm);
-      const matchesName = Boolean(stuNameNorm && p.alumno_nombre && normalizeComparable(p.alumno_nombre) === stuNameNorm);
-      if (!matchesId && !matchesDni && !matchesName) return false;
+      // Canonical sibling-safe identity check: strict UUID match when both IDs exist, fallback to normalized full name only if an ID is missing
+      if (!doesPaymentMatchStudent(p, student)) return false;
 
       // Match monthly fee category or concept
       const isMonthlyFee = 
@@ -524,8 +520,6 @@ export default function PagosYFacturacionPage() {
   // Cross-reference SEPA remittance receipts already accounted in the app for selectedMonth
   const getSepaAccountedPaymentForStudent = (student: any): PagoTransaccion | undefined => {
     if (!student) return undefined;
-    const stuNameNorm = normalizeComparable(student.nombre_completo);
-    const stuDniNorm = normalizeComparable(student.dni);
 
     return pagos.find(p => {
       if (p.estado !== "Cobrado") return false;
@@ -537,10 +531,8 @@ export default function PagosYFacturacionPage() {
         !(p.atendido_por && p.atendido_por.toLowerCase().includes("recep"));
       if (!isSepaRemesa) return false;
 
-      const matchesId = Boolean(student.id && p.alumno_id && p.alumno_id === student.id);
-      const matchesDni = Boolean(stuDniNorm && p.alumno_dni && normalizeComparable(p.alumno_dni) === stuDniNorm);
-      const matchesName = Boolean(stuNameNorm && p.alumno_nombre && normalizeComparable(p.alumno_nombre) === stuNameNorm);
-      if (!matchesId && !matchesDni && !matchesName) return false;
+      // Canonical sibling-safe identity check: strict UUID match when both IDs exist, fallback to normalized full name only if an ID is missing
+      if (!doesPaymentMatchStudent(p, student)) return false;
 
       if (p.periodo_mes) {
         return p.periodo_mes === selectedMonth;
@@ -588,7 +580,7 @@ export default function PagosYFacturacionPage() {
     if (sepaPayment) {
       return {
         status: "sepa_accounted",
-        label: "✓ Contabilizado en Ingresos",
+        label: "Contabilizado en Ingresos",
         sepaPayment
       };
     }
@@ -723,8 +715,19 @@ export default function PagosYFacturacionPage() {
       }
     }
 
+    const enrichedSepaStudents = sepaExportStudents.map(s => {
+      const feeData = getStudentRemittanceData(s);
+      const assignedNames = (assignedClassesMap[s.id] || []).join(" / ") || feeData.claseNombre || s.plan_activo || "Cuota Regular";
+      return {
+        ...s,
+        cuota_base: feeData.cuotaBase,
+        adelanto: feeData.anticipo,
+        clase: assignedNames
+      };
+    });
+
     const sepaResult = generateSEPAXml(
-      sepaExportStudents, 
+      enrichedSepaStudents, 
       selectedMonth, 
       paymentMethods, 
       assignedClassesMap,
@@ -871,19 +874,19 @@ export default function PagosYFacturacionPage() {
       </div>
       
       {/* Top Action Header & Tab Switcher */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[var(--color-border)]">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-2 border-b border-[var(--color-border)]">
         
         {/* Unified Module Tabs */}
-        <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border)] shadow-sm">
+        <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border)] shadow-sm overflow-x-auto max-w-full shrink-0">
           <button
             onClick={() => setActiveTab("historial")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+            className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === "historial"
                 ? "bg-[var(--color-primary)] text-white shadow-md shadow-[var(--color-primary)]/30"
                 : "text-[var(--color-text-secondary)] hover:text-white hover:bg-[var(--color-bg-hover)]"
             }`}
           >
-            <Receipt size={15} />
+            <Receipt size={15} className="shrink-0" />
             <span>Historial de Cobros</span>
             <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-white/20 font-mono">
               {pagos.length}
@@ -892,13 +895,13 @@ export default function PagosYFacturacionPage() {
 
           <button
             onClick={() => setActiveTab("remesas")}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+            className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
               activeTab === "remesas"
                 ? "bg-[var(--color-primary)] text-white shadow-md shadow-[var(--color-primary)]/30"
                 : "text-[var(--color-text-secondary)] hover:text-white hover:bg-[var(--color-bg-hover)]"
             }`}
           >
-            <Landmark size={15} />
+            <Landmark size={15} className="shrink-0" />
             <span>Remesas Bancarias SEPA</span>
             <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-400/20 text-amber-300 font-mono">
               {totalRegularCount}
@@ -907,21 +910,21 @@ export default function PagosYFacturacionPage() {
         </div>
 
         {/* Global Action Buttons */}
-        <div className="flex items-center gap-2.5 flex-wrap justify-end">
+        <div className="flex items-center gap-2 flex-wrap justify-start lg:justify-end">
           {activeTab === "historial" && (
             <button
               onClick={() => exportarPagosCSV(filteredPagos)}
-              className="px-3.5 py-2 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-xs font-bold text-slate-300 hover:text-white border border-[var(--color-border)] transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+              className="px-3.5 py-2 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-xs font-bold text-slate-300 hover:text-white border border-[var(--color-border)] transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm whitespace-nowrap shrink-0"
             >
-              <Download size={14} />
+              <Download size={14} className="shrink-0" />
               <span>Exportar CSV</span>
             </button>
           )}
 
           {activeTab === "remesas" && (
-            <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-center gap-2 flex-wrap justify-start lg:justify-end">
               <span 
-                className="hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px] font-semibold cursor-help"
+                className="hidden 2xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px] font-semibold cursor-help whitespace-nowrap shrink-0"
                 title="Blindaje de Cobros: Los alumnos con método 'Efectivo' o que ya hayan liquidado su mensualidad en mostrador quedan automáticamente excluidos de este fichero bancario y del volcado contable para evitar cobros duplicados."
               >
                 <HelpCircle size={13} className="text-amber-400 shrink-0" />
@@ -932,7 +935,7 @@ export default function PagosYFacturacionPage() {
                 type="button"
                 onClick={openConfirmContabilizarModal}
                 disabled={pendingSepaToAccountStudents.length === 0}
-                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md ${
+                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md whitespace-nowrap shrink-0 ${
                   pendingSepaToAccountStudents.length > 0
                     ? "bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/25 cursor-pointer"
                     : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 cursor-default"
@@ -945,28 +948,28 @@ export default function PagosYFacturacionPage() {
                       : "No hay recibos SEPA pendientes de contabilizar en este mes"
                 }
               >
-                <CheckCircle2 size={14} />
+                <CheckCircle2 size={14} className="shrink-0" />
                 <span>
                   {pendingSepaToAccountStudents.length === 0 && sepaAccountedStudentsCount > 0
-                    ? `✓ Remesa Contabilizada (${sepaAccountedStudentsCount})`
-                    : `✓ Contabilizar Remesa en Ingresos (${pendingSepaToAccountStudents.length})`}
+                    ? `Remesa Contabilizada (${sepaAccountedStudentsCount})`
+                    : `Contabilizar Remesa en Ingresos (${pendingSepaToAccountStudents.length})`}
                 </span>
               </button>
 
               <button
                 onClick={handleExportSEPACsv}
-                className="px-3 py-2 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-xs font-bold text-slate-300 hover:text-white border border-[var(--color-border)] transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+                className="px-3 py-2 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-xs font-bold text-slate-300 hover:text-white border border-[var(--color-border)] transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm whitespace-nowrap shrink-0"
                 title="Exportar resumen de remesas en CSV"
               >
-                <FileSpreadsheet size={14} className="text-emerald-400" />
+                <FileSpreadsheet size={14} className="text-emerald-400 shrink-0" />
                 <span>Resumen CSV</span>
               </button>
               <button
                 onClick={handleExportSEPAXML}
-                className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-all flex items-center gap-1.5 shadow-md shadow-amber-400/20 cursor-pointer"
+                className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-all flex items-center gap-1.5 shadow-md shadow-amber-400/20 cursor-pointer whitespace-nowrap shrink-0"
                 title="Descargar Fichero XML ISO 20022 pain.008.001.02 Norma 19 (Excluye alumnos de Efectivo y pagos en mostrador)"
               >
-                <Download size={14} />
+                <Download size={14} className="shrink-0" />
                 <span>Descargar SEPA XML ({sepaExportStudents.length})</span>
               </button>
             </div>
@@ -974,9 +977,9 @@ export default function PagosYFacturacionPage() {
 
           <button
             onClick={() => openGlobalCobro()}
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-accent)] hover:brightness-110 text-white text-xs font-extrabold transition-all shadow-md shadow-[var(--color-primary)]/30 flex items-center gap-1.5 cursor-pointer"
+            className="px-4 py-2 rounded-xl bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-accent)] hover:brightness-110 text-white text-xs font-extrabold transition-all shadow-md shadow-[var(--color-primary)]/30 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
           >
-            <Plus size={15} />
+            <Plus size={15} className="shrink-0" />
             <span>Cobrar en Recepción</span>
           </button>
         </div>
@@ -1117,7 +1120,7 @@ export default function PagosYFacturacionPage() {
 
           {/* Payments Table */}
           <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl overflow-hidden shadow-lg">
-            <div className="overflow-x-auto">
+            <div tabIndex={0} role="region" aria-label="Tabla de historial de cobros" className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg)]/60 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
@@ -1231,9 +1234,9 @@ export default function PagosYFacturacionPage() {
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-extrabold text-emerald-300 text-sm">
-                      ✓ Remesa de {accountedRemesaBanner.monthTitle} contabilizada en Ingresos
+                      Remesa de {accountedRemesaBanner.monthTitle} contabilizada en Ingresos
                     </span>
-                    <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-200 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                    <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-200 px-2 py-0.5 rounded-full border border-emerald-500/30 whitespace-nowrap">
                       +{accountedRemesaBanner.totalAmountCreated.toFixed(2)} € ({accountedRemesaBanner.createdCount} recibos)
                     </span>
                   </div>
@@ -1347,19 +1350,19 @@ export default function PagosYFacturacionPage() {
 
           {/* Table */}
           <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl overflow-hidden shadow-lg">
-            <div className="overflow-x-auto">
+            <div tabIndex={0} role="region" aria-label="Tabla de remesas bancarias SEPA" className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg)]/60 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                    <th className="py-3.5 px-4">Alumno / DNI</th>
-                    <th className="py-3.5 px-4">Sede / Clase</th>
-                    <th className="py-3.5 px-4 text-center">Cuota Base</th>
-                    <th className="py-3.5 px-4 text-center">
+                    <th className="py-3.5 px-4 whitespace-nowrap">Alumno / DNI</th>
+                    <th className="py-3.5 px-4 whitespace-nowrap">Sede / Clase</th>
+                    <th className="py-3.5 px-4 text-center whitespace-nowrap">Cuota Base</th>
+                    <th className="py-3.5 px-4 text-center whitespace-nowrap">
                       {isSepMonth ? "Anticipo Sep" : "Anticipo Mes"}
                     </th>
-                    <th className="py-3.5 px-4 text-center">Neto a Remesar</th>
-                    <th className="py-3.5 px-4">Vía de Cobro</th>
-                    <th className="py-3.5 px-4 text-center">Estado</th>
+                    <th className="py-3.5 px-4 text-center whitespace-nowrap">Neto a Remesar</th>
+                    <th className="py-3.5 px-4 whitespace-nowrap">Vía de Cobro</th>
+                    <th className="py-3.5 px-4 text-center whitespace-nowrap">Estado</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--color-border)]/50 text-xs">
@@ -1392,26 +1395,26 @@ export default function PagosYFacturacionPage() {
                             </span>
                           </td>
 
-                          <td className="py-3 px-4 text-center">
-                            <span className="font-mono font-semibold text-slate-300">
+                          <td className="py-3 px-4 text-center whitespace-nowrap">
+                            <span className="font-mono font-semibold text-slate-300 whitespace-nowrap inline-block">
                               {feeData.cuotaBase.toFixed(2)} €
                             </span>
                           </td>
 
-                          <td className="py-3 px-4 text-center">
+                          <td className="py-3 px-4 text-center whitespace-nowrap">
                             {feeData.anticipo > 0 ? (
-                              <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                              <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 whitespace-nowrap inline-block">
                                 -{feeData.anticipo.toFixed(2)} €
                               </span>
                             ) : (
-                              <span className="font-mono text-slate-500 text-xs">
+                              <span className="font-mono text-slate-500 text-xs whitespace-nowrap inline-block">
                                 0,00 €
                               </span>
                             )}
                           </td>
 
-                          <td className="py-3 px-4 text-center">
-                            <span className={`font-mono font-black text-sm px-2.5 py-1 rounded-xl border ${
+                          <td className="py-3 px-4 text-center whitespace-nowrap">
+                            <span className={`font-mono font-black text-sm px-2.5 py-1 rounded-xl border whitespace-nowrap inline-block ${
                               remStatus.status === "eligible"
                                 ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
                                 : remStatus.status === "sepa_accounted"
@@ -1424,7 +1427,7 @@ export default function PagosYFacturacionPage() {
                             </span>
                           </td>
 
-                          <td className="py-3 px-4">
+                          <td className="py-3 px-4 whitespace-nowrap">
                             <select
                               value={currentMethod}
                               onChange={(e) => handleUpdatePaymentMethod(student.id, e.target.value as MetodoPagoRemesa)}
@@ -1438,44 +1441,44 @@ export default function PagosYFacturacionPage() {
                             </select>
                           </td>
 
-                          <td className="py-3 px-4 text-center">
+                          <td className="py-3 px-4 text-center whitespace-nowrap">
                             {remStatus.status === "desk_paid" ? (
                               <span 
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20 cursor-help"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20 cursor-help whitespace-nowrap"
                                 title={`Cuota de ${selectedMonth} ya liquidada en recepción (${remStatus.deskPayment?.metodo_pago}) el ${remStatus.deskPayment?.fecha_corta}. Excluido estrictamente del SEPA XML y del volcado contable.`}
                               >
-                                <CheckCircle2 size={11} className="text-amber-400" />
+                                <CheckCircle2 size={11} className="text-amber-400 shrink-0" />
                                 <span>Cobrado Mostrador — Excluido</span>
                               </span>
                             ) : remStatus.status === "sepa_accounted" ? (
                               <span 
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300 bg-emerald-500/15 px-2.5 py-1 rounded-full border border-emerald-500/30 cursor-help"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300 bg-emerald-500/15 px-2.5 py-1 rounded-full border border-emerald-500/30 cursor-help whitespace-nowrap"
                                 title={`Recibo SEPA ${remStatus.sepaPayment?.numero_recibo || ""} ya contabilizado en Ingresos para ${selectedMonth}. Incluido en descarga SEPA XML y protegido frente a duplicados.`}
                               >
-                                <CheckCircle2 size={11} className="text-emerald-400" />
-                                <span>✓ Contabilizado en Ingresos</span>
+                                <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />
+                                <span>Contabilizado en Ingresos</span>
                               </span>
                             ) : remStatus.status === "cash_method" ? (
                               <span 
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-500/10 px-2.5 py-1 rounded-full border border-slate-500/20 cursor-help"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-500/10 px-2.5 py-1 rounded-full border border-slate-500/20 cursor-help whitespace-nowrap"
                                 title="Alumno con pago presencial en Efectivo. Excluido estrictamente de la remesa bancaria."
                               >
-                                <Coins size={11} className="text-slate-400" />
+                                <Coins size={11} className="text-slate-400 shrink-0" />
                                 <span>Efectivo (Excluido SEPA)</span>
                               </span>
                             ) : remStatus.status === "other_method" ? (
                               <span 
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-400 bg-blue-500/10 px-2.5 py-1 rounded-full border border-blue-500/20"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-400 bg-blue-500/10 px-2.5 py-1 rounded-full border border-blue-500/20 whitespace-nowrap"
                                 title={`Cobro gestionado por ${remStatus.label}. Excluido de remesa bancaria.`}
                               >
                                 <span>Excluido ({remStatus.label})</span>
                               </span>
                             ) : (
                               <span 
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-cyan-300 bg-cyan-500/10 px-2.5 py-1 rounded-full border border-cyan-500/25"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-cyan-300 bg-cyan-500/10 px-2.5 py-1 rounded-full border border-cyan-500/25 whitespace-nowrap"
                                 title="Listo para contabilizar en ingresos e incluir en el fichero SEPA XML ISO 20022"
                               >
-                                <CheckCircle2 size={11} /> Listo para Remesa
+                                <CheckCircle2 size={11} className="shrink-0" /> Listo para Remesa
                               </span>
                             )}
                           </td>
@@ -1614,9 +1617,9 @@ export default function PagosYFacturacionPage() {
               onClick={handleConfirmContabilizarRemesa}
               className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/25 cursor-pointer"
             >
-              <CheckCircle2 size={15} />
+              <CheckCircle2 size={15} className="shrink-0" />
               <span>
-                {isAccountingRemesa ? "Contabilizando..." : "✓ Confirmar y Contabilizar Ingresos"}
+                {isAccountingRemesa ? "Contabilizando..." : "Confirmar y Contabilizar Ingresos"}
               </span>
             </button>
           </div>

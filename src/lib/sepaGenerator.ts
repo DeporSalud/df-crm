@@ -136,6 +136,32 @@ export function sanitizeSEPAText(str: string = ""): string {
     .trim();
 }
 
+function normalizeStudentNameKey(str?: string | null): string {
+  return String(str || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Canonical sibling-safe student identity check for SEPA reconciliation:
+ * - When both `student.id` and `p.alumno_id` are present, compare UUIDs exclusively
+ *   (two minor siblings sharing a parent's DNI have distinct UUIDs and must NEVER cross-exclude).
+ * - Fallback to normalized `nombre_completo` only when either UUID is missing.
+ */
+function matchesSepaStudentIdentity(p: any, student: any): boolean {
+  const stuId = String(student?.id || "").trim();
+  const payId = String(p?.alumno_id || "").trim();
+  if (stuId && payId) {
+    return payId === stuId;
+  }
+  const stuName = normalizeStudentNameKey(student?.nombre_completo);
+  const payName = normalizeStudentNameKey(p?.alumno_nombre);
+  return Boolean(stuName && payName && payName === stuName);
+}
+
 /**
  * Canonical helper to filter students eligible for SEPA direct debit remittances:
  * - Excludes inactive or cancelled students
@@ -155,12 +181,14 @@ export function filterStudentsForSEPARemittance(
     if (metodo === "efectivo" || metodo === "cash") return false;
 
     const hasPaidInDesk = paymentsLedger.some(p => {
-      const matchStudent = (p.alumno_id && student.id && p.alumno_id === student.id) ||
-        (p.alumno_nombre && student.nombre_completo && p.alumno_nombre.trim().toLowerCase() === student.nombre_completo.trim().toLowerCase());
-      const matchMonth = (p.mes && p.mes.includes(targetMonth)) ||
-        (p.periodo_mes && p.periodo_mes === targetMonth) ||
-        (p.fecha_hora && p.fecha_hora.startsWith(targetMonth)) ||
-        (p.concepto && p.concepto.includes(targetMonth));
+      const matchStudent = matchesSepaStudentIdentity(p, student);
+      const matchMonth = p.periodo_mes
+        ? p.periodo_mes === targetMonth
+        : Boolean(
+            (p.mes && p.mes.includes(targetMonth)) ||
+            (p.fecha_hora && p.fecha_hora.startsWith(targetMonth)) ||
+            (p.concepto && p.concepto.includes(targetMonth))
+          );
       const isCompleted = ["completado", "pagado", "cobrado"].includes(String(p.estado || "").toLowerCase());
       return matchStudent && matchMonth && isCompleted;
     });
@@ -257,24 +285,24 @@ export function generateSEPAXml(
           (p.id && !String(p.id).startsWith("sepa_"));
         if (!isDeskOrNonSepa) return false;
 
-        const matchesId = Boolean(sId && p.alumno_id && p.alumno_id === sId);
-        const matchesName = Boolean(s.nombre_completo && p.alumno_nombre && s.nombre_completo.trim().toLowerCase() === p.alumno_nombre.trim().toLowerCase());
-        const matchesDni = Boolean(s.dni && p.alumno_dni && s.dni.trim().toLowerCase() === p.alumno_dni.trim().toLowerCase());
-        if (!matchesId && !matchesName && !matchesDni) return false;
+        if (!matchesSepaStudentIdentity(p, s)) return false;
 
-        const isSameMonth = 
-          p.periodo_mes === monthStr ||
-          (p.fecha_hora && String(p.fecha_hora).startsWith(monthStr)) ||
-          (p.mes && String(p.mes).includes(monthStr)) ||
-          (p.concepto && String(p.concepto).toLowerCase().includes(monthStr.toLowerCase()));
-
-        const matchesKeyword = keywords.some(k => p.concepto && String(p.concepto).toLowerCase().includes(k));
+        if (p.periodo_mes) {
+          if (p.periodo_mes !== monthStr) return false;
+        } else {
+          const isSameMonth =
+            (p.fecha_hora && String(p.fecha_hora).startsWith(monthStr)) ||
+            (p.mes && String(p.mes).includes(monthStr)) ||
+            (p.concepto && String(p.concepto).toLowerCase().includes(monthStr.toLowerCase()));
+          const matchesKeyword = keywords.some(k => p.concepto && String(p.concepto).toLowerCase().includes(k));
+          if (!isSameMonth && !matchesKeyword) return false;
+        }
 
         const isMonthly = 
           p.categoria === "mensualidad" ||
           (p.concepto && (String(p.concepto).toLowerCase().includes("mensual") || String(p.concepto).toLowerCase().includes("cuota")));
 
-        return (isSameMonth || matchesKeyword) && isMonthly;
+        return Boolean(isMonthly);
       });
 
       if (hasPaid) return false;
