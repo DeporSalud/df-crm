@@ -141,14 +141,23 @@ export default function PagosYFacturacionPage() {
         const json = await res.json();
         if (json.transacciones && Array.isArray(json.transacciones)) {
           const stripeTxs: PagoTransaccion[] = json.transacciones;
-          // Keep local manual desk payments (cash, dataphone, bizum, SEPA remesas)
-          const localManual = storedPagos.filter(p => !p.id.startsWith("stripe_") && !p.numero_recibo.startsWith("STRIPE-"));
+          // Re-read fresh localStorage AFTER network await so concurrent writes (desk payments / SEPA remittances) are never clobbered
+          const freshStored = getHistorialPagos();
+          const localManual = freshStored.filter(p => !p.id.startsWith("stripe_") && !p.numero_recibo.startsWith("STRIPE-"));
           storedPagos = [...stripeTxs, ...localManual];
-          saveHistorialPagos(storedPagos);
+          if (typeof window !== "undefined") {
+            // Persist silently without emitting df_pagos_updated so loadData() never self-loops
+            localStorage.setItem("df_pagos_transacciones_v1", JSON.stringify(storedPagos));
+          }
+        } else {
+          storedPagos = getHistorialPagos();
         }
+      } else {
+        storedPagos = getHistorialPagos();
       }
     } catch (errStripe) {
       console.warn("[Pagos] Error cargando transacciones de Stripe:", errStripe);
+      storedPagos = getHistorialPagos();
     }
 
     setPagos(storedPagos);
