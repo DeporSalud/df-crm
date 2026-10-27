@@ -224,8 +224,9 @@ export default function PagosYFacturacionPage() {
       const map: Record<string, string[]> = {};
       enrollments.forEach((item: any) => {
         if (!map[item.alumno_id]) map[item.alumno_id] = [];
-        if (item.clases_cuadrante?.nombre_clase) {
-          map[item.alumno_id].push(item.clases_cuadrante.nombre_clase);
+        const className = item.clases_cuadrante?.nombre_clase?.trim();
+        if (className && !map[item.alumno_id].includes(className)) {
+          map[item.alumno_id].push(className);
         }
       });
       setAssignedClassesMap(map);
@@ -671,7 +672,7 @@ export default function PagosYFacturacionPage() {
     try {
       const batchItems = pendingSepaToAccountStudents.map(s => {
         const feeData = getStudentRemittanceData(s);
-        const assignedNames = (assignedClassesMap[s.id] || []).join(" / ") || feeData.claseNombre || "Clases Regulares";
+        const assignedNames = Array.from(new Set(assignedClassesMap[s.id] || [])).join(" / ") || feeData.claseNombre || "Clases Regulares";
         return {
           alumno_id: s.id,
           alumno_nombre: s.nombre_completo || "Alumno Dance Factory",
@@ -717,7 +718,7 @@ export default function PagosYFacturacionPage() {
 
     const enrichedSepaStudents = sepaExportStudents.map(s => {
       const feeData = getStudentRemittanceData(s);
-      const assignedNames = (assignedClassesMap[s.id] || []).join(" / ") || feeData.claseNombre || s.plan_activo || "Cuota Regular";
+      const assignedNames = Array.from(new Set(assignedClassesMap[s.id] || [])).join(" / ") || feeData.claseNombre || s.plan_activo || "Cuota Regular";
       return {
         ...s,
         cuota_base: feeData.cuotaBase,
@@ -789,7 +790,7 @@ export default function PagosYFacturacionPage() {
         `"${s.nombre_completo || ''}"`,
         `"${s.dni || 'PENDIENTE'}"`,
         `"${normSede === 'tejar' ? 'Studio 1 Plaza El Tejar' : 'Studio 2 Paseo Castilla'}"`,
-        `"${(assignedClassesMap[s.id] || []).join(' / ') || data.claseNombre || 'Clase Regular'}"`,
+        `"${Array.from(new Set(assignedClassesMap[s.id] || [])).join(' / ') || data.claseNombre || 'Clase Regular'}"`,
         data.cuotaBase.toFixed(2),
         (-data.anticipo).toFixed(2),
         data.neto.toFixed(2),
@@ -877,33 +878,33 @@ export default function PagosYFacturacionPage() {
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-2 border-b border-[var(--color-border)]">
         
         {/* Unified Module Tabs */}
-        <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border)] shadow-sm overflow-x-auto max-w-full shrink-0">
+        <div className="w-full sm:w-auto grid grid-cols-2 sm:flex items-center gap-1.5 p-1 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border)] shadow-sm shrink-0">
           <button
             onClick={() => setActiveTab("historial")}
-            className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`px-2 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center justify-center text-center gap-1.5 sm:gap-2 cursor-pointer leading-tight sm:whitespace-nowrap sm:shrink-0 ${
               activeTab === "historial"
                 ? "bg-[var(--color-primary)] text-white shadow-md shadow-[var(--color-primary)]/30"
                 : "text-[var(--color-text-secondary)] hover:text-white hover:bg-[var(--color-bg-hover)]"
             }`}
           >
-            <Receipt size={15} className="shrink-0" />
+            <Receipt size={14} className="hidden sm:block shrink-0" />
             <span>Historial de Cobros</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-white/20 font-mono">
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-white/20 font-mono shrink-0">
               {pagos.length}
             </span>
           </button>
 
           <button
             onClick={() => setActiveTab("remesas")}
-            className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 ${
+            className={`px-2 sm:px-4 py-2 rounded-xl text-[11px] sm:text-xs font-bold transition-all flex items-center justify-center text-center gap-1.5 sm:gap-2 cursor-pointer leading-tight sm:whitespace-nowrap sm:shrink-0 ${
               activeTab === "remesas"
                 ? "bg-[var(--color-primary)] text-white shadow-md shadow-[var(--color-primary)]/30"
                 : "text-[var(--color-text-secondary)] hover:text-white hover:bg-[var(--color-bg-hover)]"
             }`}
           >
-            <Landmark size={15} className="shrink-0" />
+            <Landmark size={14} className="hidden sm:block shrink-0" />
             <span>Remesas Bancarias SEPA</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-400/20 text-amber-300 font-mono">
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-400/20 text-amber-300 font-mono shrink-0">
               {totalRegularCount}
             </span>
           </button>
@@ -1012,13 +1013,13 @@ export default function PagosYFacturacionPage() {
                     className="p-3 rounded-xl bg-[var(--color-bg)]/80 border border-amber-500/20 flex items-center justify-between gap-3"
                   >
                     <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-extrabold text-white truncate">{req.student_name}</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-extrabold text-white break-words">{req.student_name}</span>
                         <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wider bg-amber-400/20 text-amber-300 border border-amber-400/30">
                           {req.metodo_pago}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-snug break-words">
                         {req.bono_nombre} • <span className="text-emerald-400 font-bold">{req.bono_precio}</span>
                       </p>
                     </div>
@@ -1154,7 +1155,7 @@ export default function PagosYFacturacionPage() {
                         </td>
 
                         <td className="py-3 px-4">
-                          <span className="font-semibold text-slate-200 block truncate max-w-xs">{pago.concepto}</span>
+                          <span className="font-semibold text-slate-200 block leading-snug break-words max-w-md">{pago.concepto}</span>
                           <span className="text-[10px] uppercase font-bold text-[var(--color-secondary)]">
                             {pago.categoria}
                           </span>
@@ -1354,15 +1355,15 @@ export default function PagosYFacturacionPage() {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg)]/60 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                    <th className="py-3.5 px-4 whitespace-nowrap">Alumno / DNI</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Sede / Clase</th>
-                    <th className="py-3.5 px-4 text-center whitespace-nowrap">Cuota Base</th>
-                    <th className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {isSepMonth ? "Anticipo Sep" : "Anticipo Mes"}
+                    <th className="py-3.5 px-2.5 whitespace-nowrap">Alumno / DNI</th>
+                    <th className="py-3.5 px-2.5 whitespace-nowrap">Sede / Clase</th>
+                    <th className="py-3.5 px-2.5 text-center whitespace-nowrap">Cuota Base</th>
+                    <th className="py-3.5 px-2.5 text-center whitespace-nowrap">
+                      {isSepMonth ? "Anticipo Sep" : "Anticipo"}
                     </th>
-                    <th className="py-3.5 px-4 text-center whitespace-nowrap">Neto a Remesar</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Vía de Cobro</th>
-                    <th className="py-3.5 px-4 text-center whitespace-nowrap">Estado</th>
+                    <th className="py-3.5 px-2.5 text-center whitespace-nowrap">Neto</th>
+                    <th className="py-3.5 px-2.5 whitespace-nowrap">Vía de Cobro</th>
+                    <th className="py-3.5 px-2.5 text-center whitespace-nowrap">Estado</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--color-border)]/50 text-xs">
@@ -1377,31 +1378,31 @@ export default function PagosYFacturacionPage() {
                     filteredRemesaStudents.map((student) => {
                       const feeData = getStudentRemittanceData(student);
                       const currentMethod = paymentMethods[student.id] || "SEPA";
-                      const assignedNames = (assignedClassesMap[student.id] || []).join(" / ") || feeData.claseNombre || "Clases Regulares";
+                      const assignedNames = Array.from(new Set(assignedClassesMap[student.id] || [])).join(" / ") || feeData.claseNombre || "Clases Regulares";
                       const remStatus = getStudentRemittanceStatus(student);
                       const normSede = normalizeSedePago(student.sede);
 
                       return (
                         <tr key={student.id} className="hover:bg-[var(--color-bg-hover)] transition-colors">
-                          <td className="py-3 px-4">
-                            <span className="font-bold text-[var(--color-text-title)] block">{student.nombre_completo}</span>
+                          <td className="py-3 px-2.5">
+                            <span className="font-bold text-[var(--color-text-title)] block leading-snug">{student.nombre_completo}</span>
                             <span className="text-[10px] text-slate-400 font-mono">{student.dni || "Sin DNI"}</span>
                           </td>
 
-                          <td className="py-3 px-4">
-                            <span className="font-semibold text-slate-200 block truncate max-w-xs">{assignedNames}</span>
+                          <td className="py-3 px-2.5">
+                            <span className="font-semibold text-slate-200 block leading-snug break-words max-w-[220px]">{assignedNames}</span>
                             <span className="text-[10px] text-slate-400">
                               {normSede === "tejar" ? "Studio 1 (Tejar)" : "Studio 2 (Castilla)"}
                             </span>
                           </td>
 
-                          <td className="py-3 px-4 text-center whitespace-nowrap">
+                          <td className="py-3 px-2.5 text-center whitespace-nowrap">
                             <span className="font-mono font-semibold text-slate-300 whitespace-nowrap inline-block">
                               {feeData.cuotaBase.toFixed(2)} €
                             </span>
                           </td>
 
-                          <td className="py-3 px-4 text-center whitespace-nowrap">
+                          <td className="py-3 px-2.5 text-center whitespace-nowrap">
                             {feeData.anticipo > 0 ? (
                               <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 whitespace-nowrap inline-block">
                                 -{feeData.anticipo.toFixed(2)} €
@@ -1413,8 +1414,8 @@ export default function PagosYFacturacionPage() {
                             )}
                           </td>
 
-                          <td className="py-3 px-4 text-center whitespace-nowrap">
-                            <span className={`font-mono font-black text-sm px-2.5 py-1 rounded-xl border whitespace-nowrap inline-block ${
+                          <td className="py-3 px-2.5 text-center whitespace-nowrap">
+                            <span className={`font-mono font-black text-sm px-2 py-1 rounded-xl border whitespace-nowrap inline-block ${
                               remStatus.status === "eligible"
                                 ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
                                 : remStatus.status === "sepa_accounted"
@@ -1427,11 +1428,11 @@ export default function PagosYFacturacionPage() {
                             </span>
                           </td>
 
-                          <td className="py-3 px-4 whitespace-nowrap">
+                          <td className="py-3 px-2.5 whitespace-nowrap">
                             <select
                               value={currentMethod}
                               onChange={(e) => handleUpdatePaymentMethod(student.id, e.target.value as MetodoPagoRemesa)}
-                              className="bg-[var(--color-bg)] text-white text-xs font-semibold rounded-lg px-2.5 py-1.5 border border-[var(--color-border)] outline-none cursor-pointer"
+                              className="bg-[var(--color-bg)] text-white text-[11px] font-semibold rounded-lg px-2 py-1.5 border border-[var(--color-border)] outline-none cursor-pointer"
                             >
                               <option value="SEPA">🏛️ Domiciliación SEPA</option>
                               <option value="Stripe">⚡ Pasarela Stripe</option>
@@ -1441,7 +1442,7 @@ export default function PagosYFacturacionPage() {
                             </select>
                           </td>
 
-                          <td className="py-3 px-4 text-center whitespace-nowrap">
+                          <td className="py-3 px-2.5 text-center whitespace-nowrap">
                             {remStatus.status === "desk_paid" ? (
                               <span 
                                 className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20 cursor-help whitespace-nowrap"
