@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useId } from "react";
 import TopHeader from "@/components/layout/TopHeader";
 import { 
   DollarSign, 
@@ -18,6 +18,7 @@ import {
   Clock, 
   AlertCircle, 
   ArrowUpRight, 
+  ArrowRight,
   Printer, 
   Receipt, 
   FileSpreadsheet, 
@@ -28,7 +29,9 @@ import {
   Users,
   Eye,
   Ban,
-  FileCode
+  FileCode,
+  ShieldCheck,
+  X
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
@@ -47,6 +50,13 @@ import {
   SedePago, 
   CategoriaConcepto, 
   CONCEPTOS_RAPIDOS, 
+  SEASON_BILLING_MONTHS,
+  MONTH_KEYWORDS_BY_NUM,
+  getSeasonMonthTitle,
+  getDefaultRemesaMonth,
+  normalizeSedePago,
+  contabilizarRemesaMensualSEPA,
+  ContabilizarRemesaResult,
   getHistorialPagos, 
   saveHistorialPagos, 
   generateSeedTransactions, 
@@ -64,6 +74,9 @@ export type MetodoPagoRemesa = "SEPA" | "Stripe" | "Efectivo" | "TPV" | "Transfe
 
 export default function PagosYFacturacionPage() {
   const { activeSede } = useSede();
+  const confirmDialogRef = useRef<HTMLDialogElement | null>(null);
+  const pressedOutsideDialogRef = useRef(false);
+  const confirmDialogTitleId = useId();
 
   // Active View Tab: 'historial' | 'remesas'
   const [activeTab, setActiveTab] = useState<"historial" | "remesas">("historial");
@@ -76,7 +89,7 @@ export default function PagosYFacturacionPage() {
   const [isLoading, setIsLoading] = useState(true);
 
   // Filters for Historial Tab
-  const [filterPeriodo, setFilterPeriodo] = useState<string>("all"); // 'all' | 'today' | '2026-09'
+  const [filterPeriodo, setFilterPeriodo] = useState<string>("all"); // 'all' | 'today' | 'YYYY-MM'
   const [filterSedeLocal, setFilterSedeLocal] = useState<string>("all");
   const [filterMetodo, setFilterMetodo] = useState<string>("all");
   const [filterCategoria, setFilterCategoria] = useState<string>("all");
@@ -85,10 +98,12 @@ export default function PagosYFacturacionPage() {
   // Receipt Modal State
   const [selectedRecibo, setSelectedRecibo] = useState<PagoTransaccion | null>(null);
 
-  // Remesas Tab State
-  const [selectedMonth, setSelectedMonth] = useState("2026-09");
+  // Remesas Tab State (dynamically selects active/upcoming billing month: day >= 25 -> next month)
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => getDefaultRemesaMonth());
   const [filterRemesaMetodo, setFilterRemesaMetodo] = useState<string>("all");
   const [paymentMethods, setPaymentMethods] = useState<Record<string, MetodoPagoRemesa>>({});
+  const [isAccountingRemesa, setIsAccountingRemesa] = useState(false);
+  const [accountedRemesaBanner, setAccountedRemesaBanner] = useState<(ContabilizarRemesaResult & { monthTitle: string }) | null>(null);
 
   // Load Remesa payment methods
   useEffect(() => {
@@ -373,10 +388,47 @@ export default function PagosYFacturacionPage() {
   // Filtered Payments List for Historial Tab
   const todayStr = new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
 
+  const normalizeComparable = (val?: string | null) =>
+    (val || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+
+  // Regla contable crítica: si p.periodo_mes está definido (ej. "2026-11"), al filtrar por YYYY-MM
+  // se compara estrictamente p.periodo_mes === period (para que una remesa de Noviembre contabilizada
+  // el 27 de Octubre compute exclusivamente en 2026-11 y jamás ensucie 2026-10).
+  const matchesPeriodoContable = (p: PagoTransaccion, period: string): boolean => {
+    if (period === "all") return true;
+    if (period === "today") return p.fecha_corta === todayStr;
+    if (/^\d{4}-\d{2}$/.test(period)) {
+      if (p.periodo_mes) {
+        return p.periodo_mes === period;
+      }
+      const [targetYear, targetMonth] = period.split("-");
+      const matchesIso = Boolean(p.fecha_hora && p.fecha_hora.startsWith(period));
+      const matchesShort = Boolean(
+        targetMonth && targetYear && p.fecha_corta && p.fecha_corta.endsWith(`/${targetMonth}/${targetYear}`)
+      );
+      return matchesIso || matchesShort;
+    }
+    return true;
+  };
+
+  const extraPeriodMonths = Array.from(
+    new Set(
+      pagos
+        .map(p => p.periodo_mes)
+        .filter((pm): pm is string => Boolean(pm && /^\d{4}-\d{2}$/.test(pm)))
+    )
+  )
+    .filter(pm => !SEASON_BILLING_MONTHS.some(m => m.value === pm))
+    .sort();
+
   const filteredPagos = pagos.filter(p => {
     if (filterSedeLocal !== "all" && p.sede !== filterSedeLocal) return false;
-    if (filterPeriodo === "today" && p.fecha_corta !== todayStr) return false;
-    if (filterPeriodo === "2026-09" && p.periodo_mes !== "2026-09" && !p.fecha_corta.includes("/09/2026")) return false;
+    if (!matchesPeriodoContable(p, filterPeriodo)) return false;
     if (filterMetodo !== "all" && p.metodo_pago !== filterMetodo) return false;
     if (filterCategoria !== "all" && p.categoria !== filterCategoria) return false;
 
@@ -396,8 +448,9 @@ export default function PagosYFacturacionPage() {
   const totalFacturadoFiltrado = filteredPagos.reduce((acc, p) => acc + (p.estado === "Cobrado" ? p.importe : 0), 0);
   const totalCobrosCount = filteredPagos.length;
 
-  // Arqueo Data
-  const arqueoObj = calcularArqueoPorSede(pagos);
+  // Arqueo Data (scoped to selected period when filtering Historial by period, or all when "all")
+  const pagosForArqueo = filterPeriodo === "all" ? pagos : pagos.filter(p => matchesPeriodoContable(p, filterPeriodo));
+  const arqueoObj = calcularArqueoPorSede(pagosForArqueo);
   const arqueoTejar = arqueoObj.tejar;
   const arqueoCastilla = arqueoObj.castilla;
 
@@ -412,14 +465,10 @@ export default function PagosYFacturacionPage() {
   // Verifies if a student has already paid their monthly regular fee at reception for selectedMonth
   const getDeskPaymentForStudent = (student: any): PagoTransaccion | undefined => {
     if (!student) return undefined;
-    const monthNum = selectedMonth.split("-")[1] || "";
-    const monthNames: Record<string, string[]> = {
-      "09": ["septiembre", "sep"],
-      "10": ["octubre", "oct"],
-      "11": ["noviembre", "nov"],
-      "12": ["diciembre", "dic"]
-    };
-    const keywords = monthNames[monthNum] || [];
+    const [yearNum, monthNum] = selectedMonth.split("-");
+    const keywords = MONTH_KEYWORDS_BY_NUM[monthNum || ""] || [];
+    const stuNameNorm = normalizeComparable(student.nombre_completo);
+    const stuDniNorm = normalizeComparable(student.dni);
 
     return pagos.find(p => {
       // Must be a confirmed / completed transaction
@@ -436,40 +485,74 @@ export default function PagosYFacturacionPage() {
 
       // Match student identity
       const matchesId = Boolean(student.id && p.alumno_id && p.alumno_id === student.id);
-      const matchesDni = Boolean(student.dni && p.alumno_dni && student.dni.trim().toLowerCase() === p.alumno_dni.trim().toLowerCase());
-      const matchesName = Boolean(student.nombre_completo && p.alumno_nombre && student.nombre_completo.trim().toLowerCase() === p.alumno_nombre.trim().toLowerCase());
+      const matchesDni = Boolean(stuDniNorm && p.alumno_dni && normalizeComparable(p.alumno_dni) === stuDniNorm);
+      const matchesName = Boolean(stuNameNorm && p.alumno_nombre && normalizeComparable(p.alumno_nombre) === stuNameNorm);
       if (!matchesId && !matchesDni && !matchesName) return false;
-
-      // Match target month
-      const isSameMonth = 
-        p.periodo_mes === selectedMonth ||
-        (p.fecha_hora && p.fecha_hora.startsWith(selectedMonth)) ||
-        (p.fecha_corta && p.fecha_corta.includes(`/${monthNum}/`)) ||
-        (p.concepto && p.concepto.toLowerCase().includes(selectedMonth.toLowerCase()));
-
-      const matchesKeyword = keywords.some(k => p.concepto && p.concepto.toLowerCase().includes(k));
 
       // Match monthly fee category or concept
       const isMonthlyFee = 
         p.categoria === "mensualidad" ||
         (p.concepto && (p.concepto.toLowerCase().includes("mensual") || p.concepto.toLowerCase().includes("cuota")));
+      if (!isMonthlyFee) return false;
 
-      return (isSameMonth || matchesKeyword) && isMonthlyFee;
+      // Strict period check when periodo_mes is defined
+      if (p.periodo_mes) {
+        return p.periodo_mes === selectedMonth;
+      }
+
+      // Fallback when periodo_mes is not defined
+      const isSameMonth = 
+        (p.fecha_hora && p.fecha_hora.startsWith(selectedMonth)) ||
+        (p.fecha_corta && yearNum && monthNum && p.fecha_corta.endsWith(`/${monthNum}/${yearNum}`)) ||
+        (p.concepto && p.concepto.toLowerCase().includes(selectedMonth.toLowerCase()));
+
+      const matchesKeyword = keywords.some(k => p.concepto && p.concepto.toLowerCase().includes(k));
+
+      return Boolean(isSameMonth || matchesKeyword);
+    });
+  };
+
+  // Cross-reference SEPA remittance receipts already accounted in the app for selectedMonth
+  const getSepaAccountedPaymentForStudent = (student: any): PagoTransaccion | undefined => {
+    if (!student) return undefined;
+    const stuNameNorm = normalizeComparable(student.nombre_completo);
+    const stuDniNorm = normalizeComparable(student.dni);
+
+    return pagos.find(p => {
+      if (p.estado !== "Cobrado") return false;
+      if (p.categoria !== "mensualidad") return false;
+
+      const isSepaRemesa =
+        p.metodo_pago === "SEPA" &&
+        p.id.startsWith("sepa_") &&
+        !(p.atendido_por && p.atendido_por.toLowerCase().includes("recep"));
+      if (!isSepaRemesa) return false;
+
+      const matchesId = Boolean(student.id && p.alumno_id && p.alumno_id === student.id);
+      const matchesDni = Boolean(stuDniNorm && p.alumno_dni && normalizeComparable(p.alumno_dni) === stuDniNorm);
+      const matchesName = Boolean(stuNameNorm && p.alumno_nombre && normalizeComparable(p.alumno_nombre) === stuNameNorm);
+      if (!matchesId && !matchesDni && !matchesName) return false;
+
+      if (p.periodo_mes) {
+        return p.periodo_mes === selectedMonth;
+      }
+      return p.id.startsWith(`sepa_${selectedMonth}_`) || (selectedMonth === "2026-09" && p.id.startsWith("sepa_sep_"));
     });
   };
 
   // Determine Remittance Eligibility Status for a Student
   const getStudentRemittanceStatus = (student: any): {
-    status: "eligible" | "desk_paid" | "cash_method" | "other_method";
+    status: "eligible" | "sepa_accounted" | "desk_paid" | "cash_method" | "other_method";
     label: string;
     deskPayment?: PagoTransaccion;
+    sepaPayment?: PagoTransaccion;
   } => {
     // 1. Strict desk payment check: already paid at reception
     const deskPayment = getDeskPaymentForStudent(student);
     if (deskPayment) {
       return {
         status: "desk_paid",
-        label: `Pagado en Mostrador (${deskPayment.metodo_pago})`,
+        label: "Cobrado Mostrador — Excluido",
         deskPayment
       };
     }
@@ -491,7 +574,17 @@ export default function PagosYFacturacionPage() {
       };
     }
 
-    // 4. Eligible for SEPA XML Direct Debit
+    // 4. Already accounted in app incomes via SEPA remittance for selectedMonth
+    const sepaPayment = getSepaAccountedPaymentForStudent(student);
+    if (sepaPayment) {
+      return {
+        status: "sepa_accounted",
+        label: "✓ Contabilizado en Ingresos",
+        sepaPayment
+      };
+    }
+
+    // 5. Eligible & pending to account in app incomes
     return {
       status: "eligible",
       label: "Listo para Remesa"
@@ -504,7 +597,8 @@ export default function PagosYFacturacionPage() {
       (s.dni || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
       (s.telefono || "").includes(searchTerm);
 
-    const matchesSede = filterSedeLocal === "all" || s.sede === filterSedeLocal;
+    const normalizedStudentSede = normalizeSedePago(s.sede);
+    const matchesSede = filterSedeLocal === "all" || normalizedStudentSede === filterSedeLocal || s.sede === filterSedeLocal;
     const studentMetodo: MetodoPagoRemesa = paymentMethods[s.id] || "SEPA";
     const matchesMetodo = filterRemesaMetodo === "all" || studentMetodo === filterRemesaMetodo;
 
@@ -525,15 +619,19 @@ export default function PagosYFacturacionPage() {
     };
   };
 
-  // Strictly filter students for SEPA direct debit export:
-  // - Method must NOT be "Efectivo"
-  // - Method must be "SEPA"
-  // - Student MUST NOT have already paid at reception desk for this month
+  // SEPA XML Export includes all domiciled SEPA students for the month (both pending 'eligible' AND already 'sepa_accounted')
+  // while strictly excluding 'desk_paid', 'cash_method', and 'other_method'
   const sepaExportStudents = filteredRemesaStudents.filter(s => {
     const remStatus = getStudentRemittanceStatus(s);
-    return remStatus.status === "eligible";
+    return remStatus.status === "eligible" || remStatus.status === "sepa_accounted";
   });
 
+  // Pending SEPA students to dump into the app's income ledger (strictly 'eligible' only -> 0 duplicates)
+  const pendingSepaToAccountStudents = filteredRemesaStudents.filter(s => {
+    return getStudentRemittanceStatus(s).status === "eligible";
+  });
+
+  const sepaAccountedStudentsCount = filteredRemesaStudents.filter(s => getStudentRemittanceStatus(s).status === "sepa_accounted").length;
   const deskPaidStudentsCount = filteredRemesaStudents.filter(s => getStudentRemittanceStatus(s).status === "desk_paid").length;
   const cashMethodStudentsCount = filteredRemesaStudents.filter(s => getStudentRemittanceStatus(s).status === "cash_method").length;
   const totalExcludedCount = filteredRemesaStudents.length - sepaExportStudents.length;
@@ -542,6 +640,68 @@ export default function PagosYFacturacionPage() {
   const totalNetToRemit = regularStudents.reduce((acc, s) => acc + getStudentRemittanceData(s).neto, 0);
   const totalSepaNetToRemit = sepaExportStudents.reduce((acc, s) => acc + getStudentRemittanceData(s).neto, 0);
   const totalGrossBilling = regularStudents.reduce((acc, s) => acc + getStudentFee(s).cuotaBase, 0);
+
+  // Breakdown for Confirmation Modal (pending to account)
+  const pendingSepaTotalNet = pendingSepaToAccountStudents.reduce((acc, s) => acc + getStudentRemittanceData(s).neto, 0);
+  const pendingTejarStudents = pendingSepaToAccountStudents.filter(s => normalizeSedePago(s.sede) === "tejar");
+  const pendingCastillaStudents = pendingSepaToAccountStudents.filter(s => normalizeSedePago(s.sede) === "castilla");
+  const pendingTejarNet = pendingTejarStudents.reduce((acc, s) => acc + getStudentRemittanceData(s).neto, 0);
+  const pendingCastillaNet = pendingCastillaStudents.reduce((acc, s) => acc + getStudentRemittanceData(s).neto, 0);
+  const selectedMonthTitle = getSeasonMonthTitle(selectedMonth);
+
+  const openConfirmContabilizarModal = () => {
+    if (pendingSepaToAccountStudents.length === 0) return;
+    const dlg = confirmDialogRef.current;
+    if (dlg && !dlg.open) {
+      dlg.showModal();
+    }
+  };
+
+  const closeConfirmContabilizarModal = () => {
+    const dlg = confirmDialogRef.current;
+    if (dlg && dlg.open) {
+      dlg.close();
+    }
+  };
+
+  const handleConfirmContabilizarRemesa = () => {
+    if (isAccountingRemesa || pendingSepaToAccountStudents.length === 0) return;
+    setIsAccountingRemesa(true);
+    try {
+      const batchItems = pendingSepaToAccountStudents.map(s => {
+        const feeData = getStudentRemittanceData(s);
+        const assignedNames = (assignedClassesMap[s.id] || []).join(" / ") || feeData.claseNombre || "Clases Regulares";
+        return {
+          alumno_id: s.id,
+          alumno_nombre: s.nombre_completo || "Alumno Dance Factory",
+          alumno_dni: s.dni || undefined,
+          alumno_telefono: s.telefono || undefined,
+          sede: s.sede,
+          importe: feeData.neto,
+          cuota_base: feeData.cuotaBase,
+          anticipo: feeData.anticipo,
+          clase_nombre: assignedNames
+        };
+      });
+
+      const result = contabilizarRemesaMensualSEPA(batchItems, selectedMonth);
+      setPagos(getHistorialPagos());
+      setAccountedRemesaBanner({
+        ...result,
+        monthTitle: selectedMonthTitle
+      });
+      closeConfirmContabilizarModal();
+    } finally {
+      setIsAccountingRemesa(false);
+    }
+  };
+
+  const handleGoToAccountedHistorial = (periodoMes: string) => {
+    setFilterPeriodo(periodoMes);
+    setFilterMetodo("all");
+    setFilterCategoria("all");
+    setActiveTab("historial");
+  };
 
   const handleExportSEPA = () => {
     handleExportSEPAXML();
@@ -593,7 +753,7 @@ export default function PagosYFacturacionPage() {
       "Neto a Remesar (€)", 
       "Metodo de Pago", 
       "Estado Remesa",
-      "Detalle Cobro Mostrador"
+      "Detalle Cobro / Recibo"
     ];
     const rows = filteredRemesaStudents.map(s => {
       const data = getStudentRemittanceData(s);
@@ -601,17 +761,22 @@ export default function PagosYFacturacionPage() {
       const remStatus = getStudentRemittanceStatus(s);
       const estadoStr = remStatus.status === "eligible" 
         ? "Listo para remesar" 
-        : remStatus.status === "desk_paid" 
-          ? "Excluido - Pagado en Mostrador" 
-          : "Excluido - Método " + metodo;
+        : remStatus.status === "sepa_accounted"
+          ? "Contabilizado en Ingresos (SEPA)"
+          : remStatus.status === "desk_paid" 
+            ? "Excluido - Pagado en Mostrador" 
+            : "Excluido - Método " + metodo;
       const deskDetail = remStatus.deskPayment 
         ? `${remStatus.deskPayment.metodo_pago} (${remStatus.deskPayment.importe.toFixed(2)}€ el ${remStatus.deskPayment.fecha_corta})` 
-        : "";
+        : remStatus.sepaPayment
+          ? `SEPA ${remStatus.sepaPayment.numero_recibo} (${remStatus.sepaPayment.importe.toFixed(2)}€)`
+          : "";
+      const normSede = normalizeSedePago(s.sede);
 
       return [
         `"${s.nombre_completo || ''}"`,
         `"${s.dni || 'PENDIENTE'}"`,
-        `"${s.sede === 'tejar' ? 'Studio 1 Plaza El Tejar' : 'Studio 2 Paseo Castilla'}"`,
+        `"${normSede === 'tejar' ? 'Studio 1 Plaza El Tejar' : 'Studio 2 Paseo Castilla'}"`,
         `"${(assignedClassesMap[s.id] || []).join(' / ') || data.claseNombre || 'Clase Regular'}"`,
         data.cuotaBase.toFixed(2),
         (-data.anticipo).toFixed(2),
@@ -672,19 +837,27 @@ export default function PagosYFacturacionPage() {
         <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-4 shadow-sm">
           <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Caja Studio 1 (El Tejar)</span>
           <h3 className="text-2xl font-bold font-mono text-cyan-400 mt-1">{arqueoTejar.totalRecaudado.toFixed(2)} €</h3>
-          <span className="text-[10px] text-[var(--color-text-secondary)]">Efectivo: {arqueoTejar.totalEfectivo.toFixed(2)}€ • TPV: {arqueoTejar.totalTPV.toFixed(2)}€</span>
+          <span className="text-[10px] text-[var(--color-text-secondary)]">
+            Efectivo: {arqueoTejar.totalEfectivo.toFixed(2)}€ • TPV: {arqueoTejar.totalTPV.toFixed(2)}€
+            {arqueoTejar.totalSEPA > 0 ? ` • SEPA: ${arqueoTejar.totalSEPA.toFixed(2)}€` : ""}
+          </span>
         </div>
 
         <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-4 shadow-sm">
           <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Caja Studio 2 (Castilla)</span>
           <h3 className="text-2xl font-bold font-mono text-amber-400 mt-1">{arqueoCastilla.totalRecaudado.toFixed(2)} €</h3>
-          <span className="text-[10px] text-[var(--color-text-secondary)]">Efectivo: {arqueoCastilla.totalEfectivo.toFixed(2)}€ • TPV: {arqueoCastilla.totalTPV.toFixed(2)}€</span>
+          <span className="text-[10px] text-[var(--color-text-secondary)]">
+            Efectivo: {arqueoCastilla.totalEfectivo.toFixed(2)}€ • TPV: {arqueoCastilla.totalTPV.toFixed(2)}€
+            {arqueoCastilla.totalSEPA > 0 ? ` • SEPA: ${arqueoCastilla.totalSEPA.toFixed(2)}€` : ""}
+          </span>
         </div>
 
         <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl p-4 shadow-sm">
           <span className="text-xs text-[var(--color-text-secondary)] font-semibold uppercase tracking-wider">Previsión Remesa SEPA {selectedMonth}</span>
           <h3 className="text-2xl font-bold font-mono text-purple-400 mt-1">{totalSepaNetToRemit.toFixed(2)} €</h3>
-          <span className="text-[10px] text-[var(--color-text-secondary)]">{sepaExportStudents.length} domiciliados ({totalExcludedCount} excluidos)</span>
+          <span className="text-[10px] text-[var(--color-text-secondary)]">
+            {sepaExportStudents.length} domiciliados ({sepaAccountedStudentsCount} contabilizados • {totalExcludedCount} excluidos)
+          </span>
         </div>
       </div>
       
@@ -737,14 +910,40 @@ export default function PagosYFacturacionPage() {
           )}
 
           {activeTab === "remesas" && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
               <span 
-                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px] font-semibold cursor-help"
-                title="Blindaje de Cobros: Los alumnos con método 'Efectivo' o que ya hayan liquidado su mensualidad en mostrador quedan automáticamente excluidos de este fichero bancario para evitar cobros duplicados."
+                className="hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[11px] font-semibold cursor-help"
+                title="Blindaje de Cobros: Los alumnos con método 'Efectivo' o que ya hayan liquidado su mensualidad en mostrador quedan automáticamente excluidos de este fichero bancario y del volcado contable para evitar cobros duplicados."
               >
                 <HelpCircle size={13} className="text-amber-400 shrink-0" />
                 <span>Shield Doble Cobro Activo</span>
               </span>
+
+              <button
+                type="button"
+                onClick={openConfirmContabilizarModal}
+                disabled={pendingSepaToAccountStudents.length === 0}
+                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 shadow-md ${
+                  pendingSepaToAccountStudents.length > 0
+                    ? "bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/25 cursor-pointer"
+                    : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 cursor-default"
+                }`}
+                title={
+                  pendingSepaToAccountStudents.length > 0
+                    ? `Registrar los ${pendingSepaToAccountStudents.length} recibos SEPA de ${selectedMonthTitle} en el Historial de Ingresos`
+                    : sepaAccountedStudentsCount > 0
+                      ? `Todos los recibos SEPA de ${selectedMonthTitle} ya están contabilizados en Ingresos`
+                      : "No hay recibos SEPA pendientes de contabilizar en este mes"
+                }
+              >
+                <CheckCircle2 size={14} />
+                <span>
+                  {pendingSepaToAccountStudents.length === 0 && sepaAccountedStudentsCount > 0
+                    ? `✓ Remesa Contabilizada (${sepaAccountedStudentsCount})`
+                    : `✓ Contabilizar Remesa en Ingresos (${pendingSepaToAccountStudents.length})`}
+                </span>
+              </button>
+
               <button
                 onClick={handleExportSEPACsv}
                 className="px-3 py-2 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] text-xs font-bold text-slate-300 hover:text-white border border-[var(--color-border)] transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
@@ -851,7 +1050,16 @@ export default function PagosYFacturacionPage() {
               >
                 <option value="all">📅 Todo el Historial</option>
                 <option value="today">⚡ Solo Hoy ({todayStr})</option>
-                <option value="2026-09">🍂 Septiembre 2026</option>
+                {SEASON_BILLING_MONTHS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.historialLabel}
+                  </option>
+                ))}
+                {extraPeriodMonths.map((pm) => (
+                  <option key={pm} value={pm}>
+                    🗓️ {getSeasonMonthTitle(pm)}
+                  </option>
+                ))}
               </select>
 
               {/* Sede Filter */}
@@ -1003,6 +1211,48 @@ export default function PagosYFacturacionPage() {
       {/* ========================================================================= */}
       {activeTab === "remesas" && (
         <div className="space-y-4 animate-in fade-in duration-200">
+
+          {/* Success Banner after accounting SEPA remittance in Incomes */}
+          {accountedRemesaBanner && (
+            <div className="bg-gradient-to-r from-emerald-500/20 via-emerald-500/10 to-transparent border border-emerald-500/40 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-lg shadow-emerald-500/10 animate-in fade-in slide-in-from-top-2 duration-200">
+              <div className="flex items-start sm:items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center shrink-0 border border-emerald-500/40">
+                  <CheckCircle2 size={18} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-extrabold text-emerald-300 text-sm">
+                      ✓ Remesa de {accountedRemesaBanner.monthTitle} contabilizada en Ingresos
+                    </span>
+                    <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-200 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                      +{accountedRemesaBanner.totalAmountCreated.toFixed(2)} € ({accountedRemesaBanner.createdCount} recibos)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Studio 1 (El Tejar): <span className="font-bold text-white">{accountedRemesaBanner.tejarCount}</span> recibos ({accountedRemesaBanner.tejarAmount.toFixed(2)} €) • Studio 2 (Castilla): <span className="font-bold text-white">{accountedRemesaBanner.castillaCount}</span> recibos ({accountedRemesaBanner.castillaAmount.toFixed(2)} €). Imputado estrictamente en <span className="font-mono text-emerald-300">{accountedRemesaBanner.periodoMes}</span>.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                <button
+                  type="button"
+                  onClick={() => handleGoToAccountedHistorial(accountedRemesaBanner.periodoMes)}
+                  className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs transition-all flex items-center gap-1.5 shadow-md shadow-emerald-500/25 cursor-pointer"
+                >
+                  <span>Ver en Historial de Cobros</span>
+                  <ArrowRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountedRemesaBanner(null)}
+                  className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 transition-colors cursor-pointer"
+                  aria-label="Cerrar aviso de remesa contabilizada"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          )}
           
           {/* SEPA Cross-Billing & Double-Charge Shield Banner */}
           <div className="bg-gradient-to-r from-amber-500/15 via-amber-500/10 to-transparent border border-amber-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-sm">
@@ -1018,14 +1268,19 @@ export default function PagosYFacturacionPage() {
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-300 mt-0.5">
-                  Los alumnos con método <span className="font-bold text-white">"Efectivo"</span> ({cashMethodStudentsCount}) o que ya hayan liquidado su mensualidad en mostrador ({deskPaidStudentsCount}) quedan <span className="text-amber-300 font-semibold underline">estrictamente excluidos</span> del fichero bancario SEPA XML para eliminar cualquier riesgo de cobro duplicado a primeros de mes.
+                  Los alumnos con método <span className="font-bold text-white">"Efectivo"</span> ({cashMethodStudentsCount}) o que ya hayan liquidado su mensualidad en mostrador ({deskPaidStudentsCount}) quedan <span className="text-amber-300 font-semibold underline">estrictamente excluidos</span> del fichero bancario SEPA XML y del volcado contable para eliminar cualquier riesgo de cobro duplicado.
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0 font-mono text-[11px] bg-slate-900/80 px-3.5 py-2 rounded-xl border border-white/10 self-stretch sm:self-auto justify-center">
               <div className="text-center">
-                <span className="text-[10px] text-slate-400 block uppercase">A Remesar</span>
+                <span className="text-[10px] text-slate-400 block uppercase">Domiciliados</span>
                 <span className="font-extrabold text-emerald-400 text-sm">{sepaExportStudents.length}</span>
+              </div>
+              <div className="h-6 w-px bg-white/10 mx-1"></div>
+              <div className="text-center">
+                <span className="text-[10px] text-slate-400 block uppercase">Contabilizados</span>
+                <span className="font-extrabold text-cyan-400 text-sm">{sepaAccountedStudentsCount}</span>
               </div>
               <div className="h-6 w-px bg-white/10 mx-1"></div>
               <div className="text-center">
@@ -1058,10 +1313,11 @@ export default function PagosYFacturacionPage() {
                   onChange={(e) => setSelectedMonth(e.target.value)}
                   className="bg-transparent text-[var(--color-primary)] font-bold text-xs outline-none cursor-pointer"
                 >
-                  <option value="2026-09">Septiembre 2026 (Cuota Ajustada -20€)</option>
-                  <option value="2026-10">Octubre 2026 (Cuota Completa)</option>
-                  <option value="2026-11">Noviembre 2026 (Cuota Completa)</option>
-                  <option value="2026-12">Diciembre 2026 (Cuota Completa)</option>
+                  {SEASON_BILLING_MONTHS.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.remesaLabel}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1111,6 +1367,7 @@ export default function PagosYFacturacionPage() {
                       const currentMethod = paymentMethods[student.id] || "SEPA";
                       const assignedNames = (assignedClassesMap[student.id] || []).join(" / ") || feeData.claseNombre || "Clases Regulares";
                       const remStatus = getStudentRemittanceStatus(student);
+                      const normSede = normalizeSedePago(student.sede);
 
                       return (
                         <tr key={student.id} className="hover:bg-[var(--color-bg-hover)] transition-colors">
@@ -1122,7 +1379,7 @@ export default function PagosYFacturacionPage() {
                           <td className="py-3 px-4">
                             <span className="font-semibold text-slate-200 block truncate max-w-xs">{assignedNames}</span>
                             <span className="text-[10px] text-slate-400">
-                              {student.sede === "tejar" ? "Studio 1 (Tejar)" : "Studio 2 (Castilla)"}
+                              {normSede === "tejar" ? "Studio 1 (Tejar)" : "Studio 2 (Castilla)"}
                             </span>
                           </td>
 
@@ -1148,9 +1405,11 @@ export default function PagosYFacturacionPage() {
                             <span className={`font-mono font-black text-sm px-2.5 py-1 rounded-xl border ${
                               remStatus.status === "eligible"
                                 ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
-                                : remStatus.status === "desk_paid"
-                                  ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                                  : "text-slate-400 bg-slate-500/10 border-slate-500/20"
+                                : remStatus.status === "sepa_accounted"
+                                  ? "text-emerald-300 bg-emerald-500/15 border-emerald-500/30"
+                                  : remStatus.status === "desk_paid"
+                                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                                    : "text-slate-400 bg-slate-500/10 border-slate-500/20"
                             }`}>
                               {feeData.neto.toFixed(2)} €
                             </span>
@@ -1174,10 +1433,18 @@ export default function PagosYFacturacionPage() {
                             {remStatus.status === "desk_paid" ? (
                               <span 
                                 className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20 cursor-help"
-                                title={`Cuota de ${selectedMonth} ya liquidada en recepción (${remStatus.deskPayment?.metodo_pago}) el ${remStatus.deskPayment?.fecha_corta}. Excluido estrictamente del SEPA XML.`}
+                                title={`Cuota de ${selectedMonth} ya liquidada en recepción (${remStatus.deskPayment?.metodo_pago}) el ${remStatus.deskPayment?.fecha_corta}. Excluido estrictamente del SEPA XML y del volcado contable.`}
                               >
                                 <CheckCircle2 size={11} className="text-amber-400" />
-                                <span>Cobrado Mostrador (Excluido)</span>
+                                <span>Cobrado Mostrador — Excluido</span>
+                              </span>
+                            ) : remStatus.status === "sepa_accounted" ? (
+                              <span 
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300 bg-emerald-500/15 px-2.5 py-1 rounded-full border border-emerald-500/30 cursor-help"
+                                title={`Recibo SEPA ${remStatus.sepaPayment?.numero_recibo || ""} ya contabilizado en Ingresos para ${selectedMonth}. Incluido en descarga SEPA XML y protegido frente a duplicados.`}
+                              >
+                                <CheckCircle2 size={11} className="text-emerald-400" />
+                                <span>✓ Contabilizado en Ingresos</span>
                               </span>
                             ) : remStatus.status === "cash_method" ? (
                               <span 
@@ -1196,8 +1463,8 @@ export default function PagosYFacturacionPage() {
                               </span>
                             ) : (
                               <span 
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20"
-                                title="Listo para incluir en el fichero SEPA XML ISO 20022"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-cyan-300 bg-cyan-500/10 px-2.5 py-1 rounded-full border border-cyan-500/25"
+                                title="Listo para contabilizar en ingresos e incluir en el fichero SEPA XML ISO 20022"
                               >
                                 <CheckCircle2 size={11} /> Listo para Remesa
                               </span>
@@ -1214,6 +1481,138 @@ export default function PagosYFacturacionPage() {
 
         </div>
       )}
+
+      {/* CONFIRMATION MODAL: CONTABILIZAR REMESA SEPA EN INGRESOS */}
+      <dialog
+        ref={confirmDialogRef}
+        aria-labelledby={confirmDialogTitleId}
+        onPointerDown={(e) => {
+          const dlg = confirmDialogRef.current;
+          if (!dlg) return;
+          const r = dlg.getBoundingClientRect();
+          pressedOutsideDialogRef.current =
+            e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+        }}
+        onPointerUp={(e) => {
+          const dlg = confirmDialogRef.current;
+          if (!dlg || !pressedOutsideDialogRef.current) return;
+          const r = dlg.getBoundingClientRect();
+          const releasedOutside =
+            e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+          if (releasedOutside) {
+            closeConfirmContabilizarModal();
+          }
+          pressedOutsideDialogRef.current = false;
+        }}
+        className="m-auto p-0 bg-transparent border-0 max-w-lg w-[calc(100%-2rem)] text-white overscroll-contain backdrop:bg-black/80 backdrop:backdrop-blur-sm backdrop:overflow-hidden backdrop:overscroll-contain"
+      >
+        <div className="bg-[#0e1628] border border-[var(--color-border)] rounded-3xl p-6 space-y-5 shadow-2xl relative text-white">
+          <button
+            type="button"
+            onClick={closeConfirmContabilizarModal}
+            className="absolute top-5 right-5 p-2 rounded-full bg-[var(--color-bg)] text-slate-400 hover:text-white border border-[var(--color-border)] transition-colors cursor-pointer"
+            aria-label="Cerrar confirmación de remesa"
+          >
+            <X size={16} />
+          </button>
+
+          <div className="flex items-start gap-3.5 border-b border-white/10 pb-4 pr-8">
+            <div className="w-11 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+              <Landmark size={22} />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">
+                Volcado Contable de Remesa SEPA
+              </span>
+              <h2
+                id={confirmDialogTitleId}
+                className="text-lg font-extrabold tracking-wide font-[family-name:var(--font-heading)] text-white mt-0.5"
+              >
+                Contabilizar Remesa • {selectedMonthTitle}
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Periodo de imputación contable: <span className="font-mono font-bold text-slate-200">{selectedMonth}</span>
+              </p>
+            </div>
+          </div>
+
+          {/* Summary KPI Grid */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="p-3.5 rounded-2xl bg-black/40 border border-white/10">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Recibos a Contabilizar
+              </span>
+              <span className="text-2xl font-mono font-extrabold text-white mt-1 block">
+                {pendingSepaToAccountStudents.length}
+              </span>
+              <span className="text-[10px] text-slate-400">
+                Alumnos domiciliados pendientes
+              </span>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 block">
+                Importe Total Neto
+              </span>
+              <span className="text-2xl font-mono font-extrabold text-emerald-400 mt-1 block">
+                {pendingSepaTotalNet.toFixed(2)} €
+              </span>
+              <span className="text-[10px] text-emerald-200/80">
+                Ingreso directo en Historial
+              </span>
+            </div>
+          </div>
+
+          {/* Breakdown Studio 1 / Studio 2 */}
+          <div className="rounded-2xl bg-[var(--color-bg)]/80 border border-[var(--color-border)] p-3.5 space-y-2.5 text-xs">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+              Desglose por Sede
+            </span>
+            <div className="flex items-center justify-between py-1 border-b border-white/5">
+              <span className="text-slate-300 font-semibold">Studio 1 (Plaza El Tejar)</span>
+              <span className="font-mono font-bold text-cyan-400">
+                {pendingTejarStudents.length} recibos • {pendingTejarNet.toFixed(2)} €
+              </span>
+            </div>
+            <div className="flex items-center justify-between py-1">
+              <span className="text-slate-300 font-semibold">Studio 2 (Paseo Castilla)</span>
+              <span className="font-mono font-bold text-amber-400">
+                {pendingCastillaStudents.length} recibos • {pendingCastillaNet.toFixed(2)} €
+              </span>
+            </div>
+          </div>
+
+          {/* Anti-duplicate & accounting notice */}
+          <div className="rounded-2xl bg-amber-500/10 border border-amber-500/25 p-3.5 flex items-start gap-2.5 text-[11px] text-slate-200 leading-relaxed">
+            <ShieldCheck size={16} className="text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <strong className="text-amber-300">Blindaje Anti-Duplicados Activo:</strong> Se excluyen automáticamente los cobros en mostrador ({deskPaidStudentsCount}), pagos en efectivo ({cashMethodStudentsCount}) y recibos SEPA ya volcados ({sepaAccountedStudentsCount}). Los recibos computarán exclusivamente en <span className="font-mono font-bold text-white">{selectedMonth}</span> y podrás seguir descargando el fichero <span className="font-bold text-white">SEPA XML</span> en cualquier momento.
+            </div>
+          </div>
+
+          <div className="pt-1 flex flex-col-reverse sm:flex-row justify-end gap-2.5">
+            <button
+              type="button"
+              autoFocus
+              onClick={closeConfirmContabilizarModal}
+              className="px-4 py-2.5 rounded-xl bg-[var(--color-bg)] hover:bg-white/10 text-slate-300 text-xs font-bold border border-white/10 transition-colors cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={isAccountingRemesa || pendingSepaToAccountStudents.length === 0}
+              onClick={handleConfirmContabilizarRemesa}
+              className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/25 cursor-pointer"
+            >
+              <CheckCircle2 size={15} />
+              <span>
+                {isAccountingRemesa ? "Contabilizando..." : "✓ Confirmar y Contabilizar Ingresos"}
+              </span>
+            </button>
+          </div>
+        </div>
+      </dialog>
 
       {/* RECEIPT MODAL */}
       {selectedRecibo && (

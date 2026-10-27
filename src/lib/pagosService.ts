@@ -337,6 +337,114 @@ export function eliminarPagosDeAlumno(nombreOrEmail: string): void {
   }
 }
 
+export interface SeasonMonthOption {
+  value: string;
+  monthTitle: string;
+  historialLabel: string;
+  remesaLabel: string;
+}
+
+export const SEASON_BILLING_MONTHS: SeasonMonthOption[] = [
+  { value: "2026-09", monthTitle: "Septiembre 2026", historialLabel: "🍂 Septiembre 2026", remesaLabel: "Septiembre 2026 (Cuota Ajustada -20€)" },
+  { value: "2026-10", monthTitle: "Octubre 2026", historialLabel: "🍁 Octubre 2026", remesaLabel: "Octubre 2026 (Cuota Completa)" },
+  { value: "2026-11", monthTitle: "Noviembre 2026", historialLabel: "🗓️ Noviembre 2026", remesaLabel: "Noviembre 2026 (Cuota Completa)" },
+  { value: "2026-12", monthTitle: "Diciembre 2026", historialLabel: "🎄 Diciembre 2026", remesaLabel: "Diciembre 2026 (Cuota Completa)" },
+  { value: "2027-01", monthTitle: "Enero 2027", historialLabel: "❄️ Enero 2027", remesaLabel: "Enero 2027 (Cuota Completa)" },
+  { value: "2027-02", monthTitle: "Febrero 2027", historialLabel: "🎭 Febrero 2027", remesaLabel: "Febrero 2027 (Cuota Completa)" },
+  { value: "2027-03", monthTitle: "Marzo 2027", historialLabel: "🌸 Marzo 2027", remesaLabel: "Marzo 2027 (Cuota Completa)" },
+  { value: "2027-04", monthTitle: "Abril 2027", historialLabel: "🌷 Abril 2027", remesaLabel: "Abril 2027 (Cuota Completa)" },
+  { value: "2027-05", monthTitle: "Mayo 2027", historialLabel: "☀️ Mayo 2027", remesaLabel: "Mayo 2027 (Cuota Completa)" },
+  { value: "2027-06", monthTitle: "Junio 2027", historialLabel: "🎓 Junio 2027", remesaLabel: "Junio 2027 (Cuota Completa)" }
+];
+
+export const MONTH_KEYWORDS_BY_NUM: Record<string, string[]> = {
+  "01": ["enero", "ene"],
+  "02": ["febrero", "feb"],
+  "03": ["marzo", "mar"],
+  "04": ["abril", "abr"],
+  "05": ["mayo", "may"],
+  "06": ["junio", "jun"],
+  "07": ["julio", "jul"],
+  "08": ["agosto", "ago"],
+  "09": ["septiembre", "sep"],
+  "10": ["octubre", "oct"],
+  "11": ["noviembre", "nov"],
+  "12": ["diciembre", "dic"]
+};
+
+export function getSeasonMonthTitle(periodoMes: string): string {
+  const found = SEASON_BILLING_MONTHS.find(m => m.value === periodoMes);
+  if (found) return found.monthTitle;
+  const [y, m] = (periodoMes || "").split("-");
+  const monthMap: Record<string, string> = {
+    "01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril",
+    "05": "Mayo", "06": "Junio", "07": "Julio", "08": "Agosto",
+    "09": "Septiembre", "10": "Octubre", "11": "Noviembre", "12": "Diciembre"
+  };
+  return monthMap[m] && y ? `${monthMap[m]} ${y}` : periodoMes;
+}
+
+/**
+ * Selects the active/upcoming billing month dynamically:
+ * - Day >= 25 -> next month (e.g. Oct 27 -> "2026-11")
+ * - Day < 25  -> current YYYY-MM
+ * - Bounded within season 2026-09 .. 2027-06 (fallback "2026-11")
+ */
+export function getDefaultRemesaMonth(referenceDate?: Date): string {
+  try {
+    let year: number;
+    let month: number;
+    let day: number;
+
+    const T = (globalThis as any).Temporal;
+    if (!referenceDate && T && T.Now && typeof T.Now.plainDateISO === "function") {
+      const todayPlain = T.Now.plainDateISO("Europe/Madrid");
+      day = todayPlain.day;
+      const targetYm = day >= 25
+        ? todayPlain.toPlainYearMonth().add({ months: 1 })
+        : todayPlain.toPlainYearMonth();
+      const candidate = `${targetYm.year}-${String(targetYm.month).padStart(2, "0")}`;
+      return candidate >= "2026-09" && candidate <= "2027-06" ? candidate : "2026-11";
+    }
+
+    const now = referenceDate || new Date();
+    year = now.getFullYear();
+    month = now.getMonth() + 1;
+    day = now.getDate();
+
+    if (day >= 25) {
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+    }
+
+    const candidate = `${year}-${String(month).padStart(2, "0")}`;
+    if (candidate >= "2026-09" && candidate <= "2027-06") {
+      return candidate;
+    }
+    return "2026-11";
+  } catch {
+    return "2026-11";
+  }
+}
+
+export function normalizeSedePago(sede?: string | null): SedePago {
+  return ["castilla", "alcorcon", "studio 2"].includes((sede || "").toLowerCase().trim())
+    ? "castilla"
+    : "tejar";
+}
+
+function normalizeIdentityText(value?: string | null): string {
+  return (value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function saveHistorialPagos(pagos: PagoTransaccion[]): void {
   if (typeof window === "undefined") return;
   try {
@@ -349,6 +457,220 @@ export function saveHistorialPagos(pagos: PagoTransaccion[]): void {
 
 export function generarNumeroRecibo(seq: number, year: number = 2026): string {
   return `REC-${year}-${String(seq).padStart(4, "0")}`;
+}
+
+export function getMaxReciboSequence(pagos: PagoTransaccion[]): number {
+  let maxSeq = 0;
+  for (const p of pagos) {
+    if (!p.numero_recibo) continue;
+    const match = p.numero_recibo.match(/^REC-2026-(\d+)$/i) || p.numero_recibo.match(/^REC-\d{4}-(\d+)$/i);
+    if (match && match[1]) {
+      const parsed = parseInt(match[1], 10);
+      if (!isNaN(parsed) && parsed > maxSeq) {
+        maxSeq = parsed;
+      }
+    }
+  }
+  return maxSeq;
+}
+
+export interface RemesaContableItem {
+  alumno_id: string;
+  alumno_nombre: string;
+  alumno_dni?: string;
+  alumno_telefono?: string;
+  sede?: string;
+  importe: number;
+  cuota_base?: number;
+  anticipo?: number;
+  clase_nombre?: string;
+  concepto?: string;
+}
+
+export interface ContabilizarRemesaResult {
+  created: PagoTransaccion[];
+  createdCount: number;
+  skippedDuplicateCount: number;
+  totalAmountCreated: number;
+  tejarCount: number;
+  tejarAmount: number;
+  castillaCount: number;
+  castillaAmount: number;
+  periodoMes: string;
+}
+
+/**
+ * Checks whether an existing payment is an active ("Cobrado") monthly fee for targetMonth
+ * matching the student by ID, normalized DNI, or normalized full name.
+ */
+export function hasExistingMonthlyPaymentForPeriod(
+  pagos: PagoTransaccion[],
+  candidate: { id?: string; dni?: string; nombre_completo?: string },
+  periodoMes: string
+): boolean {
+  const candId = (candidate.id || "").trim();
+  const candDni = normalizeIdentityText(candidate.dni);
+  const candName = normalizeIdentityText(candidate.nombre_completo);
+  const [targetYear, targetMonth] = (periodoMes || "").split("-");
+  const keywords = MONTH_KEYWORDS_BY_NUM[targetMonth] || [];
+
+  return pagos.some(p => {
+    if (p.estado !== "Cobrado") return false;
+    if (p.categoria !== "mensualidad") return false;
+
+    const matchesId = Boolean(candId && p.alumno_id && p.alumno_id.trim() === candId);
+    const matchesDni = Boolean(candDni && p.alumno_dni && normalizeIdentityText(p.alumno_dni) === candDni);
+    const matchesName = Boolean(candName && p.alumno_nombre && normalizeIdentityText(p.alumno_nombre) === candName);
+    if (!matchesId && !matchesDni && !matchesName) return false;
+
+    // Strict accounting rule: if p.periodo_mes is defined, match strictly against periodoMes
+    if (p.periodo_mes) {
+      return p.periodo_mes === periodoMes;
+    }
+
+    // Fallback when p.periodo_mes is not defined
+    const conceptoLower = (p.concepto || "").toLowerCase();
+    const matchesIso = Boolean(p.fecha_hora && p.fecha_hora.startsWith(periodoMes));
+    const matchesShort = Boolean(
+      targetMonth && targetYear && p.fecha_corta && p.fecha_corta.endsWith(`/${targetMonth}/${targetYear}`)
+    );
+    const matchesConceptMonth =
+      conceptoLower.includes(periodoMes.toLowerCase()) ||
+      keywords.some(k => conceptoLower.includes(k));
+
+    return matchesIso || matchesShort || matchesConceptMonth;
+  });
+}
+
+/**
+ * Batch-accounts monthly SEPA direct debit receipts in the app's income ledger:
+ * - Single read & single write to localStorage + 1 single publishSyncEvent("df_pagos_updated")
+ * - Uses id `sepa_${periodoMes}_${alumno_id}` so SEPA XML generator continues to recognize it as SEPA (not desk cash)
+ * - Sequential collision-free `REC-2026-XXXX` receipt numbers
+ * - Strict anti-duplicate shield by alumno_id, DNI, or normalized full name for `periodoMes`
+ */
+export function contabilizarRemesaMensualSEPA(
+  items: RemesaContableItem[],
+  periodoMes: string
+): ContabilizarRemesaResult {
+  const all = getHistorialPagos();
+  const now = new Date();
+  const nowISO = now.toISOString();
+  const fechaCorta = now.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const horaCorta = now.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  const monthTitle = getSeasonMonthTitle(periodoMes);
+
+  let maxSeq = Math.max(all.length, getMaxReciboSequence(all));
+  const usedRecibos = new Set<string>(all.map(p => p.numero_recibo).filter(Boolean));
+  const usedIds = new Set<string>(all.map(p => p.id).filter(Boolean));
+
+  const created: PagoTransaccion[] = [];
+  let skippedDuplicateCount = 0;
+  let totalAmountCreated = 0;
+  let tejarCount = 0;
+  let tejarAmount = 0;
+  let castillaCount = 0;
+  let castillaAmount = 0;
+
+  // Working view including newly created items in this batch to prevent intra-batch duplicates
+  const workingLedger: PagoTransaccion[] = [...all];
+
+  for (const item of items) {
+    const cleanId = (item.alumno_id || "").trim();
+    const cleanName = (item.alumno_nombre || "").trim();
+    if (!cleanId && !cleanName) continue;
+
+    const alreadyPaid = hasExistingMonthlyPaymentForPeriod(
+      workingLedger,
+      {
+        id: cleanId,
+        dni: item.alumno_dni,
+        nombre_completo: cleanName
+      },
+      periodoMes
+    );
+
+    if (alreadyPaid) {
+      skippedDuplicateCount += 1;
+      continue;
+    }
+
+    let numeroRecibo = "";
+    do {
+      maxSeq += 1;
+      numeroRecibo = generarNumeroRecibo(maxSeq, 2026);
+    } while (usedRecibos.has(numeroRecibo));
+    usedRecibos.add(numeroRecibo);
+
+    const safeStudentKey = cleanId || normalizeIdentityText(cleanName).replace(/[^a-z0-9]/g, "_");
+    let txId = `sepa_${periodoMes}_${safeStudentKey}`;
+    if (usedIds.has(txId)) {
+      // Only happens if a previous SEPA receipt for this student+month was Anulado
+      txId = `sepa_${periodoMes}_${safeStudentKey}_${maxSeq}`;
+    }
+    usedIds.add(txId);
+
+    const normalizedSede = normalizeSedePago(item.sede);
+    const importeNeto = Number(Number(item.importe || 0).toFixed(2));
+    const isSep = periodoMes === "2026-09";
+    const baseStr = item.cuota_base !== undefined ? Number(item.cuota_base).toFixed(0) : importeNeto.toFixed(0);
+    const anticipoNum = item.anticipo !== undefined ? Number(item.anticipo) : 0;
+
+    const conceptoFinal = item.concepto
+      ? item.concepto.trim()
+      : isSep && anticipoNum > 0
+        ? `Remesa Mensual SEPA ${monthTitle} (Base ${baseStr}€ - ${anticipoNum}€ Anticipo)`
+        : `Remesa Mensual SEPA ${monthTitle}${item.clase_nombre ? ` • ${item.clase_nombre}` : ""}`;
+
+    const nuevoPago: PagoTransaccion = {
+      id: txId,
+      numero_recibo: numeroRecibo,
+      fecha_hora: nowISO,
+      fecha_corta: fechaCorta,
+      hora_corta: horaCorta,
+      alumno_id: cleanId || undefined,
+      alumno_nombre: cleanName || "Alumno Dance Factory",
+      alumno_dni: item.alumno_dni?.trim() || undefined,
+      alumno_telefono: item.alumno_telefono?.trim() || undefined,
+      concepto: conceptoFinal,
+      categoria: "mensualidad",
+      importe: importeNeto,
+      metodo_pago: "SEPA",
+      sede: normalizedSede,
+      atendido_por: "Remesa Bancaria SEPA",
+      notas: `Remesa bancaria domiciliada contabilizada en ingresos (${periodoMes})`,
+      periodo_mes: periodoMes,
+      estado: "Cobrado"
+    };
+
+    created.push(nuevoPago);
+    workingLedger.unshift(nuevoPago);
+    totalAmountCreated += importeNeto;
+
+    if (normalizedSede === "castilla") {
+      castillaCount += 1;
+      castillaAmount += importeNeto;
+    } else {
+      tejarCount += 1;
+      tejarAmount += importeNeto;
+    }
+  }
+
+  if (created.length > 0) {
+    saveHistorialPagos([...created, ...all]);
+  }
+
+  return {
+    created,
+    createdCount: created.length,
+    skippedDuplicateCount,
+    totalAmountCreated: Number(totalAmountCreated.toFixed(2)),
+    tejarCount,
+    tejarAmount: Number(tejarAmount.toFixed(2)),
+    castillaCount,
+    castillaAmount: Number(castillaAmount.toFixed(2)),
+    periodoMes
+  };
 }
 
 export function registrarNuevoPago(data: {
@@ -367,7 +689,7 @@ export function registrarNuevoPago(data: {
 }): PagoTransaccion {
   const all = getHistorialPagos();
   const today = new Date();
-  const nextNum = all.length + 1;
+  const nextNum = Math.max(all.length, getMaxReciboSequence(all)) + 1;
   const numero_recibo = generarNumeroRecibo(nextNum, 2026);
 
   const nuevoPago: PagoTransaccion = {
