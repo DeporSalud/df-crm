@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { getStudentFee } from "@/lib/studentFees";
 import { getHistorialPagos, calcularArqueoPorSede } from "@/lib/pagosService";
+import { isPilatesProfile, isPilatesPayment } from "@/lib/pilatesService";
 import { TrendingUp, Users, Calendar, Award, DollarSign, Wallet } from "lucide-react";
 
 // Sede normalization helpers
@@ -59,9 +60,9 @@ export default function AnalyticsPage() {
     setIsLoading(true);
 
     try {
-      // 1. Fetch ALL Students to maintain comparative numbers & active filters
+      // 1. Fetch ALL Students to maintain comparative numbers & active filters (excluding Solo Pilates)
       const { data: allAlumnosData } = await supabase.from("alumnos").select("*");
-      const allAlumnos = allAlumnosData || [];
+      const allAlumnos = (allAlumnosData || []).filter((a: any) => !isPilatesProfile(a));
 
       // 2. Fetch ALL Classes
       const { data: allClasesData } = await supabase.from("clases_cuadrante").select("*");
@@ -205,7 +206,7 @@ export default function AnalyticsPage() {
       const totalAdvanceDeducted = regularAlumnos.reduce((acc, s) => acc + getStudentFee(s).adelanto, 0);
       const totalNet = regularAlumnos.reduce((acc, s) => acc + getStudentFee(s).netoSep, 0);
       
-      const allPagos = getHistorialPagos();
+      const allPagos = getHistorialPagos().filter((p) => !isPilatesPayment(p));
       const arqueo = calcularArqueoPorSede(allPagos);
 
       setFinancialStats({

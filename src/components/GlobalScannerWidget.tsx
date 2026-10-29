@@ -22,9 +22,20 @@ import { logActivity } from "@/lib/activityLogger";
 import { useSede } from "@/context/SedeContext";
 import HistoricoEntradasModal from "@/components/HistoricoEntradasModal";
 import AccessDeniedOverlay from "@/components/AccessDeniedOverlay";
+import PilatesWelcomeModal from "@/components/PilatesWelcomeModal";
 import { HardwareScannerDebouncer } from "@/lib/scannerDebounce";
 import { evaluateReceptionAccess, dispatchAccessDenied } from "@/lib/accessControlService";
 import { playSawtoothAlarm, playSuccessChime } from "@/lib/soundUtils";
+import { publishSyncEvent, subscribeSyncEvent } from "@/lib/syncEventBus";
+import {
+  PilatesCheckInEvent,
+  findPilatesStudentByCode,
+  getPilatesSecurityConfig,
+  initPilatesCrossPcSync,
+  isExplicitPilatesCode,
+  processPilatesScan,
+  triggerPilatesDesktopNotification,
+} from "@/lib/pilatesService";
 import { 
   marcarAsistenciaPorAlumnoYSesion, 
   findStudentByCodeOrText, 
@@ -83,6 +94,59 @@ export default function GlobalScannerWidget() {
 
   // Hardware Scanner Debouncer (>= 2.5s) (R1.3)
   const debouncerRef = useRef(new HardwareScannerDebouncer(2500));
+
+  // Modal de Bienvenida Exclusivo Solo Pilates (sincronizado <150ms en los 2 PCs de recepción)
+  const [pilatesWelcomeEvent, setPilatesWelcomeEvent] = useState<PilatesCheckInEvent | null>(null);
+
+  useEffect(() => {
+    initPilatesCrossPcSync();
+
+    const unsubPilatesCheckin = subscribeSyncEvent("df_pilates_checkin", (detail: PilatesCheckInEvent) => {
+      if (!detail || !detail.studentId) return;
+      const cfg = getPilatesSecurityConfig();
+      const onPilatesRoute =
+        typeof window !== "undefined" && window.location.pathname.startsWith("/admin/pilates");
+
+      if (cfg.allowReceptionWelcomeCard || onPilatesRoute) {
+        setPilatesWelcomeEvent(detail);
+      }
+
+      // Aviso nativo en segundo plano si la recepcionista está en Excel/Word/WhatsApp
+      triggerPilatesDesktopNotification(detail);
+
+      const pilEvt: ScanEntranceEvent = {
+        id: detail.eventUid || "pil_scan_" + Date.now(),
+        studentId: detail.studentId,
+        nombreCompleto: detail.nombreCompleto,
+        planActivo: `Solo Pilates · ${detail.tipoPlan}`,
+        clasesRestantes: detail.sesionesRestantes,
+        estado: detail.estadoCuota,
+        hora: detail.horaEntrada,
+        fecha: detail.fechaCorta,
+        status: "success",
+        mensaje: `✓ Acceso Libre 24h · ${detail.mensajeEstado}`,
+        nfcToken: detail.codigoQr,
+      };
+      setRecentEntrances((prev) => {
+        if (prev.some((x) => x.id === pilEvt.id)) return prev;
+        return [pilEvt, ...prev.slice(0, 29)];
+      });
+    });
+
+    const unsubPilatesClose = subscribeSyncEvent("df_pilates_checkin_close", () => {
+      setPilatesWelcomeEvent(null);
+    });
+
+    return () => {
+      unsubPilatesCheckin();
+      unsubPilatesClose();
+    };
+  }, []);
+
+  const handleClosePilatesWelcome = useCallback(() => {
+    setPilatesWelcomeEvent(null);
+    publishSyncEvent("df_pilates_checkin_close", { ts: Date.now() });
+  }, []);
 
   // Sync df_checkin_denied, df_checkin_denied_close, and auto-repaired df_checkin_success across windows
   useEffect(() => {
@@ -181,6 +245,46 @@ export default function GlobalScannerWidget() {
 
     // Concurrency lock: impedir escaneos simultáneos en curso
     if (isProcessing) return;
+
+    // 0. Intercepción Prioritaria Solo Pilates (Horario Libre 24h • Cero sirenas rojas)
+    if (isExplicitPilatesCode(raw) || findPilatesStudentByCode(raw)) {
+      setIsProcessing(true);
+      try {
+        const pilRes = await processPilatesScan(raw);
+        if (pilRes.debounced) return;
+        if (pilRes.notFoundPilatesCode) {
+          const warnEvt: ScanEntranceEvent = {
+            id: "pil_warn_" + Date.now(),
+            studentId: "",
+            nombreCompleto: "Código Pilates no asignado",
+            planActivo: "Solo Pilates",
+            clasesRestantes: null,
+            estado: "Sin asignar",
+            hora: new Date().toLocaleTimeString("es-ES", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            }),
+            fecha: new Date().toLocaleDateString("es-ES", {
+              day: "2-digit",
+              month: "2-digit",
+              year: "numeric",
+            }),
+            status: "error",
+            mensaje: `El código ${raw} aún no está vinculado a ninguna ficha en Solo Pilates.`,
+            nfcToken: raw,
+          };
+          showNotification(warnEvt);
+          return;
+        }
+        if (pilRes.event) {
+          playSuccessChime();
+          return;
+        }
+      } finally {
+        setIsProcessing(false);
+      }
+    }
 
     // R1.3: Debounce robusto >= 2.5s vía HardwareScannerDebouncer
     const debounceRes = debouncerRef.current.processScan(raw);
@@ -417,7 +521,11 @@ export default function GlobalScannerWidget() {
           const codeToProcess = keyBuffer.trim();
           keyBuffer = "";
           // Si estaba en un input y el texto coincide con el buffer de escaneo, no enviar formulario
-          if (isFastScan || codeToProcess.toUpperCase().startsWith("DF")) {
+          if (
+            isFastScan ||
+            codeToProcess.toUpperCase().startsWith("DF") ||
+            codeToProcess.toUpperCase().startsWith("PIL")
+          ) {
             e.preventDefault();
             e.stopPropagation();
             handleGlobalScan(codeToProcess);
@@ -741,6 +849,12 @@ export default function GlobalScannerWidget() {
       <HistoricoEntradasModal
         isOpen={isHistoricoModalOpen}
         onClose={() => setIsHistoricoModalOpen(false)}
+      />
+
+      {/* Ficha Grande de Bienvenida 24h • Solo Pilates (Sincronizada en los 2 PCs) */}
+      <PilatesWelcomeModal
+        event={pilatesWelcomeEvent}
+        onClose={handleClosePilatesWelcome}
       />
 
       {/* Pantalla Completa de Alerta Roja Parpadeante de Acceso Denegado (R1.2, R4) */}

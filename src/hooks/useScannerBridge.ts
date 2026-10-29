@@ -39,14 +39,22 @@ export function useScannerBridge({
     let ws: WebSocket | null = null;
     let reconnectTimeout: NodeJS.Timeout;
     let isDestroyed = false;
+    let failCount = 0;
 
     const connect = () => {
       if (isDestroyed) return;
+      try {
+        if (localStorage.getItem('df_disable_local_ws_bridge') === 'true') {
+          setIsConnected(false);
+          return;
+        }
+      } catch {}
 
       try {
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
+          failCount = 0;
           if (!isDestroyed) {
             setIsConnected(true);
           }
@@ -55,7 +63,9 @@ export function useScannerBridge({
         ws.onclose = () => {
           if (!isDestroyed) {
             setIsConnected(false);
-            reconnectTimeout = setTimeout(connect, 3000); // Reintento automático cada 3s
+            failCount += 1;
+            const backoffMs = failCount <= 1 ? 5000 : failCount <= 3 ? 15000 : 45000;
+            reconnectTimeout = setTimeout(connect, backoffMs);
           }
         };
 

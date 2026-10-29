@@ -36,6 +36,7 @@ import {
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { getStudentFee, getStudentMonthlyRemittanceFee } from "@/lib/studentFees";
+import { isPilatesProfile, isPilatesPayment } from "@/lib/pilatesService";
 import { 
   isRegularClassStudent, 
   isTeacherProfile, 
@@ -161,7 +162,7 @@ export default function PagosYFacturacionPage() {
       storedPagos = getHistorialPagos();
     }
 
-    setPagos(storedPagos);
+    setPagos(storedPagos.filter((p) => !isPilatesPayment(p)));
 
     // Fetch Pending Requests (Transfer & Reception) from Supabase
     try {
@@ -170,7 +171,7 @@ export default function PagosYFacturacionPage() {
         .select("*")
         .ilike("plan_activo", "Pendiente:%");
 
-      const dbMapped = (dbPending || []).map(student => {
+      const dbMapped = (dbPending || []).filter((student) => !isPilatesProfile(student)).map(student => {
         const raw = student.plan_activo || "";
         const match = raw.match(/Pendiente:\s*([^(]+)(?:\(([^)]+)\))?/);
         const bonoNombre = match ? match[1].trim() : raw.replace(/^Pendiente:\s*/i, "").trim();
@@ -208,7 +209,7 @@ export default function PagosYFacturacionPage() {
       }
     }
     const { data: studentsData } = await queryStudents;
-    setStudents(studentsData || []);
+    setStudents((studentsData || []).filter((s: any) => !isPilatesProfile(s)));
 
     // Fetch assigned classes
     const { data: enrollments } = await supabase

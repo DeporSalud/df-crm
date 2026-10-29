@@ -18,6 +18,12 @@ export type SyncEventType =
   | "df_checkin_success"
   | "df_pending_bonos_updated"
   | "df_checkin_denied"
+  | "df_pilates_checkin"
+  | "df_pilates_checkin_close"
+  | "df_pilates_updated"
+  | "df_pilates_roster_sync"
+  | "df_pilates_request_sync"
+  | "df_realtime_status"
   | string;
 
 export interface SyncEventPayload<T = any> {
@@ -44,6 +50,8 @@ class SyncEventBusManager {
   private recentEventIds: Map<string, number> = new Map();
   private cleanupInterval: any = null;
   private isInitialized = false;
+  private realtimeStatus = "CONNECTING";
+  private readyWaiters: Array<(ready: boolean) => void> = [];
 
   constructor() {
     this.init();
@@ -65,13 +73,13 @@ class SyncEventBusManager {
       }
     }
 
-    // 2. Initialize Supabase Realtime Channel (Tier 3: Multi-device cloud sync)
+    // 2. Initialize Supabase Realtime Channel (Tier 3: Multi-device cloud sync <150ms)
     try {
       if (supabase && typeof supabase.channel === "function") {
         this.realtimeChannel = supabase.channel(REALTIME_CHANNEL_NAME, {
           config: {
             broadcast: {
-              ack: false,
+              ack: true,
               self: false // Server ignores sending broadcast back to sender socket
             }
           }
@@ -84,8 +92,23 @@ class SyncEventBusManager {
             }
           })
           .subscribe((status: string, err: any) => {
-            if (status === "CHANNEL_ERROR") {
-              console.warn("[SyncEventBus] Supabase Realtime channel error:", err);
+            this.realtimeStatus = status;
+            if (typeof window !== "undefined") {
+              try {
+                window.dispatchEvent(
+                  new CustomEvent("df_realtime_status", {
+                    detail: { status, connected: status === "SUBSCRIBED" }
+                  })
+                );
+              } catch {}
+            }
+            if (status === "SUBSCRIBED") {
+              const waiters = this.readyWaiters.splice(0, this.readyWaiters.length);
+              waiters.forEach((resolve) => resolve(true));
+            } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+              console.warn("[SyncEventBus] Supabase Realtime channel status:", status, err || "");
+              const waiters = this.readyWaiters.splice(0, this.readyWaiters.length);
+              waiters.forEach((resolve) => resolve(false));
             }
           });
       }
@@ -102,6 +125,40 @@ class SyncEventBusManager {
         }
       }
     }, 30000);
+  }
+
+  public isRealtimeConnected(): boolean {
+    this.init();
+    return this.realtimeStatus === "SUBSCRIBED";
+  }
+
+  public getRealtimeStatus(): string {
+    this.init();
+    return this.realtimeStatus;
+  }
+
+  public waitForRealtimeReady(timeoutMs = 2500): Promise<boolean> {
+    this.init();
+    if (this.realtimeStatus === "SUBSCRIBED") return Promise.resolve(true);
+    if (!this.realtimeChannel) return Promise.resolve(false);
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve(this.realtimeStatus === "SUBSCRIBED");
+        }
+      }, timeoutMs);
+
+      this.readyWaiters.push((ok) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(ok);
+        }
+      });
+    });
   }
 
   private handleIncomingMessage(msg: any, source: string): void {
@@ -129,6 +186,7 @@ class SyncEventBusManager {
   }
 
   public async publish<T = any>(type: SyncEventType, detail: T = {} as T): Promise<void> {
+    this.init();
     const eventId = `${CLIENT_INSTANCE_ID}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const payload: SyncEventPayload<T> = {
       type,
@@ -162,6 +220,9 @@ class SyncEventBusManager {
     // 4. Supabase Realtime Broadcast (Tier 3)
     if (this.realtimeChannel) {
       try {
+        if (this.realtimeStatus !== "SUBSCRIBED") {
+          await this.waitForRealtimeReady(2500);
+        }
         await this.realtimeChannel.send({
           type: "broadcast",
           event: "sync_event",
@@ -179,6 +240,7 @@ class SyncEventBusManager {
     callback: (detail: any, type: SyncEventType) => void
   ): () => void {
     if (typeof window === "undefined") return () => {};
+    this.init();
 
     const typeArray = Array.isArray(types) ? types : [types];
     const listeners: Array<{ type: string; handler: (e: any) => void }> = [];
@@ -209,12 +271,21 @@ class SyncEventBusManager {
       try { supabase.removeChannel(this.realtimeChannel); } catch {}
       this.realtimeChannel = null;
     }
+    this.realtimeStatus = "CLOSED";
     this.isInitialized = false;
   }
 }
 
 // Global Singleton Instance
 export const syncBus = new SyncEventBusManager();
+
+export function isRealtimeSyncConnected(): boolean {
+  return syncBus.isRealtimeConnected();
+}
+
+export function getClientInstanceId(): string {
+  return CLIENT_INSTANCE_ID;
+}
 
 /**
  * Convenient helper to publish an event across tabs and devices

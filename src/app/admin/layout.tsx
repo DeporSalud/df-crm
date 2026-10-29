@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { usePathname } from "next/navigation";
 import Sidebar from "@/components/layout/Sidebar";
 import { SedeProvider, useSede } from "@/context/SedeContext";
 import GlobalCobroModal from "@/components/GlobalCobroModal";
@@ -61,6 +62,8 @@ const MAX_ATTEMPTS = 3;
 const LOCKOUT_SECONDS = 60;
 
 function AdminLayoutInner({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const isPilatesRoute = Boolean(pathname?.startsWith("/admin/pilates"));
   const { activeSede, setActiveSede } = useSede();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
@@ -469,8 +472,20 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-[var(--color-bg)] text-[var(--color-primary)] border border-[var(--color-border)] uppercase">
-              {activeSede === "tejar" ? "S1 Tejar" : activeSede === "castilla" ? "S2 Castilla" : "Consolidado"}
+            <span
+              className={`text-[10px] font-bold px-2 py-1 rounded-md bg-[var(--color-bg)] border uppercase ${
+                isPilatesRoute
+                  ? "text-teal-500 border-teal-500/35"
+                  : "text-[var(--color-primary)] border-[var(--color-border)]"
+              }`}
+            >
+              {isPilatesRoute
+                ? "Solo Pilates"
+                : activeSede === "tejar"
+                ? "S1 Tejar"
+                : activeSede === "castilla"
+                ? "S2 Castilla"
+                : "Consolidado"}
             </span>
 
             <button

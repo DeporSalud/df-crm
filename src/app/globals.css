@@ -34,6 +34,7 @@ body {
   color: var(--color-text-body);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
 }
 
 .light-mode {
@@ -45,6 +46,16 @@ body {
   --color-text-title: #0f172a;
   --color-text-body: #334155;
   --color-text-secondary: #64748b;
+  color-scheme: light;
+}
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 @keyframes shake {

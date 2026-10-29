@@ -43,6 +43,12 @@ import WebcamScannerModal from "@/components/WebcamScannerModal";
 import { HardwareScannerDebouncer } from "@/lib/scannerDebounce";
 import { evaluateReceptionAccess, dispatchAccessDenied } from "@/lib/accessControlService";
 import { playSawtoothAlarm, playSuccessChime } from "@/lib/soundUtils";
+import {
+  isPilatesProfile,
+  isExplicitPilatesCode,
+  findPilatesStudentByCode,
+  processPilatesScan,
+} from "@/lib/pilatesService";
 
 const playSuccessSound = () => {
   playSuccessChime();
@@ -278,11 +284,13 @@ export default function AdminDashboardRecepcion() {
       console.warn("[AdminPage] Error querying asistencias:", asistError);
     }
 
-    // Filter check-ins strictly according to activeSede
+    // Filter check-ins strictly according to activeSede (excluding Solo Pilates)
     const filteredCheckins = (allAsistenciasToday || []).filter((item: any) => {
+      const itemAlumno = Array.isArray(item.alumnos) ? item.alumnos[0] : item.alumnos;
+      if (isPilatesProfile(itemAlumno)) return false;
+
       if (activeSede === "consolidado") return true;
 
-      const itemAlumno = Array.isArray(item.alumnos) ? item.alumnos[0] : item.alumnos;
       const itemClase = Array.isArray(item.clases_cuadrante) ? item.clases_cuadrante[0] : item.clases_cuadrante;
 
       // Primary check: if check-in is linked to a class, evaluate the class sede
@@ -306,8 +314,12 @@ export default function AdminDashboardRecepcion() {
 
     setTodayCheckins(filteredCheckins.slice(0, 10));
 
-    // 3. Fetch Active Students Count
-    let queryAlumnos = supabase.from("alumnos").select("id", { count: "exact" }).eq("estado", "Activo");
+    // 3. Fetch Active Students Count (excluding Solo Pilates)
+    let queryAlumnos = supabase
+      .from("alumnos")
+      .select("id", { count: "exact" })
+      .eq("estado", "Activo")
+      .neq("sede", "pilates");
     if (activeSede !== "consolidado") {
       if (activeSede === "tejar") {
         queryAlumnos = queryAlumnos.in("sede", ["tejar", "studio", "mostoles"]);
@@ -479,7 +491,7 @@ export default function AdminDashboardRecepcion() {
       }
         
       const { data } = await query;
-      setSearchResults(data || []);
+      setSearchResults((data || []).filter((s: any) => !isPilatesProfile(s)));
     };
     
     const timeoutId = setTimeout(() => {
@@ -627,6 +639,27 @@ export default function AdminDashboardRecepcion() {
     if (e) e.preventDefault();
     const rawCode = qrCode.trim();
     if (!rawCode) return;
+
+    // 0. Intercepción Prioritaria Solo Pilates (Horario Libre 24h • Cero sirenas rojas)
+    if (isExplicitPilatesCode(rawCode) || findPilatesStudentByCode(rawCode)) {
+      const pilRes = await processPilatesScan(rawCode);
+      setQrCode("");
+      if (pilRes.event) {
+        playSuccessSound();
+        setFlashState("success");
+        setTimeout(() => setFlashState(null), 1500);
+        setStatusMessage({
+          type: "success",
+          text: `✅ Acceso Libre 24h registrado · ${pilRes.event.nombreCompleto} (${pilRes.event.mensajeEstado})`,
+        });
+      } else if (pilRes.notFoundPilatesCode) {
+        setStatusMessage({
+          type: "error",
+          text: `Código Pilates (${rawCode}) no asignado todavía en Solo Pilates.`,
+        });
+      }
+      return;
+    }
 
     // R1.3 Debounce check (>= 2.5s)
     const debounceRes = debouncerRef.current.processScan(rawCode);
@@ -1758,6 +1791,19 @@ export default function AdminDashboardRecepcion() {
         onClose={() => setIsWebcamOpen(false)}
         onScan={async (scannedCode) => {
           setIsWebcamOpen(false);
+          if (isExplicitPilatesCode(scannedCode) || findPilatesStudentByCode(scannedCode)) {
+            const pilRes = await processPilatesScan(scannedCode);
+            if (pilRes.event) {
+              playSuccessSound();
+              setFlashState("success");
+              setTimeout(() => setFlashState(null), 1500);
+              setStatusMessage({
+                type: "success",
+                text: `✅ Acceso Libre 24h registrado · ${pilRes.event.nombreCompleto} (${pilRes.event.mensajeEstado})`,
+              });
+            }
+            return;
+          }
           const debounceRes = debouncerRef.current.processScan(scannedCode);
           if (!debounceRes.accepted) return;
           const student = await findStudentByScannedCode(scannedCode);

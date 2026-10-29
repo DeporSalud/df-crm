@@ -21,6 +21,7 @@ import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
 import { syncReservasFromSupabase } from "@/lib/openClassService";
 import { extractCleanAddress, preserveTeacherMetaOnAddressSave } from "@/lib/teacherRegistryService";
+import { isPilatesProfile } from "@/lib/pilatesService";
 import { CheckCircle2, Info } from "lucide-react";
 
 import { getStoredIBAN, saveStoredIBAN, deleteStoredIBAN } from "@/lib/ibanStorage";
@@ -240,10 +241,12 @@ export default function AlumnosPage() {
     queryStudents = queryStudents.order("creado_en", { ascending: false });
     const { data: studentsData } = await queryStudents;
       
-    const enriched = (studentsData || []).map((s: any) => ({
-      ...s,
-      iban: s.iban || getStoredIBAN(s.id)
-    }));
+    const enriched = (studentsData || [])
+      .filter((s: any) => !isPilatesProfile(s))
+      .map((s: any) => ({
+        ...s,
+        iban: s.iban || getStoredIBAN(s.id)
+      }));
     setStudents(enriched);
 
     // Fetch classes for assignment

@@ -11,8 +11,11 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
-  Lock
+  Lock,
+  Sparkles,
+  Unlock
 } from "lucide-react";
+import { isPilatesSessionUnlocked } from "@/lib/pilatesService";
 
 interface SidebarProps {
   onCloseMobile?: () => void;
@@ -24,6 +27,15 @@ export default function Sidebar({ onCloseMobile, onLockSession }: SidebarProps) 
   const { activeSede, setActiveSede } = useSede();
   const [isLightMode, setIsLightMode] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [pilatesUnlocked, setPilatesUnlocked] = useState(false);
+  const isPilatesModule = pathname.startsWith("/admin/pilates");
+
+  useEffect(() => {
+    setPilatesUnlocked(isPilatesSessionUnlocked());
+    const syncUnlock = () => setPilatesUnlocked(isPilatesSessionUnlocked());
+    window.addEventListener("df_pilates_lock_changed", syncUnlock);
+    return () => window.removeEventListener("df_pilates_lock_changed", syncUnlock);
+  }, [pathname]);
 
   useEffect(() => {
     try {
@@ -186,49 +198,129 @@ export default function Sidebar({ onCloseMobile, onLockSession }: SidebarProps) 
         )}
       </div>
 
-      {/* Sede Selector & Theme */}
-      <div className="px-3.5 py-2">
+      {/* Unit Switcher (Escuela Baile vs Solo Pilates) + Sede & Theme */}
+      <div className="px-3.5 py-2 space-y-2.5">
         {isCollapsed ? (
           <div className="flex flex-col items-center gap-2 p-2 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] shadow-inner">
-            <button
-              onClick={cycleSede}
-              className="w-9 h-9 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border)] flex items-center justify-center text-xs font-bold font-mono text-[var(--color-primary)] transition-all cursor-pointer"
-              title={`Sede Activa: ${activeSede === "consolidado" ? "Consolidado" : activeSede === "tejar" ? "Studio 1 (Tejar)" : "Studio 2 (Castilla)"} • Clic para cambiar`}
+            <Link
+              href="/admin"
+              onClick={handleLinkClick}
+              title="Unidad: Escuela Baile"
+              className={`w-9 h-9 rounded-xl border flex items-center justify-center text-xs font-extrabold transition-all ${
+                !isPilatesModule
+                  ? "bg-[var(--color-primary)] text-white border-[var(--color-primary)] shadow-md"
+                  : "bg-[var(--color-bg-card)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:text-[var(--color-text-title)]"
+              }`}
             >
-              {activeSede === "consolidado" ? "🏢" : activeSede === "tejar" ? "S1" : "S2"}
-            </button>
+              DF
+            </Link>
+            <Link
+              href="/admin/pilates"
+              onClick={handleLinkClick}
+              title="Unidad Privada: Solo Pilates (Clave de Enrique)"
+              className={`w-9 h-9 rounded-xl border flex items-center justify-center transition-all ${
+                isPilatesModule
+                  ? "bg-teal-600 text-white border-teal-500 shadow-md"
+                  : "bg-[var(--color-bg-card)] text-teal-600 dark:text-teal-400 border-[var(--color-border)] hover:border-teal-500/60"
+              }`}
+            >
+              {pilatesUnlocked ? <Sparkles size={15} /> : <Lock size={14} />}
+            </Link>
+            {!isPilatesModule && (
+              <button
+                onClick={cycleSede}
+                className="w-9 h-9 rounded-xl bg-[var(--color-bg-card)] hover:bg-[var(--color-bg-hover)] border border-[var(--color-border)] flex items-center justify-center text-xs font-bold font-mono text-[var(--color-primary)] transition-all cursor-pointer"
+                title={`Sede Activa: ${activeSede === "consolidado" ? "Consolidado" : activeSede === "tejar" ? "Studio 1 (Tejar)" : "Studio 2 (Castilla)"} • Clic para cambiar`}
+              >
+                {activeSede === "consolidado" ? "🏢" : activeSede === "tejar" ? "S1" : "S2"}
+              </button>
+            )}
             <button
               onClick={toggleTheme}
               className="p-1.5 rounded-lg text-slate-400 hover:text-[var(--color-text-title)] hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer"
               title={isLightMode ? "Cambiar a Modo Oscuro" : "Cambiar a Modo Claro"}
             >
-              {isLightMode ? <Moon size={14} className="text-amber-400" /> : <Sun size={14} className="text-amber-400" />}
+              {isLightMode ? <Moon size={14} className="text-amber-500" /> : <Sun size={14} className="text-amber-400" />}
             </button>
           </div>
         ) : (
-          <div className="p-3 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] space-y-2 shadow-inner animate-in fade-in duration-200">
-            <div className="flex items-center justify-between text-xs uppercase font-bold text-[var(--color-text-secondary)] tracking-wider">
-              <span className="flex items-center gap-1.5 text-[var(--color-text-body)]">
-                <Building2 size={14} className="text-[var(--color-primary)]" />
-                Sede Activa
-              </span>
-              <button
-                onClick={toggleTheme}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-[var(--color-text-title)] hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer"
-                title={isLightMode ? "Cambiar a Modo Oscuro" : "Cambiar a Modo Claro"}
-              >
-                {isLightMode ? <Moon size={15} className="text-amber-400" /> : <Sun size={15} className="text-amber-400" />}
-              </button>
-            </div>
-            <select 
-              value={activeSede}
-              onChange={(e) => setActiveSede(e.target.value as any)}
-              className="w-full bg-[var(--color-bg-card)] text-[var(--color-text-title)] border border-[var(--color-border)] rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-[var(--color-primary)] transition-colors cursor-pointer"
+          <div className="space-y-2.5 animate-in fade-in duration-200">
+            {/* Selector Superior de Unidad Independiente */}
+            <div
+              className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] shadow-inner"
+              role="navigation"
+              aria-label="Selector de unidad de negocio"
             >
-              <option value="consolidado">🏢 Consolidado (Ambas)</option>
-              <option value="tejar">Studio 1 Plaza El Tejar</option>
-              <option value="castilla">Studio 2 Paseo Castilla</option>
-            </select>
+              <Link
+                href="/admin"
+                onClick={handleLinkClick}
+                className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-bold text-center transition-all ${
+                  !isPilatesModule
+                    ? "bg-[var(--color-primary)] text-white shadow-md"
+                    : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-title)] hover:bg-[var(--color-bg-hover)]"
+                }`}
+              >
+                <span>Escuela Baile</span>
+              </Link>
+              <Link
+                href="/admin/pilates"
+                onClick={handleLinkClick}
+                className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-bold text-center transition-all ${
+                  isPilatesModule
+                    ? "bg-teal-600 text-white shadow-md"
+                    : "text-teal-600 dark:text-teal-400 hover:bg-teal-500/10"
+                }`}
+              >
+                {pilatesUnlocked ? (
+                  <Unlock size={13} className="shrink-0" />
+                ) : (
+                  <Lock size={13} className="shrink-0" />
+                )}
+                <span>Solo Pilates</span>
+              </Link>
+            </div>
+
+            {isPilatesModule ? (
+              <div className="p-3 rounded-2xl bg-[var(--color-bg)] border border-teal-500/30 flex items-center justify-between gap-2 shadow-inner">
+                <div className="flex items-center gap-2 text-xs font-bold text-teal-600 dark:text-teal-400">
+                  <Sparkles size={14} className="shrink-0" />
+                  <span>Unidad Privada · 24h</span>
+                </div>
+                <button
+                  onClick={toggleTheme}
+                  className="p-1.5 rounded-lg text-[var(--color-text-secondary)] hover:text-[var(--color-text-title)] hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer"
+                  title={isLightMode ? "Cambiar a Modo Oscuro" : "Cambiar a Modo Claro"}
+                >
+                  {isLightMode ? <Moon size={15} className="text-amber-500" /> : <Sun size={15} className="text-amber-400" />}
+                </button>
+              </div>
+            ) : (
+              <div className="p-3 rounded-2xl bg-[var(--color-bg)] border border-[var(--color-border)] space-y-2 shadow-inner">
+                <div className="flex items-center justify-between text-xs uppercase font-bold text-[var(--color-text-secondary)] tracking-wider">
+                  <span className="flex items-center gap-1.5 text-[var(--color-text-body)]">
+                    <Building2 size={14} className="text-[var(--color-primary)]" />
+                    Sede Activa
+                  </span>
+                  <button
+                    onClick={toggleTheme}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-[var(--color-text-title)] hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer"
+                    title={isLightMode ? "Cambiar a Modo Oscuro" : "Cambiar a Modo Claro"}
+                  >
+                    {isLightMode ? <Moon size={15} className="text-amber-500" /> : <Sun size={15} className="text-amber-400" />}
+                  </button>
+                </div>
+                <select 
+                  value={activeSede}
+                  onChange={(e) => setActiveSede(e.target.value as any)}
+                  aria-label="Seleccionar sede activa de Escuela de Baile"
+                  className="w-full bg-[var(--color-bg-card)] text-[var(--color-text-title)] border border-[var(--color-border)] rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-[var(--color-primary)] transition-colors cursor-pointer"
+                >
+                  <option value="consolidado">🏢 Consolidado (Ambas)</option>
+                  <option value="tejar">Studio 1 Plaza El Tejar</option>
+                  <option value="castilla">Studio 2 Paseo Castilla</option>
+                </select>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -254,7 +346,7 @@ export default function Sidebar({ onCloseMobile, onLockSession }: SidebarProps) 
               }`}
             >
               {item.icon}
-              {!isCollapsed && <span className="truncate">{item.name}</span>}
+              {!isCollapsed && <span className="leading-snug break-words">{item.name}</span>}
 
               {/* Floating Tooltip when Collapsed */}
               {isCollapsed && (
@@ -279,8 +371,8 @@ export default function Sidebar({ onCloseMobile, onLockSession }: SidebarProps) 
             </div>
             {!isCollapsed && (
               <div className="flex flex-col min-w-0 animate-in fade-in duration-200">
-                <span className="text-sm font-bold text-[var(--color-text-title)] truncate">Enrique Zamorano</span>
-                <span className="text-xs text-[var(--color-text-secondary)] truncate">Director & Admin</span>
+                <span className="text-sm font-bold text-[var(--color-text-title)] leading-snug break-words">Enrique Zamorano</span>
+                <span className="text-xs text-[var(--color-text-secondary)] leading-snug break-words">Director & Admin</span>
               </div>
             )}
           </div>
