@@ -105,7 +105,38 @@ export default function AlumnosPage() {
   const [historyTab, setHistoryTab] = useState<"pagos" | "reservas" | "asistencias" | "ficha">("pagos");
   const [historyPayments, setHistoryPayments] = useState<any[]>([]);
   const [historyReservas, setHistoryReservas] = useState<any[]>([]);
+  const [deskOtpState, setDeskOtpState] = useState<{ email: string; code: string } | null>(null);
+  const [deskOtpLoading, setDeskOtpLoading] = useState(false);
   const { activeSede, setActiveSede } = useSede();
+
+  const handleGenerateDeskOtp = async (targetEmail?: string | null) => {
+    const clean = (targetEmail || "").trim().toLowerCase();
+    if (!clean || !clean.includes("@")) {
+      alert("Introduce primero un correo electrónico válido en la ficha del alumno.");
+      return;
+    }
+    setDeskOtpLoading(true);
+    try {
+      const res = await fetch("/api/admin/desk-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: clean }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success && data?.code) {
+        setDeskOtpState({ email: clean, code: data.code });
+        try {
+          await navigator.clipboard?.writeText(data.code);
+        } catch {}
+      } else {
+        alert(data?.error || "No se pudo generar el código de acceso.");
+      }
+    } catch {
+      alert("Error de conexión al generar el código de mostrador.");
+    } finally {
+      setDeskOtpLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -1385,9 +1416,28 @@ export default function AlumnosPage() {
                       <strong className="text-white font-mono text-sm block">{historyStudent.telefono || "Sin registrar"}</strong>
                     </div>
 
-                    <div className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] space-y-1">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Correo Electrónico</span>
+                    <div className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Correo Electrónico</span>
+                        {historyStudent.email && (
+                          <button
+                            type="button"
+                            onClick={() => handleGenerateDeskOtp(historyStudent.email)}
+                            disabled={deskOtpLoading}
+                            className="text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--color-primary)]/20 hover:bg-[var(--color-primary)]/35 text-[var(--color-secondary)] border border-[var(--color-primary)]/30 transition-colors cursor-pointer"
+                            title="Genera un código de 6 dígitos válido 30 min para entrar en la App si no le llega el correo"
+                          >
+                            🔑 Código App
+                          </button>
+                        )}
+                      </div>
                       <strong className="text-white text-sm block truncate">{historyStudent.email || "Sin registrar"}</strong>
+                      {deskOtpState && deskOtpState.email === (historyStudent.email || "").trim().toLowerCase() && (
+                        <div className="mt-1 px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-[11px] text-emerald-300 font-mono flex items-center justify-between">
+                          <span>Código 30m: <strong className="text-sm tracking-widest text-white">{deskOtpState.code}</strong></span>
+                          <span className="text-[9px] uppercase text-emerald-400 font-sans font-bold">Activo</span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="p-3.5 rounded-xl bg-[var(--color-bg)] border border-[var(--color-border)] space-y-1">
@@ -1649,13 +1699,32 @@ export default function AlumnosPage() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Email</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-[var(--color-text-secondary)]">Email (Acceso App)</label>
+                        {formData.email && formData.email.includes("@") && (
+                          <button
+                            type="button"
+                            onClick={() => handleGenerateDeskOtp(formData.email)}
+                            disabled={deskOtpLoading}
+                            className="text-[10px] font-bold px-2 py-0.5 rounded bg-[var(--color-primary)]/20 hover:bg-[var(--color-primary)]/35 text-[var(--color-secondary)] border border-[var(--color-primary)]/30 transition-colors cursor-pointer"
+                            title="Ver código instantáneo de 6 dígitos (válido 30 min) para que el alumno acceda a su App en mostrador"
+                          >
+                            {deskOtpLoading ? "Generando..." : "🔑 Ver código App (30m)"}
+                          </button>
+                        )}
+                      </div>
                       <input 
                         type="email" 
                         value={formData.email}
                         onChange={(e) => setFormData({...formData, email: e.target.value})}
                         className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors" 
                       />
+                      {deskOtpState && deskOtpState.email === (formData.email || "").trim().toLowerCase() && (
+                        <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-[11px] text-emerald-300 font-mono flex items-center justify-between">
+                          <span>Código Acceso App: <strong className="text-sm tracking-widest text-white">{deskOtpState.code}</strong></span>
+                          <span className="text-[10px] font-sans text-emerald-400">Válido 30 min (copiado)</span>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <div className="flex items-center justify-between mb-1">
