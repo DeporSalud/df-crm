@@ -16,6 +16,16 @@ import { HardwareScannerDebouncer } from "@/lib/scannerDebounce";
 export const IS_PILATES_CLOUD_DB_ENABLED =
   process.env.NEXT_PUBLIC_PILATES_CLOUD_DB === "true";
 
+export function isPilatesCloudDbEnabled(): boolean {
+  if (process.env.NEXT_PUBLIC_PILATES_CLOUD_DB === "true") return true;
+  if (process.env.NEXT_PUBLIC_PILATES_CLOUD_DB === "false") return false;
+  if (typeof window !== "undefined") {
+    const h = window.location.hostname.toLowerCase();
+    if (h.includes("dancefactoryalcorcon.es")) return true;
+  }
+  return false;
+}
+
 export const PILATES_META_PREFIX = "DF_PILATES_META:";
 
 const STORAGE_KEYS = {
@@ -351,6 +361,15 @@ export function savePilatesSecurityConfig(
     try {
       localStorage.setItem(STORAGE_KEYS.SECURITY, JSON.stringify(next));
     } catch {}
+    publishSyncEvent("df_pilates_roster_sync", {
+      securityConfig: {
+        masterPin: next.masterPin,
+        allowReceptionWelcomeCard: next.allowReceptionWelcomeCard,
+        updatedAt: next.updatedAt,
+      },
+      senderInstance: getClientInstanceId(),
+      ts: Date.now(),
+    });
     publishSyncEvent("df_pilates_updated", { reason: "security_config" });
   }
   return next;
@@ -539,6 +558,26 @@ export function initPilatesCrossPcSync(): void {
       }
     }
 
+    if (detail.securityConfig && typeof detail.securityConfig === "object") {
+      const localCfg = getPilatesSecurityConfig();
+      const incomingUpdated = String(detail.securityConfig.updatedAt || "");
+      if (!localCfg.updatedAt || incomingUpdated >= localCfg.updatedAt) {
+        const mergedCfg: PilatesSecurityConfig = {
+          ...localCfg,
+          masterPin: String(detail.securityConfig.masterPin || localCfg.masterPin),
+          allowReceptionWelcomeCard:
+            typeof detail.securityConfig.allowReceptionWelcomeCard === "boolean"
+              ? detail.securityConfig.allowReceptionWelcomeCard
+              : localCfg.allowReceptionWelcomeCard,
+          updatedAt: incomingUpdated || new Date().toISOString(),
+        };
+        try {
+          localStorage.setItem(STORAGE_KEYS.SECURITY, JSON.stringify(mergedCfg));
+          changed = true;
+        } catch {}
+      }
+    }
+
     if (changed) {
       window.dispatchEvent(new CustomEvent("df_pilates_updated", { detail: { remote: true } }));
     }
@@ -547,10 +586,16 @@ export function initPilatesCrossPcSync(): void {
   subscribeSyncEvent("df_pilates_request_sync", () => {
     const students = getPilatesStudents();
     const payments = getPilatesPayments();
+    const cfg = getPilatesSecurityConfig();
     if (students.length > 0 || payments.length > 0) {
       publishSyncEvent("df_pilates_roster_sync", {
         students,
         payments,
+        securityConfig: {
+          masterPin: cfg.masterPin,
+          allowReceptionWelcomeCard: cfg.allowReceptionWelcomeCard,
+          updatedAt: cfg.updatedAt,
+        },
         senderInstance: getClientInstanceId(),
         ts: Date.now(),
       });
@@ -567,7 +612,7 @@ export function initPilatesCrossPcSync(): void {
  * Sincronización opcional con tabla Supabase `alumnos` (SOLO cuando NEXT_PUBLIC_PILATES_CLOUD_DB === "true")
  */
 async function syncPilatesStudentToCloudIfEnabled(student: PilatesStudent): Promise<void> {
-  if (!IS_PILATES_CLOUD_DB_ENABLED) return;
+  if (!isPilatesCloudDbEnabled()) return;
   try {
     const metaPayload = {
       codigo_qr: student.codigo_qr,
@@ -587,7 +632,7 @@ async function syncPilatesStudentToCloudIfEnabled(student: PilatesStudent): Prom
         sede: "pilates",
         nombre_completo: student.nombre_completo,
         dni: student.dni || null,
-        telefono: student.telefono || null,
+        telefono: student.telefono || "",
         email: student.email || null,
         plan_activo: `Solo Pilates · ${student.tipo_plan}`,
         clases_restantes: student.sesiones_restantes,
@@ -603,7 +648,7 @@ async function syncPilatesStudentToCloudIfEnabled(student: PilatesStudent): Prom
 
 export async function syncPilatesFromCloudIfEnabled(): Promise<PilatesStudent[]> {
   const local = getPilatesStudents();
-  if (!IS_PILATES_CLOUD_DB_ENABLED) return local;
+  if (!isPilatesCloudDbEnabled()) return local;
 
   try {
     const { data, error } = await supabase
@@ -822,7 +867,7 @@ export async function deletePilatesStudent(studentId: string): Promise<void> {
     });
     publishSyncEvent("df_pilates_updated", { reason: "delete_student" });
   }
-  if (IS_PILATES_CLOUD_DB_ENABLED) {
+  if (isPilatesCloudDbEnabled()) {
     try {
       await supabase.from("asistencias").delete().eq("alumno_id", studentId);
       await supabase.from("alumnos").delete().eq("id", studentId).eq("sede", "pilates");
@@ -987,7 +1032,7 @@ export async function processPilatesScan(
   const nextAttendances = [newAttendance, ...allAttendances];
   writePilatesAttendancesLocal(nextAttendances);
 
-  if (IS_PILATES_CLOUD_DB_ENABLED) {
+  if (isPilatesCloudDbEnabled()) {
     try {
       await supabase.from("asistencias").insert([
         {

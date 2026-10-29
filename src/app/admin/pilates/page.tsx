@@ -789,7 +789,7 @@ export default function SoloPilatesPage() {
     PILATES_PLAN_PRESETS.find((p) => p.id === cobroPlan) || PILATES_PLAN_PRESETS[0];
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-200">
+    <div className="space-y-6 pb-28 animate-in fade-in duration-200">
       {/* Cabecera Ejecutiva */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 rounded-3xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-5 sm:p-6 shadow-lg">
         <div className="space-y-1.5 min-w-0">
@@ -972,7 +972,7 @@ export default function SoloPilatesPage() {
               role="tab"
               aria-selected={isSelected}
               onClick={() => setActiveTab(tab.id)}
-              className={`rounded-xl px-3 py-2.5 text-xs font-bold text-center leading-snug break-words transition-all cursor-pointer ${
+              className={`rounded-xl px-3 py-2.5 text-xs font-bold text-center leading-snug break-words transition-colors duration-75 cursor-pointer ${
                 isSelected
                   ? "bg-teal-600 text-white shadow-md"
                   : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-title)] hover:bg-[var(--color-bg-hover)]"
@@ -1080,13 +1080,13 @@ export default function SoloPilatesPage() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
-                      <th className="py-3.5 px-4">Alumno / Foto</th>
-                      <th className="py-3.5 px-3">Contacto / DNI</th>
-                      <th className="py-3.5 px-3">Plan / Bono 24h</th>
-                      <th className="py-3.5 px-3">Cuota</th>
-                      <th className="py-3.5 px-3">Código QR</th>
-                      <th className="py-3.5 px-3">Estado</th>
-                      <th className="py-3.5 px-4 text-right">Acciones</th>
+                      <th className="py-3.5 pl-4 pr-2">Alumno / Foto</th>
+                      <th className="py-3.5 px-2">Contacto / DNI</th>
+                      <th className="py-3.5 px-2">Plan / Bono 24h</th>
+                      <th className="py-3.5 px-2">Cuota</th>
+                      <th className="py-3.5 px-2">Código QR</th>
+                      <th className="py-3.5 px-2">Estado</th>
+                      <th className="py-3.5 pl-2 pr-4 text-right whitespace-nowrap">Acciones</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--color-border)] text-xs">
@@ -1101,9 +1101,9 @@ export default function SoloPilatesPage() {
                           key={s.id}
                           className="hover:bg-[var(--color-bg-hover)]/60 transition-colors"
                         >
-                          <td className="py-3.5 px-4">
-                            <div className="flex items-center gap-3">
-                              <div className="w-12 h-12 rounded-2xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-bg)] shrink-0 flex items-center justify-center">
+                          <td className="py-3 pl-4 pr-2 max-w-[215px]">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-11 h-11 rounded-2xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-bg)] shrink-0 flex items-center justify-center">
                                 {s.foto_url ? (
                                   // eslint-disable-next-line @next/next/no-img-element
                                   <img
@@ -1129,19 +1129,19 @@ export default function SoloPilatesPage() {
                               </div>
                             </div>
                           </td>
-                          <td className="py-3.5 px-3">
+                          <td className="py-3 px-2 max-w-[155px]">
                             <p className="font-mono font-semibold text-[var(--color-text-body)]">
                               {s.dni || "Sin DNI"}
                             </p>
-                            <p className="text-[11px] text-[var(--color-text-secondary)] leading-snug break-words">
+                            <p className="text-[11px] text-[var(--color-text-secondary)] leading-snug break-all">
                               {s.telefono || s.email || "Sin teléfono"}
                             </p>
                           </td>
-                          <td className="py-3.5 px-3">
+                          <td className="py-3 px-2 max-w-[150px]">
                             <p className="font-bold text-[var(--color-text-title)] leading-snug break-words">
                               {s.tipo_plan}
                             </p>
-                            <p className="text-[11px] text-[var(--color-text-secondary)]">
+                            <p className="text-[11px] text-[var(--color-text-secondary)] leading-snug">
                               {s.es_bono
                                 ? `${s.sesiones_restantes ?? 0}/${
                                     s.sesiones_totales_bono ?? 4
@@ -1149,37 +1149,37 @@ export default function SoloPilatesPage() {
                                 : `Acceso Libre 24h · ${s.metodo_pago}`}
                             </p>
                           </td>
-                          <td className="py-3.5 px-3 font-mono font-bold text-[var(--color-text-title)]">
+                          <td className="py-3 px-2 font-mono font-bold text-[var(--color-text-title)]">
                             <span className="whitespace-nowrap inline-block">
                               {s.importe_cuota.toFixed(2)} €
                             </span>
                           </td>
-                          <td className="py-3.5 px-2.5">
+                          <td className="py-3 px-2">
                             <button
                               type="button"
                               onClick={() => openQrViewerModal(s)}
-                              className="inline-flex items-center gap-1.5 rounded-xl border border-teal-500/35 bg-teal-500/10 px-2.5 py-1 font-mono text-xs font-bold text-teal-700 dark:text-teal-300 hover:bg-teal-500/20 whitespace-nowrap cursor-pointer"
+                              className="inline-flex items-center gap-1 rounded-xl border border-teal-500/35 bg-teal-500/10 px-2 py-1 font-mono text-[11px] font-bold text-teal-700 dark:text-teal-300 hover:bg-teal-500/20 whitespace-nowrap cursor-pointer"
                             >
-                              <QrCode size={13} className="shrink-0" />
+                              <QrCode size={12} className="shrink-0" />
                               <span className="whitespace-nowrap">{s.codigo_qr}</span>
                             </button>
                           </td>
-                          <td className="py-3.5 px-2.5">
+                          <td className="py-3 px-2">
                             {s.estado === "Baja" ? (
-                              <span className="inline-flex items-center rounded-full bg-slate-500/15 border border-slate-500/30 px-2.5 py-1 text-[11px] font-bold text-[var(--color-text-secondary)] whitespace-nowrap">
+                              <span className="inline-flex items-center rounded-full bg-slate-500/15 border border-slate-500/30 px-2.5 py-0.5 text-[11px] font-bold text-[var(--color-text-secondary)] whitespace-nowrap">
                                 Baja
                               </span>
                             ) : needsRenewal ? (
-                              <span className="inline-flex items-center rounded-full bg-amber-500/15 border border-amber-500/35 px-2.5 py-1 text-[11px] font-bold text-amber-700 dark:text-amber-300 whitespace-nowrap">
-                                Renovación Pendiente
+                              <span className="inline-flex items-center rounded-full bg-amber-500/15 border border-amber-500/35 px-2.5 py-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-300 whitespace-nowrap">
+                                Renovación
                               </span>
                             ) : (
-                              <span className="inline-flex items-center rounded-full bg-emerald-500/15 border border-emerald-500/35 px-2.5 py-1 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 whitespace-nowrap">
+                              <span className="inline-flex items-center rounded-full bg-emerald-500/15 border border-emerald-500/35 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 whitespace-nowrap">
                                 Al día
                               </span>
                             )}
                           </td>
-                          <td className="py-3.5 px-3">
+                          <td className="py-3 pl-2 pr-4">
                             <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
                               <button
                                 type="button"
@@ -1581,9 +1581,9 @@ export default function SoloPilatesPage() {
                   Importador Inicial de Alumnos en 1 Clic (Excel / CSV)
                 </h2>
                 <p className="text-xs text-[var(--color-text-secondary)] mt-0.5 leading-relaxed">
-                  Sube el listado actual de Pilates (`.csv`, `.xlsx` o `.tsv`). El sistema
-                  reconoce automáticamente columnas en español y genera el código QR `PIL-XXXX`
-                  para cada alumno.
+                  Sube el listado actual de Pilates (.csv, .xlsx o .tsv). El sistema reconoce
+                  automáticamente columnas en español y genera el código QR PIL-XXXX para cada
+                  alumno.
                 </p>
               </div>
               <button
@@ -1620,7 +1620,7 @@ export default function SoloPilatesPage() {
               </div>
               <div className="space-y-1">
                 <p className="text-sm font-bold text-[var(--color-text-title)]">
-                  Arrastra aquí tu archivo Excel (`.xlsx`) o CSV (`.csv`)
+                  Arrastra aquí tu archivo Excel (.xlsx) o CSV (.csv)
                 </p>
                 <p className="text-xs text-[var(--color-text-secondary)]">
                   Detecta automáticamente: nombre, apellidos, dni, teléfono, email, tarifa/bono,

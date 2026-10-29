@@ -28,6 +28,7 @@ export default function PilatesWelcomeModal({
   autoCloseMs = 9500,
 }: PilatesWelcomeModalProps) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const programmaticCloseRef = useRef(false);
   const titleId = useId();
   const [imgFailed, setImgFailed] = useState(false);
   const [progressPct, setProgressPct] = useState(100);
@@ -42,12 +43,14 @@ export default function PilatesWelcomeModal({
     if (!dialog) return;
 
     if (event) {
+      programmaticCloseRef.current = false;
       if (!dialog.open) {
         try {
           dialog.showModal();
         } catch {}
       }
     } else if (dialog.open) {
+      programmaticCloseRef.current = true;
       try {
         dialog.close();
       } catch {}
@@ -95,7 +98,13 @@ export default function PilatesWelcomeModal({
         if (dialogRef.current) {
           dialogRef.current.returnValue = "";
         }
-        onClose();
+        if (programmaticCloseRef.current) {
+          programmaticCloseRef.current = false;
+          return;
+        }
+        if (event) {
+          onClose();
+        }
       }}
       onPointerUp={handlePointerUp}
       className="m-auto w-[94vw] max-w-xl rounded-3xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-0 text-[var(--color-text-body)] shadow-2xl backdrop:bg-slate-950/75 backdrop:backdrop-blur-sm"

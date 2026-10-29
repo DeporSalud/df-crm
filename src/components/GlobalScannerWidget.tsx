@@ -133,8 +133,14 @@ export default function GlobalScannerWidget() {
       });
     });
 
-    const unsubPilatesClose = subscribeSyncEvent("df_pilates_checkin_close", () => {
-      setPilatesWelcomeEvent(null);
+    const unsubPilatesClose = subscribeSyncEvent("df_pilates_checkin_close", (detail: any) => {
+      setPilatesWelcomeEvent((current) => {
+        if (!current) return null;
+        if (detail?.eventUid && current.eventUid !== detail.eventUid) {
+          return current;
+        }
+        return null;
+      });
     });
 
     return () => {
@@ -144,8 +150,13 @@ export default function GlobalScannerWidget() {
   }, []);
 
   const handleClosePilatesWelcome = useCallback(() => {
-    setPilatesWelcomeEvent(null);
-    publishSyncEvent("df_pilates_checkin_close", { ts: Date.now() });
+    setPilatesWelcomeEvent((current) => {
+      const closingUid = current?.eventUid;
+      if (closingUid) {
+        publishSyncEvent("df_pilates_checkin_close", { eventUid: closingUid, ts: Date.now() });
+      }
+      return null;
+    });
   }, []);
 
   // Sync df_checkin_denied, df_checkin_denied_close, and auto-repaired df_checkin_success across windows
