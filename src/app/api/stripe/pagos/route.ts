@@ -291,11 +291,7 @@ export async function GET() {
         s,
         s.plan_activo
       );
-      const sede: SedePago = ["castilla", "alcorcon", "studio 2"].includes(
-        String(s.sede || "").toLowerCase().trim()
-      )
-        ? "castilla"
-        : "tejar";
+      const sede: SedePago = "castilla";
       const receiptShort = `BONO-${dateTag.slice(4)}-${String(s.id).slice(0, 4).toUpperCase()}`;
 
       reconciledPagos.push({
