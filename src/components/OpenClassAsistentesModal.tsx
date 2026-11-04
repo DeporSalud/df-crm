@@ -31,6 +31,7 @@ import {
 } from "@/lib/openClassService";
 import { publishSyncEvent } from "@/lib/syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
+import { getTeacherForClassDate } from "@/lib/classScheduleUtils";
 
 interface OpenClassAsistentesModalProps {
   isOpen: boolean;
@@ -162,7 +163,7 @@ export default function OpenClassAsistentesModal({
             alumno_plan: a.plan_activo || "Bono Open Class",
             clase_id: classUUID,
             nombre_clase: clase.nombre_clase,
-            profesor: clase.profesor,
+            profesor: getTeacherForClassDate(clase, dateISO),
             sede: normalizeSede(clase.sede || "castilla"),
             sala: clase.sala || "Sala 1",
             fecha_iso: dateISO,
@@ -665,7 +666,7 @@ export default function OpenClassAsistentesModal({
               </h2>
 
               <div className="flex items-center gap-3 text-xs text-[var(--color-text-secondary)] mt-1 flex-wrap">
-                <span>Docente: <strong className="text-white">{clase.profesor}</strong></span>
+                <span>Docente: <strong className="text-white">{getTeacherForClassDate(clase, currentCalendarDay?.dateISO)}</strong></span>
                 <span>•</span>
                 <span className="flex items-center gap-1 font-semibold text-cyan-400">
                   <Calendar size={13} />

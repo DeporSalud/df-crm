@@ -20,6 +20,7 @@ import {
   GraduationCap
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { getTeacherForClassDate } from "@/lib/classScheduleUtils";
 
 export interface AttendanceRecord {
   id: string;
@@ -722,7 +723,9 @@ export default function HistoricoEntradasModal({
                 const isBono = planLower.includes("bono");
 
                 const claseName = item.clases_cuadrante?.nombre_clase || "Acceso General a Instalaciones";
-                const profesorName = item.clases_cuadrante?.profesor;
+                const profesorName = item.clases_cuadrante
+                  ? getTeacherForClassDate(item.clases_cuadrante, item.fecha_hora)
+                  : undefined;
 
                 const sedeClase = (item.clases_cuadrante?.sede || "").toLowerCase();
                 const sedeAlumno = (item.alumnos?.sede || "").toLowerCase();

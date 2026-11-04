@@ -3,6 +3,11 @@ import { getMadridHoursRemaining, getMadridDayRangeUTC, toMadridDate } from "@/l
 import { publishSyncEvent } from "./syncEventBus";
 import { logActivity } from "@/lib/activityLogger";
 import { parseLinkedAltAuth } from "@/lib/teacherRegistryService";
+import {
+  parseClassSchedule,
+  isClassActiveOnDate,
+  getTeacherForClassDate,
+} from "@/lib/classScheduleUtils";
 export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: string): boolean {
   if (!student && !emailOrId && !userRole) return false;
   const plan = (student?.plan_activo || "").toLowerCase();
@@ -360,6 +365,12 @@ export function getTodayISO(): string {
  * Calculates the next upcoming session date (YYYY-MM-DD) on or after today for a given class
  */
 export function getNextUpcomingSessionDate(clase: any, baseDateISO?: string): string {
+  if (typeof clase === "object" && clase !== null) {
+    const sched = parseClassSchedule(clase.raw_profesor ?? clase.profesor);
+    if (sched.mode === "fecha_unica" && sched.fechaUnica) {
+      return sched.fechaUnica;
+    }
+  }
   const todayISO = cleanDateISO(baseDateISO) || getTodayISO();
   const diaSemana = (typeof clase === "string" ? clase : clase?.dia_semana) || "LUNES";
   return getNextDateForDay(todayISO, diaSemana);
@@ -369,6 +380,12 @@ export function getNextUpcomingSessionDate(clase: any, baseDateISO?: string): st
  * Generates the upcoming weekly sessions for a specific class (e.g. all upcoming Mondays)
  */
 export function getUpcomingSessionsForClass(clase: any, count = 8, startFromISO = "2026-09-14"): CalendarDayItem[] {
+  if (typeof clase === "object" && clase !== null) {
+    const sched = parseClassSchedule(clase.raw_profesor ?? clase.profesor);
+    if (sched.mode === "fecha_unica" && sched.fechaUnica) {
+      return [createCalendarDayFromISO(sched.fechaUnica)];
+    }
+  }
   const diaSemana = (typeof clase === "string" ? clase : clase?.dia_semana) || "LUNES";
   const firstDateISO = getNextDateForDay(startFromISO, diaSemana);
   const parts = cleanDateISO(firstDateISO).split("-").map(Number);
@@ -1181,7 +1198,7 @@ export async function syncReservasFromSupabase(): Promise<OpenClassReserva[]> {
         alumno_plan: a.plan_activo || "Bono Open Class",
         clase_id: normClassId,
         nombre_clase: c.nombre_clase || "OPEN CLASS",
-        profesor: c.profesor || "",
+        profesor: getTeacherForClassDate(c, fechaISO),
         sede: normalizeSede(c.sede || "castilla"),
         sala: c.sala || "Sala 1",
         fecha_iso: fechaISO,
@@ -1691,7 +1708,7 @@ export async function resolveClassForCheckIn(
         .eq("id", preferredClaseId)
         .maybeSingle();
 
-      if (prefClass && (prefClass.dia_semana || "").toUpperCase() === hoyDia) {
+      if (prefClass && (prefClass.dia_semana || "").toUpperCase() === hoyDia && isClassActiveOnDate(prefClass, getTodayISO())) {
         const startMin = parseTimeToMinutes(prefClass.hora_inicio);
         const endMin = parseTimeToMinutes(prefClass.hora_fin);
 
@@ -1703,7 +1720,7 @@ export async function resolveClassForCheckIn(
             return {
               claseId: prefClass.id,
               claseNombre: prefClass.nombre_clase,
-              profesor: prefClass.profesor,
+              profesor: getTeacherForClassDate(prefClass, getTodayISO()),
               sede: prefClass.sede,
               isRegular: !isPrefOpen,
               isOpenClass: isPrefOpen,
@@ -1730,7 +1747,9 @@ export async function resolveClassForCheckIn(
       let candidate: any = null;
       let minDelta = Infinity;
 
+      const todayDateISO = getTodayISO();
       for (const c of activeClasses) {
+        if (!isClassActiveOnDate(c, todayDateISO)) continue;
         const startMin = parseTimeToMinutes(c.hora_inicio);
         const endMin = parseTimeToMinutes(c.hora_fin);
         const isOpen = (c.nombre_clase || "").toUpperCase().includes("OPEN") || c.tipo_clase === "Open Class";
@@ -1761,7 +1780,7 @@ export async function resolveClassForCheckIn(
         return {
           claseId: candidate.id,
           claseNombre: candidate.nombre_clase,
-          profesor: candidate.profesor,
+          profesor: getTeacherForClassDate(candidate, todayDateISO),
           sede: candidate.sede,
           isRegular: !isCandidateOpen,
           isOpenClass: isCandidateOpen,

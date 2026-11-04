@@ -21,6 +21,7 @@ import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getPagosByAlumno } from "@/lib/pagosService";
 import { syncReservasFromSupabase } from "@/lib/openClassService";
 import { extractCleanAddress, preserveTeacherMetaOnAddressSave } from "@/lib/teacherRegistryService";
+import { getTeacherForClassDate } from "@/lib/classScheduleUtils";
 import { CheckCircle2, Info } from "lucide-react";
 
 import { getStoredIBAN, saveStoredIBAN, deleteStoredIBAN } from "@/lib/ibanStorage";
@@ -1332,7 +1333,7 @@ export default function AlumnosPage() {
                             </span>
                           </div>
                           <p className="text-[11px] text-[var(--color-text-secondary)]">
-                            Profesor/a: <strong className="text-white">{reserva.profesor}</strong> • Sede: {reserva.sede === "tejar" ? "Studio 1 (El Tejar)" : "Studio 2 (Paseo Castilla)"}
+                            Profesor/a: <strong className="text-white">{getTeacherForClassDate(reserva, reserva.fecha_iso)}</strong> • Sede: {reserva.sede === "tejar" ? "Studio 1 (El Tejar)" : "Studio 2 (Paseo Castilla)"}
                           </p>
                         </div>
 
@@ -1377,7 +1378,7 @@ export default function AlumnosPage() {
                               {item.clases_cuadrante?.nombre_clase || "Clase Presencial"}
                             </span>
                             <span className="text-[var(--color-text-secondary)] mt-0.5 block">
-                              Profesor/a: <strong className="text-white">{item.clases_cuadrante?.profesor || "Dance Factory"}</strong> • Sede: {item.clases_cuadrante?.sede?.toUpperCase() || "STUDIO 1"}
+                              Profesor/a: <strong className="text-white">{item.clases_cuadrante ? getTeacherForClassDate(item.clases_cuadrante, item.fecha_hora) : "Dance Factory"}</strong> • Sede: {item.clases_cuadrante?.sede?.toUpperCase() || "STUDIO 1"}
                             </span>
                           </div>
                           <div className="text-right">
@@ -1985,7 +1986,7 @@ export default function AlumnosPage() {
                                  </span>
                                </div>
                                <span className="text-[11px] text-[var(--color-text-secondary)] mt-0.5">
-                                 {clase.dia_semana} {clase.hora_inicio}-{clase.hora_fin} ({getClassDurationHours(clase)}h) • Prof: {clase.profesor}
+                                 {clase.dia_semana} {clase.hora_inicio}-{clase.hora_fin} ({getClassDurationHours(clase)}h) • Prof: {getTeacherForClassDate(clase)}
                                </span>
                             </div>
                          </label>
