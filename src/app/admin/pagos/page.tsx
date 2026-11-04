@@ -65,7 +65,9 @@ import {
   calcularArqueoPorSede, 
   exportarPagosCSV, 
   registrarNuevoPago,
-  anularPago
+  anularPago,
+  isFakeDemoTransaction,
+  sortPagosDesc
 } from "@/lib/pagosService";
 import { openGlobalCobro } from "@/components/GlobalCobroModal";
 import { getStoredIBAN } from "@/lib/ibanStorage";
@@ -136,17 +138,47 @@ export default function PagosYFacturacionPage() {
     setIsLoading(true);
     let storedPagos = getHistorialPagos();
 
-    // Fetch live Stripe transactions from API
+    // Fetch unified cloud transactions (Supabase DF_PAGOS + Redsys + Stripe + Bono reconciliation)
     try {
-      const res = await fetch("/api/stripe/pagos");
+      const res = await fetch("/api/stripe/pagos", { cache: "no-store" });
       if (res.ok) {
         const json = await res.json();
         if (json.transacciones && Array.isArray(json.transacciones)) {
-          const stripeTxs: PagoTransaccion[] = json.transacciones;
-          // Re-read fresh localStorage AFTER network await so concurrent writes (desk payments / SEPA remittances) are never clobbered
-          const freshStored = getHistorialPagos();
-          const localManual = freshStored.filter(p => !p.id.startsWith("stripe_") && !p.numero_recibo.startsWith("STRIPE-"));
-          storedPagos = [...stripeTxs, ...localManual];
+          const cloudTxs: PagoTransaccion[] = json.transacciones;
+          // Re-read fresh localStorage AFTER network await so concurrent writes (desk payments / SEPA / Anulado) are never clobbered
+          const freshStored = getHistorialPagos().filter(p => !isFakeDemoTransaction(p));
+          const localAnuladoIds = new Set(
+            freshStored.filter(p => p.estado === "Anulado").map(p => p.id)
+          );
+
+          const seenIds = new Set<string>();
+          const seenRecibos = new Set<string>();
+          const mergedList: PagoTransaccion[] = [];
+
+          for (const tx of cloudTxs) {
+            if (!tx || isFakeDemoTransaction(tx)) continue;
+            const effectiveTx: PagoTransaccion = localAnuladoIds.has(tx.id)
+              ? { ...tx, estado: "Anulado" }
+              : tx;
+            if (effectiveTx.id && seenIds.has(effectiveTx.id)) continue;
+            if (effectiveTx.numero_recibo && seenRecibos.has(effectiveTx.numero_recibo)) continue;
+            if (effectiveTx.id) seenIds.add(effectiveTx.id);
+            if (effectiveTx.numero_recibo) seenRecibos.add(effectiveTx.numero_recibo);
+            mergedList.push(effectiveTx);
+          }
+
+          for (const localTx of freshStored) {
+            if (!localTx || isFakeDemoTransaction(localTx)) continue;
+            if (localTx.id.startsWith("stripe_") || localTx.numero_recibo.startsWith("STRIPE-")) continue;
+            if (localTx.id.startsWith("bono_cloud_")) continue;
+            if (localTx.id && seenIds.has(localTx.id)) continue;
+            if (localTx.numero_recibo && seenRecibos.has(localTx.numero_recibo)) continue;
+            if (localTx.id) seenIds.add(localTx.id);
+            if (localTx.numero_recibo) seenRecibos.add(localTx.numero_recibo);
+            mergedList.push(localTx);
+          }
+
+          storedPagos = sortPagosDesc(mergedList);
           if (typeof window !== "undefined") {
             // Persist silently without emitting df_pagos_updated so loadData() never self-loops
             localStorage.setItem("df_pagos_transacciones_v1", JSON.stringify(storedPagos));
@@ -158,7 +190,7 @@ export default function PagosYFacturacionPage() {
         storedPagos = getHistorialPagos();
       }
     } catch (errStripe) {
-      console.warn("[Pagos] Error cargando transacciones de Stripe:", errStripe);
+      console.warn("[Pagos] Error cargando transacciones cloud:", errStripe);
       storedPagos = getHistorialPagos();
     }
 
@@ -1126,6 +1158,7 @@ export default function PagosYFacturacionPage() {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg)]/60 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    <th className="py-3.5 px-4">Fecha</th>
                     <th className="py-3.5 px-4">Alumno</th>
                     <th className="py-3.5 px-4">Concepto</th>
                     <th className="py-3.5 px-4">Sede</th>
@@ -1137,7 +1170,7 @@ export default function PagosYFacturacionPage() {
                 <tbody className="divide-y divide-[var(--color-border)]/50 text-xs">
                   {filteredPagos.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-400">
+                      <td colSpan={7} className="py-12 text-center text-slate-400">
                         <Coins size={32} className="mx-auto mb-2 opacity-40 text-slate-500" />
                         <p className="font-semibold">No se han encontrado pagos con los filtros seleccionados.</p>
                       </td>
@@ -1149,6 +1182,10 @@ export default function PagosYFacturacionPage() {
                         onClick={() => setSelectedRecibo(pago)}
                         className="hover:bg-[var(--color-bg-hover)] transition-colors cursor-pointer"
                       >
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <span className="font-mono font-bold text-[var(--color-text-title)] block">{pago.fecha_corta}</span>
+                          <span className="text-[10px] text-slate-400 font-mono">{pago.hora_corta} • {pago.numero_recibo}</span>
+                        </td>
                         
                         <td className="py-3 px-4">
                           <span className="font-bold text-[var(--color-text-title)] block">{pago.alumno_nombre}</span>
