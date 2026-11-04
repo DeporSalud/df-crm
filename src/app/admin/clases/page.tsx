@@ -5,9 +5,22 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabase/client";
 import { useSede } from "@/context/SedeContext";
 import { subscribeSyncEvent, publishSyncEvent } from "@/lib/syncEventBus";
-import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, AlertCircle, CheckCircle2, AlertTriangle, RefreshCw, KeyRound } from "lucide-react";
+import { Users, Search, Trash2, Edit3, Sparkles, Clock, Calendar, CalendarDays, AlertCircle, CheckCircle2, AlertTriangle, RefreshCw, KeyRound } from "lucide-react";
 import AppModal, { ModalState } from "@/components/AppModal";
 import OpenClassAsistentesModal from "@/components/OpenClassAsistentesModal";
+import {
+  ClassScheduleMode,
+  parseClassSchedule,
+  encodeClassSchedule,
+  getTeacherForClassDate,
+  getAllTeachersInSchedule,
+  getUpcomingDatesForDayOfWeek,
+  getDayOfWeekSpanishFromISO,
+  formatShortSpanishDate,
+  formatLongSpanishDate,
+  isSingleDateClassExpired,
+  extractDateISO,
+} from "@/lib/classScheduleUtils";
 import { 
   syncReservasFromSupabase, 
   getUpcomingSessionsForClass, 
@@ -94,7 +107,7 @@ const isClassOpenClass = (c?: { nombre_clase?: string; tipo_clase?: string; id?:
   );
 };
 
-// Validador y detector de conflictos de horarios, aulas y profesores
+// Validador y detector de conflictos de horarios, aulas y profesores (con soporte por fecha concreta / rotación semanal)
 function checkScheduleConflict(
   newClass: { dia_semana: string; hora_inicio: string; hora_fin: string; sede: string; profesor: string; id?: string | null; nombre_clase?: string },
   existingClasses: ClaseCuadrante[]
@@ -110,12 +123,28 @@ function checkScheduleConflict(
   const startA = newClass.hora_inicio;
   const endA = newClass.hora_fin;
   const isNewStudio1 = isStudio1(newClass.sede);
-  const newProf = (newClass.profesor || "").trim().toLowerCase();
+  const newSched = parseClassSchedule(newClass.profesor);
 
   // 2. Comprobar solapamiento con clases existentes del mismo día
   for (const c of existingClasses) {
     if (newClass.id && c.id === newClass.id) continue;
     if ((c.dia_semana || "").toUpperCase() !== (newClass.dia_semana || "").toUpperCase()) continue;
+
+    // Ignorar clases puntuales ya pasadas para no bloquear programaciones futuras
+    if (isSingleDateClassExpired(c)) continue;
+
+    const existingSched = parseClassSchedule(c.profesor);
+
+    // Si ambas son de fecha única y son fechas distintas, NO coinciden jamás en calendario
+    if (
+      newSched.mode === "fecha_unica" &&
+      existingSched.mode === "fecha_unica" &&
+      newSched.fechaUnica &&
+      existingSched.fechaUnica &&
+      newSched.fechaUnica !== existingSched.fechaUnica
+    ) {
+      continue;
+    }
 
     const startB = c.hora_inicio;
     const endB = c.hora_fin;
@@ -126,22 +155,55 @@ function checkScheduleConflict(
     if (overlaps) {
       const isExistingStudio1 = isStudio1(c.sede);
 
-      // 1. Conflicto de Profesor (un profesor no puede impartir 2 clases simultáneamente en ningún centro)
-      const existingProf = (c.profesor || "").trim().toLowerCase();
-      if (newProf && existingProf && newProf === existingProf) {
-        return {
-          hasConflict: true,
-          reason: `Conflicto de Profesor: El docente ${c.profesor} ya tiene asignada la clase "${c.nombre_clase}" el ${c.dia_semana} (${c.hora_inicio} - ${c.hora_fin}) en ${getStudioDisplayName(c.sede)}.`
-        };
+      // Fechas en las que ambas clases coinciden realmente
+      let candidateDates: string[] = [];
+      if (newSched.mode === "fecha_unica" && newSched.fechaUnica) {
+        candidateDates = [newSched.fechaUnica];
+      } else if (existingSched.mode === "fecha_unica" && existingSched.fechaUnica) {
+        candidateDates = [existingSched.fechaUnica];
+      } else if (newSched.mode === "por_semana" || existingSched.mode === "por_semana") {
+        const upcoming = getUpcomingDatesForDayOfWeek(newClass.dia_semana, 12).map((u) => u.dateISO);
+        const explicit = [
+          ...Object.keys(newSched.porFecha || {}),
+          ...Object.keys(existingSched.porFecha || {}),
+        ];
+        candidateDates = Array.from(new Set([...upcoming, ...explicit])).sort();
       }
 
-      // 2. Comprobación de clase duplicada exacta (mismo nombre, mismo estudio y mismo horario)
+      // 1. Conflicto de Profesor (un profesor no puede impartir 2 clases simultáneamente en la misma fecha)
+      if (candidateDates.length > 0) {
+        for (const dISO of candidateDates) {
+          const profA = getTeacherForClassDate(newClass, dISO).trim().toLowerCase();
+          const profB = getTeacherForClassDate(c, dISO).trim().toLowerCase();
+          if (profA && profB && profA !== "por asignar" && profA === profB) {
+            return {
+              hasConflict: true,
+              reason: `Conflicto de Profesor (${formatShortSpanishDate(dISO)}): El docente ${getTeacherForClassDate(c, dISO)} ya tiene asignada la clase "${c.nombre_clase}" el ${formatShortSpanishDate(dISO)} (${c.hora_inicio} - ${c.hora_fin}) en ${getStudioDisplayName(c.sede)}.`
+            };
+          }
+        }
+      } else {
+        const newProf = newSched.baseProfesor.trim().toLowerCase();
+        const existingProf = existingSched.baseProfesor.trim().toLowerCase();
+        if (newProf && existingProf && newProf !== "por asignar" && newProf === existingProf) {
+          return {
+            hasConflict: true,
+            reason: `Conflicto de Profesor: El docente ${existingSched.baseProfesor} ya tiene asignada la clase "${c.nombre_clase}" el ${c.dia_semana} (${c.hora_inicio} - ${c.hora_fin}) en ${getStudioDisplayName(c.sede)}.`
+          };
+        }
+      }
+
+      // 2. Comprobación de clase duplicada exacta (mismo nombre, mismo estudio, mismo horario y misma fecha/semana)
       const newClassName = (newClass.nombre_clase || "").trim().toLowerCase();
       const existingClassName = (c.nombre_clase || "").trim().toLowerCase();
       if (newClassName && existingClassName && newClassName === existingClassName && isNewStudio1 === isExistingStudio1 && startA === startB && endA === endB) {
+        const dateNote =
+          newSched.mode === "fecha_unica" && newSched.fechaUnica
+            ? ` el ${formatShortSpanishDate(newSched.fechaUnica)}`
+            : ` el ${c.dia_semana}`;
         return {
           hasConflict: true,
-          reason: `Clase Duplicada: Ya existe exactamente la clase "${c.nombre_clase}" en ${getStudioDisplayName(c.sede)} el ${c.dia_semana} (${c.hora_inicio} - ${c.hora_fin}).`
+          reason: `Clase Duplicada: Ya existe la clase "${c.nombre_clase}" en ${getStudioDisplayName(c.sede)}${dateNote} (${c.hora_inicio} - ${c.hora_fin}). Si quieres cambiar el profesor según la semana, usa el botón "Profe por Fecha".`
         };
       }
     }
@@ -231,7 +293,7 @@ export default function ClasesPage() {
           origen: "recepcion",
           tipo_evento: "cancelacion_reserva",
           descripcion: `Administración suspendió manualmente sesión de "${suspendModalState.clase.nombre_clase}" (${suspendModalState.selectedDateISO}). Motivo: ${suspendModalState.reason}. Se cancelaron ${res.count} reservas.`,
-          usuario_afectado: suspendModalState.clase.profesor || "Alumnos Open Class",
+          usuario_afectado: getTeacherForClassDate(suspendModalState.clase, suspendModalState.selectedDateISO) || "Alumnos Open Class",
           sede: getStudioDisplayName(suspendModalState.clase.sede)
         });
         setModal({
@@ -302,6 +364,10 @@ export default function ClasesPage() {
   };
 
   const [formData, setFormData] = useState(initialFormState);
+  const [scheduleMode, setScheduleMode] = useState<ClassScheduleMode>("semanal");
+  const [fechaUnica, setFechaUnica] = useState<string>("");
+  const [profesoresPorFecha, setProfesoresPorFecha] = useState<Record<string, string>>({});
+  const [extraCustomDate, setExtraCustomDate] = useState<string>("");
 
   const [activeTeacherRecords, setActiveTeacherRecords] = useState<TeacherRecord[]>(() =>
     getInitialTeacherRecords(true)
@@ -328,10 +394,12 @@ export default function ClasesPage() {
       }
     }
     for (const c of clases) {
-      const raw = (c.profesor || "").trim();
-      const norm = normalizeTeacherName(raw);
-      if (norm && !byNorm.has(norm) && norm !== "ANDREA SOTO") {
-        byNorm.set(norm, raw);
+      for (const teacherName of getAllTeachersInSchedule(c)) {
+        const raw = (teacherName || "").trim();
+        const norm = normalizeTeacherName(raw);
+        if (norm && !byNorm.has(norm) && norm !== "ANDREA SOTO" && norm !== "POR ASIGNAR") {
+          byNorm.set(norm, raw);
+        }
       }
     }
     return Array.from(byNorm.values()).sort((a, b) => a.localeCompare(b, "es"));
@@ -451,6 +519,11 @@ export default function ClasesPage() {
   const handleOpenCreate = () => {
     setIsEditing(false);
     setEditingId(null);
+    const defaultNextMonday = getUpcomingDatesForDayOfWeek("LUNES", 1)[0]?.dateISO || getTodayISO();
+    setScheduleMode("semanal");
+    setFechaUnica(defaultNextMonday);
+    setProfesoresPorFecha({});
+    setExtraCustomDate("");
     setFormData({
       ...initialFormState,
       sede: activeSede !== "consolidado" ? (isStudio1(activeSede) ? "tejar" : "castilla") : "tejar",
@@ -460,15 +533,42 @@ export default function ClasesPage() {
   };
 
   const handleOpenEdit = (clase: ClaseCuadrante) => {
+    const parsed = parseClassSchedule(clase.profesor);
+    const nextOccurrence = getUpcomingDatesForDayOfWeek(clase.dia_semana, 1)[0]?.dateISO || getTodayISO();
     setIsEditing(true);
     setEditingId(clase.id);
+    setScheduleMode(parsed.mode);
+    setFechaUnica(parsed.fechaUnica || nextOccurrence);
+    setProfesoresPorFecha(parsed.porFecha || {});
+    setExtraCustomDate("");
     setFormData({
       sede: isStudio1(clase.sede) ? "tejar" : "castilla",
       dia_semana: clase.dia_semana,
       hora_inicio: clase.hora_inicio,
       hora_fin: clase.hora_fin,
       nombre_clase: clase.nombre_clase,
-      profesor: clase.profesor,
+      profesor: parsed.baseProfesor,
+      aforo_maximo: clase.aforo_maximo || 15
+    });
+    setIsModalOpen(true);
+  };
+
+  const handleOpenWeeklyRotation = (clase: ClaseCuadrante) => {
+    const parsed = parseClassSchedule(clase.profesor);
+    const nextOccurrence = getUpcomingDatesForDayOfWeek(clase.dia_semana, 1)[0]?.dateISO || getTodayISO();
+    setIsEditing(true);
+    setEditingId(clase.id);
+    setScheduleMode("por_semana");
+    setFechaUnica(parsed.fechaUnica || nextOccurrence);
+    setProfesoresPorFecha(parsed.porFecha || {});
+    setExtraCustomDate("");
+    setFormData({
+      sede: isStudio1(clase.sede) ? "tejar" : "castilla",
+      dia_semana: clase.dia_semana,
+      hora_inicio: clase.hora_inicio,
+      hora_fin: clase.hora_fin,
+      nombre_clase: clase.nombre_clase,
+      profesor: parsed.baseProfesor,
       aforo_maximo: clase.aforo_maximo || 15
     });
     setIsModalOpen(true);
@@ -518,11 +618,66 @@ export default function ClasesPage() {
 
   const handleSaveClase = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    const effectiveDiaSemana =
+      scheduleMode === "fecha_unica" && extractDateISO(fechaUnica)
+        ? getDayOfWeekSpanishFromISO(fechaUnica)
+        : formData.dia_semana;
+
+    if (scheduleMode === "fecha_unica" && !extractDateISO(fechaUnica)) {
+      setModal({
+        isOpen: true,
+        title: "Fecha Requerida",
+        message: "Selecciona la fecha concreta (ej. Lunes 9 Nov) para esta clase puntual.",
+        type: "warning",
+        confirmText: "Entendido"
+      });
+      return;
+    }
+
+    const activeDateTeachersCount = Object.values(profesoresPorFecha || {}).filter(
+      (t) => Boolean((t || "").trim())
+    ).length;
+
+    if (scheduleMode === "por_semana" && activeDateTeachersCount === 0 && !(formData.profesor || "").trim()) {
+      setModal({
+        isOpen: true,
+        title: "Asigna al menos un Profesor",
+        message: "Indica qué profesor viene en al menos una fecha concreta o define un profesor habitual.",
+        type: "warning",
+        confirmText: "Entendido"
+      });
+      return;
+    }
+
+    if (scheduleMode !== "por_semana" && !(formData.profesor || "").trim()) {
+      setModal({
+        isOpen: true,
+        title: "Profesor Requerido",
+        message: "Escribe o selecciona el nombre del profesor para esta clase.",
+        type: "warning",
+        confirmText: "Entendido"
+      });
+      return;
+    }
+
+    const encodedProfesor = encodeClassSchedule({
+      mode: scheduleMode,
+      baseProfesor: formData.profesor,
+      fechaUnica: scheduleMode === "fecha_unica" ? fechaUnica : undefined,
+      porFecha: scheduleMode === "por_semana" ? profesoresPorFecha : undefined
+    });
+
+    const candidatePayload = {
+      ...formData,
+      dia_semana: effectiveDiaSemana,
+      profesor: encodedProfesor
+    };
     
     // 1. Validar conflictos de horario, sala y docente
     const conflictResult = checkScheduleConflict(
       {
-        ...formData,
+        ...candidatePayload,
         id: isEditing ? editingId : null
       },
       clases
@@ -542,7 +697,7 @@ export default function ClasesPage() {
     // 2. Validar reducción de aforo por debajo del número de inscritos actuales
     // Para Open Classes, el aforo es por sesión individual, no la suma acumulada histórica
     const editingClase = isEditing && editingId ? clases.find(c => c.id === editingId) : null;
-    const isOC = isClassOpenClass({ ...editingClase, ...formData, id: editingId || undefined });
+    const isOC = isClassOpenClass({ ...editingClase, ...candidatePayload, id: editingId || undefined });
 
     if (isEditing && editingId && !isOC) {
       const currentEnrolled = classEnrollmentCounts[editingId] || 0;
@@ -558,7 +713,8 @@ export default function ClasesPage() {
       }
     }
 
-    const payload = { ...formData };
+    const payload = candidatePayload;
+    const cleanTeacherDisplay = getTeacherForClassDate(payload);
 
     let error;
     if (isEditing && editingId) {
@@ -583,9 +739,9 @@ export default function ClasesPage() {
         origen: "recepcion",
         tipo_evento: "edicion_alumno",
         descripcion: isEditing
-          ? `Clase actualizada: ${payload.nombre_clase} (${payload.dia_semana} ${payload.hora_inicio}-${payload.hora_fin})`
-          : `Nueva clase creada: ${payload.nombre_clase} (${payload.dia_semana} ${payload.hora_inicio}-${payload.hora_fin}) con ${payload.profesor}`,
-        usuario_afectado: payload.profesor,
+          ? `Clase actualizada: ${payload.nombre_clase} (${payload.dia_semana} ${payload.hora_inicio}-${payload.hora_fin}) • Docente: ${cleanTeacherDisplay}`
+          : `Nueva clase creada: ${payload.nombre_clase} (${payload.dia_semana} ${payload.hora_inicio}-${payload.hora_fin}) con ${cleanTeacherDisplay}`,
+        usuario_afectado: cleanTeacherDisplay,
         sede: getStudioDisplayName(payload.sede)
       });
 
@@ -595,7 +751,7 @@ export default function ClasesPage() {
         isOpen: true,
         title: "Guardado Exitoso",
         message: isEditing
-          ? `La clase "${payload.nombre_clase}" se ha modificado correctamente.`
+          ? `La programación de "${payload.nombre_clase}" se ha actualizado correctamente.`
           : `La clase "${payload.nombre_clase}" se ha añadido al cuadrante.`,
         type: "success",
         confirmText: "Aceptar"
@@ -742,10 +898,19 @@ export default function ClasesPage() {
     if (classTypeFilter === "openclass" && !isOC) return false;
     if (classTypeFilter === "regular" && isOC) return false;
 
-    const matchesSearch = 
-      (c.profesor || "").toLowerCase().includes(profesorFilter.toLowerCase()) ||
-      (c.nombre_clase || "").toLowerCase().includes(profesorFilter.toLowerCase()) ||
-      (c.dia_semana || "").toLowerCase().includes(profesorFilter.toLowerCase());
+    const q = profesorFilter.toLowerCase().trim();
+    const parsedSched = parseClassSchedule(c.profesor);
+    const allTeachers = getAllTeachersInSchedule(c).join(" ").toLowerCase();
+    const singleDateText = parsedSched.fechaUnica
+      ? `${parsedSched.fechaUnica} ${formatShortSpanishDate(parsedSched.fechaUnica)} ${formatLongSpanishDate(parsedSched.fechaUnica)}`.toLowerCase()
+      : "";
+
+    const matchesSearch =
+      !q ||
+      allTeachers.includes(q) ||
+      singleDateText.includes(q) ||
+      (c.nombre_clase || "").toLowerCase().includes(q) ||
+      (c.dia_semana || "").toLowerCase().includes(q);
 
     const studio1 = isStudio1(c.sede);
     const matchesStudio = 
@@ -919,13 +1084,49 @@ export default function ClasesPage() {
                   const maxCap = item.aforo_maximo || (isOC ? 20 : 15);
                   const isFull = isOC ? ocReservasCount >= maxCap : enrolledCount >= maxCap;
                   const studio1 = isStudio1(item.sede);
+                  const parsedSched = parseClassSchedule(item.profesor);
+                  const currentTeacherDisplay = getTeacherForClassDate(item) || "Por asignar";
+                  const todayISORef = getTodayISO();
+                  const upcomingRotationEntries =
+                    parsedSched.mode === "por_semana"
+                      ? Object.entries(parsedSched.porFecha)
+                          .filter(([d]) => d >= todayISORef)
+                          .sort(([a], [b]) => a.localeCompare(b))
+                          .slice(0, 3)
+                      : [];
+                  const isExpiredSingleDate = isSingleDateClassExpired(item);
 
                   return (
                     <tr key={item.id || idx} className="hover:bg-[var(--color-bg-hover)] transition-colors">
-                      <td className="py-3 px-4 font-bold text-[var(--color-primary)] text-xs">{item.dia_semana}</td>
-                      <td className="py-3 px-4 font-mono text-xs text-[var(--color-text-secondary)]">{item.hora_inicio} - {item.hora_fin}</td>
+                      <td className="py-3 px-4 font-bold text-[var(--color-primary)] text-xs">
+                        <div className="flex flex-col items-start gap-1">
+                          <span>{item.dia_semana}</span>
+                          {parsedSched.mode === "fecha_unica" && parsedSched.fechaUnica && (
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 whitespace-nowrap ${
+                                isExpiredSingleDate
+                                  ? "bg-slate-800/80 text-slate-400 border-slate-600/40"
+                                  : "bg-amber-500/15 text-amber-300 border-amber-500/35"
+                              }`}
+                            >
+                              <CalendarDays size={11} />
+                              <span>
+                                {formatShortSpanishDate(parsedSched.fechaUnica)}
+                                {isExpiredSingleDate ? " (Pasada)" : " • Fecha única"}
+                              </span>
+                            </span>
+                          )}
+                          {parsedSched.mode === "por_semana" && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 border border-cyan-500/35 inline-flex items-center gap-1 whitespace-nowrap">
+                              <CalendarDays size={11} />
+                              <span>Profe por semana</span>
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-xs text-[var(--color-text-secondary)] whitespace-nowrap">{item.hora_inicio} - {item.hora_fin}</td>
                       <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-bold text-white text-xs">{item.nombre_clase}</span>
                           <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
                             studio1 
@@ -937,11 +1138,25 @@ export default function ClasesPage() {
                         </div>
                       </td>
                       <td className="py-3 px-4 text-xs text-[var(--color-text-body)]">
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-gradient-to-br from-[var(--color-accent)] to-[var(--color-primary)] flex items-center justify-center text-white text-[10px] font-bold shrink-0">
-                            {item.profesor.split(' ').slice(0, 2).map((n: string) => n[0]).join('')}
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-gradient-to-br from-[var(--color-accent)] to-[var(--color-primary)] flex items-center justify-center text-white text-[10px] font-bold shrink-0">
+                              {currentTeacherDisplay.split(' ').slice(0, 2).map((n: string) => n[0]).join('')}
+                            </div>
+                            <span className="text-slate-200 font-medium break-words">{currentTeacherDisplay}</span>
                           </div>
-                          <span className="truncate text-slate-300 font-medium">{item.profesor}</span>
+                          {upcomingRotationEntries.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pl-8">
+                              {upcomingRotationEntries.map(([dISO, tName]) => (
+                                <span
+                                  key={dISO}
+                                  className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800/90 border border-cyan-500/25 text-cyan-200 font-medium whitespace-nowrap"
+                                >
+                                  {formatShortSpanishDate(dISO)}: <strong className="text-white">{tName}</strong>
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td className="py-3 px-4 text-center">
@@ -991,13 +1206,13 @@ export default function ClasesPage() {
                         </span>
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <div className="flex justify-end gap-1.5">
+                        <div className="flex justify-end items-center gap-1.5 flex-wrap">
                           {/* BOTÓN VER ALUMNOS / RESERVAS / SUSPENDER */}
                           {isOC ? (
                             <>
                               <button 
                                 onClick={() => handleViewRoster(item)}
-                                className="flex items-center gap-1 text-cyan-300 hover:bg-cyan-500 hover:text-slate-950 transition-all text-xs font-bold bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/30 shadow-sm cursor-pointer"
+                                className="flex items-center gap-1 text-cyan-300 hover:bg-cyan-500 hover:text-slate-950 transition-all text-xs font-bold bg-cyan-500/10 px-2.5 py-1 rounded-lg border border-cyan-500/30 shadow-sm cursor-pointer whitespace-nowrap"
                                 title="Ver reservas y asistentes de esta Open Class"
                               >
                                 <Calendar className="w-3.5 h-3.5" />
@@ -1005,7 +1220,7 @@ export default function ClasesPage() {
                               </button>
                               <button 
                                 onClick={() => handlePromptSuspendOpenClass(item)}
-                                className="flex items-center gap-1 text-rose-300 hover:bg-rose-500 hover:text-white transition-all text-xs font-bold bg-rose-500/10 px-2 py-1 rounded-lg border border-rose-500/30 shadow-sm cursor-pointer"
+                                className="flex items-center gap-1 text-rose-300 hover:bg-rose-500 hover:text-white transition-all text-xs font-bold bg-rose-500/10 px-2 py-1 rounded-lg border border-rose-500/30 shadow-sm cursor-pointer whitespace-nowrap"
                                 title="Suspender o reactivar sesiones de esta Open Class"
                               >
                                 <AlertTriangle className="w-3.5 h-3.5" />
@@ -1015,13 +1230,22 @@ export default function ClasesPage() {
                           ) : (
                             <button 
                               onClick={() => handleViewRoster(item)}
-                              className="flex items-center gap-1 text-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white transition-all text-xs font-bold bg-[var(--color-primary)]/10 px-2.5 py-1 rounded-lg border border-[var(--color-primary)]/30 shadow-sm cursor-pointer"
+                              className="flex items-center gap-1 text-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white transition-all text-xs font-bold bg-[var(--color-primary)]/10 px-2.5 py-1 rounded-lg border border-[var(--color-primary)]/30 shadow-sm cursor-pointer whitespace-nowrap"
                               title="Ver listado de alumnos inscritos en esta clase"
                             >
                               <Users className="w-3.5 h-3.5" />
                               <span>Ver Alumnos</span>
                             </button>
                           )}
+
+                          <button
+                            onClick={() => handleOpenWeeklyRotation(item)}
+                            className="flex items-center gap-1 text-amber-300 hover:bg-amber-500 hover:text-slate-950 transition-all text-xs font-bold bg-amber-500/10 px-2 py-1 rounded-lg border border-amber-500/30 shadow-sm cursor-pointer whitespace-nowrap"
+                            title="Asignar profesor distinto por fecha o cada semana (ej. Lun 9 Nov, Lun 16 Nov...)"
+                          >
+                            <CalendarDays className="w-3.5 h-3.5" />
+                            <span>Profe por Fecha</span>
+                          </button>
 
                           <button 
                             onClick={() => handleOpenEdit(item)}
@@ -1071,7 +1295,7 @@ export default function ClasesPage() {
                    </span>
                  </div>
                  <p className="text-xs text-[var(--color-text-secondary)] mt-1">
-                   {rosterClass.nombre_clase} • Profesor/a: <strong className="text-white">{rosterClass.profesor}</strong> • {rosterClass.dia_semana} {rosterClass.hora_inicio} - {rosterClass.hora_fin}h • {getStudioDisplayName(rosterClass.sede)}
+                   {rosterClass.nombre_clase} • Profesor/a: <strong className="text-white">{getTeacherForClassDate(rosterClass)}</strong> • {rosterClass.dia_semana} {rosterClass.hora_inicio} - {rosterClass.hora_fin}h • {getStudioDisplayName(rosterClass.sede)}
                  </p>
                </div>
                
@@ -1234,7 +1458,7 @@ export default function ClasesPage() {
                          </td>
                          <td className="py-3.5 px-6 text-xs text-[var(--color-text-secondary)] font-mono">
                            <div>{student.telefono}</div>
-                           <div className="text-[11px] text-slate-400 truncate max-w-[150px]">{student.email}</div>
+                           <div className="text-[11px] text-slate-400 break-all max-w-[200px]">{student.email}</div>
                          </td>
                          <td className="py-3.5 px-6 text-xs">
                            <span className="font-semibold text-[var(--color-text-title)] block">
@@ -1278,13 +1502,18 @@ export default function ClasesPage() {
 
       {/* Modal Añadir / Editar Clase */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto my-auto">
             <div className="flex justify-between items-center border-b border-[var(--color-border)] pb-3">
-              <h3 className="text-xl font-[family-name:var(--font-heading)] text-[var(--color-text-title)]">
-                {isEditing ? "Editar Clase" : "Añadir Nueva Clase"}
-              </h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-[var(--color-text-secondary)] hover:text-white cursor-pointer">
+              <div>
+                <h3 className="text-xl font-[family-name:var(--font-heading)] text-[var(--color-text-title)]">
+                  {isEditing ? "Editar Clase / Profesor por Fecha" : "Añadir Nueva Clase"}
+                </h3>
+                <p className="text-[11px] text-[var(--color-text-secondary)] mt-0.5">
+                  Elige clase semanal fija, profesor distinto cada semana o una fecha puntual concreta.
+                </p>
+              </div>
+              <button onClick={() => setIsModalOpen(false)} className="text-[var(--color-text-secondary)] hover:text-white cursor-pointer p-1">
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -1292,7 +1521,80 @@ export default function ClasesPage() {
             </div>
             
             <form onSubmit={handleSaveClase} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              {/* Selector de Modalidad de Programación (Petición Recepción / Lucía) */}
+              <div>
+                <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1.5">
+                  Tipo de Programación / Profesor *
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setScheduleMode("semanal")}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      scheduleMode === "semanal"
+                        ? "bg-[var(--color-primary)]/15 border-[var(--color-primary)] text-white shadow-sm"
+                        : "bg-[var(--color-bg)] border-[var(--color-border)] text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <RefreshCw size={13} className={scheduleMode === "semanal" ? "text-[var(--color-primary)]" : "text-slate-400"} />
+                      <span>Semanal fija</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-0.5 leading-snug">
+                      Mismo profesor cada semana
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setScheduleMode("por_semana")}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      scheduleMode === "por_semana"
+                        ? "bg-cyan-500/15 border-cyan-400 text-white shadow-sm"
+                        : "bg-[var(--color-bg)] border-[var(--color-border)] text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <CalendarDays size={13} className={scheduleMode === "por_semana" ? "text-cyan-400" : "text-slate-400"} />
+                      <span>Profe por semana</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-0.5 leading-snug">
+                      Distinto profe según el lunes/día
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScheduleMode("fecha_unica");
+                      if (!extractDateISO(fechaUnica)) {
+                        const nextOcc = getUpcomingDatesForDayOfWeek(formData.dia_semana, 1)[0]?.dateISO || getTodayISO();
+                        setFechaUnica(nextOcc);
+                      } else {
+                        setFormData((prev) => ({
+                          ...prev,
+                          dia_semana: getDayOfWeekSpanishFromISO(fechaUnica)
+                        }));
+                      }
+                    }}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      scheduleMode === "fecha_unica"
+                        ? "bg-amber-500/15 border-amber-400 text-white shadow-sm"
+                        : "bg-[var(--color-bg)] border-[var(--color-border)] text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    <div className="text-xs font-bold flex items-center gap-1.5">
+                      <Calendar size={13} className={scheduleMode === "fecha_unica" ? "text-amber-400" : "text-slate-400"} />
+                      <span>Fecha concreta</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 block mt-0.5 leading-snug">
+                      Solo un día concreto del calendario
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Sede / Studio *</label>
                   <select 
@@ -1308,7 +1610,14 @@ export default function ClasesPage() {
                   <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Día de la semana *</label>
                   <select 
                     value={formData.dia_semana}
-                    onChange={(e) => setFormData({...formData, dia_semana: e.target.value})}
+                    onChange={(e) => {
+                      const nextDay = e.target.value;
+                      setFormData({...formData, dia_semana: nextDay});
+                      if (scheduleMode === "fecha_unica") {
+                        const nextDateForDay = getUpcomingDatesForDayOfWeek(nextDay, 1)[0]?.dateISO;
+                        if (nextDateForDay) setFechaUnica(nextDateForDay);
+                      }
+                    }}
                     className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-xl px-3 py-2 outline-none focus:border-[var(--color-primary)] cursor-pointer"
                   >
                     <option value="LUNES">LUNES</option>
@@ -1321,6 +1630,55 @@ export default function ClasesPage() {
                   </select>
                 </div>
               </div>
+
+              {/* Bloque para Fecha Única Concreta */}
+              {scheduleMode === "fecha_unica" && (
+                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                      <Calendar size={14} />
+                      <span>Escoge el {formData.dia_semana.toLowerCase()} o fecha exacta *</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={fechaUnica}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setFechaUnica(val);
+                        if (val) {
+                          setFormData((prev) => ({
+                            ...prev,
+                            dia_semana: getDayOfWeekSpanishFromISO(val)
+                          }));
+                        }
+                      }}
+                      className="bg-[var(--color-bg)] border border-amber-500/40 text-white text-xs font-mono rounded-lg px-2.5 py-1.5 outline-none focus:border-amber-400"
+                      required
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {getUpcomingDatesForDayOfWeek(formData.dia_semana, 6).map((opt) => (
+                      <button
+                        key={opt.dateISO}
+                        type="button"
+                        onClick={() => setFechaUnica(opt.dateISO)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                          fechaUnica === opt.dateISO
+                            ? "bg-amber-400 text-slate-950 border-amber-300 shadow-sm"
+                            : "bg-[var(--color-bg)] text-slate-300 border-[var(--color-border)] hover:border-amber-400/50"
+                        }`}
+                      >
+                        {opt.labelShort}
+                      </button>
+                    ))}
+                  </div>
+                  {fechaUnica && (
+                    <p className="text-[11px] text-amber-200/90">
+                      Esta clase aparecerá exclusivamente el <strong>{formatLongSpanishDate(fechaUnica)}</strong> (puedes crear otra igual para el siguiente lunes con otro profesor sin conflicto).
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <div className="w-1/2">
@@ -1345,41 +1703,20 @@ export default function ClasesPage() {
                 </div>
               </div>
               
-              <div>
-                <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Nombre de la Clase *</label>
-                <input 
-                  type="text" 
-                  value={formData.nombre_clase}
-                  onChange={(e) => setFormData({...formData, nombre_clase: e.target.value})}
-                  className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-xl px-3 py-2 outline-none focus:border-[var(--color-primary)]" 
-                  placeholder="Ej. URBAN DANCE INICIACIÓN" 
-                  required 
-                />
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Profesor / Docente *</label>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Nombre de la Clase *</label>
                   <input 
                     type="text" 
-                    list="profesores-cuadrante-list"
-                    value={formData.profesor}
-                    onChange={(e) => setFormData({...formData, profesor: e.target.value})}
-                    className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-xl px-3 py-2 outline-none focus:border-[var(--color-primary)] font-medium" 
-                    placeholder="Elige o escribe el nombre del profesor..." 
+                    value={formData.nombre_clase}
+                    onChange={(e) => setFormData({...formData, nombre_clase: e.target.value})}
+                    className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-xl px-3 py-2 outline-none focus:border-[var(--color-primary)]" 
+                    placeholder="Ej. URBAN DANCE INICIACIÓN" 
                     required 
                   />
-                  <datalist id="profesores-cuadrante-list">
-                    {profesoresDisponibles.map((p) => (
-                      <option key={p} value={p} />
-                    ))}
-                  </datalist>
-                  <span className="text-[10px] text-slate-400 mt-1 block">
-                    Selecciona de la lista o escribe libremente un nuevo profesor o sustituto.
-                  </span>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Aforo Máximo (Plazas) *</label>
+                  <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Aforo Máximo *</label>
                   <input 
                     type="number" 
                     min="1" 
@@ -1391,6 +1728,136 @@ export default function ClasesPage() {
                   />
                 </div>
               </div>
+
+              <datalist id="profesores-cuadrante-list">
+                {profesoresDisponibles.map((p) => (
+                  <option key={p} value={p} />
+                ))}
+              </datalist>
+
+              {scheduleMode === "por_semana" ? (
+                <div className="p-3.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 space-y-3">
+                  <div>
+                    <label className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
+                      <CalendarDays size={14} />
+                      <span>Asigna qué profesor viene cada {formData.dia_semana.toLowerCase()}</span>
+                    </label>
+                    <p className="text-[11px] text-slate-300 mt-0.5">
+                      Elige o escribe el docente de cada semana. El cuadrante, la App de alumnos y el pase de lista mostrarán automáticamente el profesor de esa fecha.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                    {(() => {
+                      const upcoming8 = getUpcomingDatesForDayOfWeek(formData.dia_semana, 8);
+                      const upcomingSet = new Set(upcoming8.map((u) => u.dateISO));
+                      const extraSavedDates = Object.keys(profesoresPorFecha || {})
+                        .filter((d) => d >= getTodayISO() && !upcomingSet.has(d))
+                        .sort()
+                        .map((d) => ({
+                          dateISO: d,
+                          labelShort: formatShortSpanishDate(d),
+                          labelFull: formatLongSpanishDate(d),
+                          isToday: d === getTodayISO(),
+                        }));
+                      const allRows = [...upcoming8, ...extraSavedDates].sort((a, b) =>
+                        a.dateISO.localeCompare(b.dateISO)
+                      );
+
+                      return allRows.map((opt) => (
+                        <div
+                          key={opt.dateISO}
+                          className="flex items-center gap-2 bg-[var(--color-bg)] border border-[var(--color-border)] rounded-xl px-3 py-1.5"
+                        >
+                          <div className="w-28 shrink-0">
+                            <span className="text-xs font-bold text-cyan-300 block">
+                              {opt.labelShort}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              {opt.isToday ? "Hoy" : opt.dateISO}
+                            </span>
+                          </div>
+                          <input
+                            type="text"
+                            list="profesores-cuadrante-list"
+                            value={profesoresPorFecha[opt.dateISO] || ""}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setProfesoresPorFecha((prev) => {
+                                const next = { ...prev };
+                                if (val.trim()) {
+                                  next[opt.dateISO] = val;
+                                } else {
+                                  delete next[opt.dateISO];
+                                }
+                                return next;
+                              });
+                            }}
+                            placeholder={formData.profesor ? `Por defecto: ${formData.profesor}` : "Escribe o elige profesor para este día..."}
+                            className="flex-1 bg-[var(--color-bg-card)] border border-[var(--color-border)] text-white text-xs rounded-lg px-2.5 py-1.5 outline-none focus:border-cyan-400 font-medium"
+                          />
+                        </div>
+                      ));
+                    })()}
+                  </div>
+
+                  {/* Añadir otra fecha futura personalizada */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-cyan-500/20">
+                    <span className="text-[11px] text-slate-300 font-medium">¿Otra fecha más adelante?</span>
+                    <input
+                      type="date"
+                      value={extraCustomDate}
+                      onChange={(e) => setExtraCustomDate(e.target.value)}
+                      className="bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs font-mono rounded-lg px-2 py-1 outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const clean = extractDateISO(extraCustomDate);
+                        if (!clean) return;
+                        setProfesoresPorFecha((prev) => ({
+                          ...prev,
+                          [clean]: prev[clean] || formData.profesor || "POR ASIGNAR"
+                        }));
+                        setExtraCustomDate("");
+                      }}
+                      className="text-xs font-bold px-2.5 py-1 rounded-lg bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 hover:bg-cyan-500 hover:text-slate-950 transition-colors cursor-pointer"
+                    >
+                      + Añadir fecha
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Profesor habitual por defecto (para semanas no indicadas arriba — opcional)
+                    </label>
+                    <input
+                      type="text"
+                      list="profesores-cuadrante-list"
+                      value={formData.profesor}
+                      onChange={(e) => setFormData({ ...formData, profesor: e.target.value })}
+                      className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-xs rounded-xl px-3 py-2 outline-none focus:border-cyan-400 font-medium"
+                      placeholder="Ej. Profesor titular o dejar en blanco..."
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Profesor / Docente *</label>
+                  <input 
+                    type="text" 
+                    list="profesores-cuadrante-list"
+                    value={formData.profesor}
+                    onChange={(e) => setFormData({...formData, profesor: e.target.value})}
+                    className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-xl px-3 py-2 outline-none focus:border-[var(--color-primary)] font-medium" 
+                    placeholder="Elige o escribe el nombre del profesor..." 
+                    required 
+                  />
+                  <span className="text-[10px] text-slate-400 mt-1 block">
+                    Selecciona de la lista o escribe libremente un nuevo profesor invitado o sustituto.
+                  </span>
+                </div>
+              )}
 
               <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-[var(--color-border)]">
                 <button 
@@ -1437,8 +1904,8 @@ export default function ClasesPage() {
                   <h3 className="text-base font-bold text-white font-[family-name:var(--font-heading)]">
                     Gestión de Suspensión de Sesión
                   </h3>
-                  <p className="text-xs text-slate-400 truncate max-w-xs">
-                    {suspendModalState.clase.nombre_clase} • {suspendModalState.clase.profesor}
+                  <p className="text-xs text-slate-400">
+                    {suspendModalState.clase.nombre_clase} • {getTeacherForClassDate(suspendModalState.clase, suspendModalState.selectedDateISO)}
                   </p>
                 </div>
               </div>

@@ -49,6 +49,7 @@ import {
   findPilatesStudentByCode,
   processPilatesScan,
 } from "@/lib/pilatesService";
+import { isClassActiveOnDate, getTeacherForClassDate } from "@/lib/classScheduleUtils";
 
 const playSuccessSound = () => {
   playSuccessChime();
@@ -181,7 +182,13 @@ export default function AdminDashboardRecepcion() {
   const openClassesForSelectedDay = useMemo(() => {
     if (!selectedCalendarDay) return [];
     const normDay = normalizeDay(selectedCalendarDay.dayName);
-    return allOpenClasses.filter(c => normalizeDay(c.dia_semana) === normDay);
+    return allOpenClasses
+      .filter(c => normalizeDay(c.dia_semana) === normDay && isClassActiveOnDate(c, selectedCalendarDay.dateISO))
+      .map(c => ({
+        ...c,
+        raw_profesor: c.raw_profesor ?? c.profesor,
+        profesor: getTeacherForClassDate(c, selectedCalendarDay.dateISO)
+      }));
   }, [allOpenClasses, selectedCalendarDay, reservasTick]);
 
   const handleSelectCalendarDay = (day: CalendarDayItem) => {
@@ -247,9 +254,17 @@ export default function AdminDashboardRecepcion() {
     queryClases = queryClases.order("hora_inicio", { ascending: true });
     const { data: clasesData } = await queryClases;
     
-    setClasesHoy(clasesData || []);
-    if (clasesData && clasesData.length > 0 && !selectedClaseId) {
-      setSelectedClaseId(clasesData[0].id);
+    const todayDateISO = cleanDateISO(new Date().toISOString());
+    const activeClasesHoy = (clasesData || [])
+      .filter((c: any) => isClassActiveOnDate(c, todayDateISO))
+      .map((c: any) => ({
+        ...c,
+        raw_profesor: c.profesor,
+        profesor: getTeacherForClassDate(c, todayDateISO)
+      }));
+    setClasesHoy(activeClasesHoy);
+    if (activeClasesHoy.length > 0 && !selectedClaseId) {
+      setSelectedClaseId(activeClasesHoy[0].id);
     }
 
     // 2. Fetch Today's Check-ins (Asistencias) strictly filtered by activeSede
@@ -312,7 +327,20 @@ export default function AdminDashboardRecepcion() {
       }
     });
 
-    setTodayCheckins(filteredCheckins.slice(0, 10));
+    setTodayCheckins(
+      filteredCheckins.slice(0, 10).map((item: any) => {
+        const rawClase = Array.isArray(item.clases_cuadrante) ? item.clases_cuadrante[0] : item.clases_cuadrante;
+        if (!rawClase) return item;
+        return {
+          ...item,
+          clases_cuadrante: {
+            ...rawClase,
+            raw_profesor: rawClase.profesor,
+            profesor: getTeacherForClassDate(rawClase, item.fecha_hora)
+          }
+        };
+      })
+    );
 
     // 3. Fetch Active Students Count (excluding Solo Pilates)
     let queryAlumnos = supabase

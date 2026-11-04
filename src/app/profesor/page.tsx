@@ -11,6 +11,11 @@ import {
 import { QRCodeCanvas } from "qrcode.react";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
+import {
+  getAllTeachersInSchedule,
+  getTeacherForClassDate,
+  isClassActiveOnDate,
+} from "@/lib/classScheduleUtils";
 import { 
   getUpcomingCalendarDates, 
   CalendarDayItem, 
@@ -550,10 +555,18 @@ export default function ProfesorPortal() {
 
       if (data && data.length > 0) {
         const normalizedSelected = normalizeText(selectedProfesor);
-        const filtered = data.filter(c => {
-          const profNorm = normalizeText(c.profesor);
-          return profNorm.includes(normalizedSelected) || normalizedSelected.includes(profNorm);
-        });
+        const filtered = data
+          .filter(c => {
+            return getAllTeachersInSchedule(c).some((tName) => {
+              const profNorm = normalizeText(tName);
+              return Boolean(profNorm && (profNorm.includes(normalizedSelected) || normalizedSelected.includes(profNorm)));
+            });
+          })
+          .map(c => ({
+            ...c,
+            raw_profesor: c.profesor,
+            profesor: getTeacherForClassDate(c)
+          }));
 
         const sorted = filtered.sort((a, b) => {
           if (getDayOrder(a.dia_semana) !== getDayOrder(b.dia_semana)) {
@@ -584,9 +597,14 @@ export default function ProfesorPortal() {
       const normalizedSelected = normalizeText(selectedProfesor);
       const openAndFormaciones = data.filter(c => {
         const nameUpper = (c.nombre_clase || "").toUpperCase();
+        const cleanProf = getTeacherForClassDate(c);
         return (nameUpper.includes("OPEN CLASS") || nameUpper.includes("FORMACI") || nameUpper.includes("ROTAT")) &&
-          !normalizeText(c.profesor).includes(normalizedSelected);
-      }).sort((a, b) => {
+          !normalizeText(cleanProf).includes(normalizedSelected);
+      }).map(c => ({
+        ...c,
+        raw_profesor: c.profesor,
+        profesor: getTeacherForClassDate(c)
+      })).sort((a, b) => {
         if (getDayOrder(a.dia_semana) !== getDayOrder(b.dia_semana)) {
           return getDayOrder(a.dia_semana) - getDayOrder(b.dia_semana);
         }
@@ -2435,9 +2453,12 @@ export default function ProfesorPortal() {
 
                 {allOpenClasses.filter(c => {
                   if (normalizeDay(c.dia_semana) !== normalizeDay(selectedCalendarDay.dayName)) return false;
+                  if (!isClassActiveOnDate(c, selectedCalendarDay.dateISO)) return false;
+                  const teacherForDay = getTeacherForClassDate(c, selectedCalendarDay.dateISO);
+                  if (normalizeText(teacherForDay) === normalizeText(selectedProfesor)) return false;
                   const isRotativa = 
                     c.nombre_clase?.toUpperCase().includes("ROTAT") || 
-                    c.profesor?.toUpperCase().includes("ROTAT") ||
+                    teacherForDay?.toUpperCase().includes("ROTAT") ||
                     (c.tipo_clase || "").toUpperCase().includes("ROTAT");
                   if (isRotativa) {
                     const selectedDate = new Date(selectedCalendarDay.dateISO + "T00:00:00");
@@ -2456,9 +2477,12 @@ export default function ProfesorPortal() {
                     {allOpenClasses
                       .filter(c => {
                         if (normalizeDay(c.dia_semana) !== normalizeDay(selectedCalendarDay.dayName)) return false;
+                        if (!isClassActiveOnDate(c, selectedCalendarDay.dateISO)) return false;
+                        const teacherForDay = getTeacherForClassDate(c, selectedCalendarDay.dateISO);
+                        if (normalizeText(teacherForDay) === normalizeText(selectedProfesor)) return false;
                         const isRotativa = 
                           c.nombre_clase?.toUpperCase().includes("ROTAT") || 
-                          c.profesor?.toUpperCase().includes("ROTAT") ||
+                          teacherForDay?.toUpperCase().includes("ROTAT") ||
                           (c.tipo_clase || "").toUpperCase().includes("ROTAT");
                         if (isRotativa) {
                           const selectedDate = new Date(selectedCalendarDay.dateISO + "T00:00:00");
@@ -2504,7 +2528,7 @@ export default function ProfesorPortal() {
                                 {clase.nombre_clase}
                               </h3>
                               <p className="text-[11px] text-slate-400">
-                                Profesor/a titular: <strong className="text-white">{clase.profesor}</strong> • {clase.sede === "tejar" ? "Studio 1" : "Studio 2"} • {clase.sala || "Sala Principal"}
+                                Profesor/a titular: <strong className="text-white">{getTeacherForClassDate(clase, selectedCalendarDay.dateISO)}</strong> • {clase.sede === "tejar" ? "Studio 1" : "Studio 2"} • {clase.sala || "Sala Principal"}
                               </p>
                             </div>
 

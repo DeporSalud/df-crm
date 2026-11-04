@@ -6,6 +6,7 @@ import { useSede } from "@/context/SedeContext";
 import { supabase } from "@/lib/supabase/client";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
+import { getAllTeachersInSchedule } from "@/lib/classScheduleUtils";
 import {
   TeacherRecord,
   getInitialTeacherRecords,
@@ -106,8 +107,10 @@ export default function AdminProfesoresPage() {
       const normT = normalizeTeacherName(teacherName);
       if (!normT) return [];
       return clases.filter((c) => {
-        const normP = normalizeTeacherName(c.profesor);
-        return normP && (normP === normT || normP.includes(normT) || normT.includes(normP));
+        return getAllTeachersInSchedule(c).some((tName) => {
+          const normP = normalizeTeacherName(tName);
+          return Boolean(normP && (normP === normT || normP.includes(normT) || normT.includes(normP)));
+        });
       });
     },
     [clases]
