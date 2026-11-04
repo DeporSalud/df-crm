@@ -1,5 +1,108 @@
 import studentFeesData from "@/data/student_fees.json";
 import { publishSyncEvent } from "@/lib/syncEventBus";
+import { supabase } from "@/lib/supabase/client";
+import {
+  upsertStudentPagoInDireccion,
+  updateStudentPagosListInDireccion,
+} from "@/lib/teacherRegistryService";
+
+const FALLBACK_LEDGER_ROW_ID = "7a101100-0000-4000-a000-000000001011";
+
+function isValidUUID(str?: string | null): boolean {
+  if (!str) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str.trim());
+}
+
+export function isFakeDemoTransaction(p?: Partial<PagoTransaccion> | null): boolean {
+  if (!p) return false;
+  const id = String(p.id || "");
+  const alumnoId = String(p.alumno_id || "");
+  if (id.startsWith("pago_today_")) return true;
+  if (alumnoId.startsWith("demo_")) return true;
+  return false;
+}
+
+export function sortPagosDesc(pagos: PagoTransaccion[]): PagoTransaccion[] {
+  return [...pagos].sort((a, b) => {
+    const tB = a && b && b.fecha_hora ? new Date(b.fecha_hora).getTime() : 0;
+    const tA = a && a.fecha_hora ? new Date(a.fecha_hora).getTime() : 0;
+    if (!isNaN(tB) && !isNaN(tA) && tB !== tA) return tB - tA;
+    return String(b?.numero_recibo || "").localeCompare(String(a?.numero_recibo || ""));
+  });
+}
+
+export async function persistPagoToSupabaseCloud(pago: PagoTransaccion): Promise<void> {
+  try {
+    const targetId = isValidUUID(pago.alumno_id) ? pago.alumno_id!.trim() : FALLBACK_LEDGER_ROW_ID;
+    const { data: row } = await supabase
+      .from("alumnos")
+      .select("id, direccion")
+      .eq("id", targetId)
+      .maybeSingle();
+
+    if (row) {
+      const nextDir = upsertStudentPagoInDireccion(row.direccion, pago);
+      await supabase.from("alumnos").update({ direccion: nextDir }).eq("id", row.id);
+      return;
+    }
+
+    if (targetId !== FALLBACK_LEDGER_ROW_ID) {
+      const { data: fallbackRow } = await supabase
+        .from("alumnos")
+        .select("id, direccion")
+        .eq("id", FALLBACK_LEDGER_ROW_ID)
+        .maybeSingle();
+      if (fallbackRow) {
+        const nextDir = upsertStudentPagoInDireccion(fallbackRow.direccion, pago);
+        await supabase.from("alumnos").update({ direccion: nextDir }).eq("id", FALLBACK_LEDGER_ROW_ID);
+      }
+    }
+  } catch (err) {
+    console.warn("[PagosCloud] Warning syncing payment to Supabase:", err);
+  }
+}
+
+export async function persistBatchPagosToSupabaseCloud(pagos: PagoTransaccion[]): Promise<void> {
+  if (!pagos || pagos.length === 0) return;
+  try {
+    const byTarget = new Map<string, PagoTransaccion[]>();
+    for (const p of pagos) {
+      const targetId = isValidUUID(p.alumno_id) ? p.alumno_id!.trim() : FALLBACK_LEDGER_ROW_ID;
+      const list = byTarget.get(targetId) || [];
+      list.push(p);
+      byTarget.set(targetId, list);
+    }
+
+    const entries = Array.from(byTarget.entries());
+    const CHUNK = 20;
+    for (let i = 0; i < entries.length; i += CHUNK) {
+      const slice = entries.slice(i, i + CHUNK);
+      const ids = slice.map(([id]) => id);
+      const { data: rows } = await supabase
+        .from("alumnos")
+        .select("id, direccion")
+        .in("id", ids);
+
+      const dirMap = new Map<string, string | null>();
+      for (const r of rows || []) {
+        dirMap.set(r.id, r.direccion || null);
+      }
+
+      await Promise.all(
+        slice.map(async ([targetId, txList]) => {
+          if (!dirMap.has(targetId)) return;
+          let dir = dirMap.get(targetId) || "";
+          for (const tx of txList) {
+            dir = upsertStudentPagoInDireccion(dir, tx);
+          }
+          await supabase.from("alumnos").update({ direccion: dir }).eq("id", targetId);
+        })
+      );
+    }
+  } catch (err) {
+    console.warn("[PagosCloud] Warning batch-syncing payments to Supabase:", err);
+  }
+}
 
 export type MetodoCobro = "Efectivo" | "TPV" | "Bizum" | "Transferencia" | "Stripe" | "SEPA" | "Pendiente Recepción";
 export type SedePago = "tejar" | "castilla";
@@ -169,95 +272,11 @@ export const VERIFIED_STRIPE_TRANSACTIONS: PagoTransaccion[] = [
   }
 ];
 
-// Generate initial seed transactions (Recent counter payments + September SEPA simulated batch)
+// Generate initial seed transactions (Verified Stripe fallback + September SEPA batch, ZERO fake demo rows)
 export function generateSeedTransactions(): PagoTransaccion[] {
   const transactions: PagoTransaccion[] = [...VERIFIED_STRIPE_TRANSACTIONS];
-  const today = new Date();
-  const todayStr = today.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" });
-  const todayISO = today.toISOString();
 
-  // 1. Some recent desk counter payments for TODAY
-  transactions.push({
-    id: "pago_today_1",
-    numero_recibo: "REC-2026-0142",
-    fecha_hora: todayISO,
-    fecha_corta: todayStr,
-    hora_corta: "17:15",
-    alumno_id: "demo_1",
-    alumno_nombre: "Laura Gómez Martín",
-    alumno_dni: "50894721K",
-    alumno_telefono: "654 987 123",
-    concepto: "Sudadera Oficial DF (Black Edition) - Talla M",
-    categoria: "merchandising",
-    importe: 32.00,
-    metodo_pago: "Efectivo",
-    sede: "tejar",
-    atendido_por: "Recepción Studio 1",
-    notas: "Cobro en mostrador recepción",
-    estado: "Cobrado"
-  });
-
-  transactions.push({
-    id: "pago_today_2",
-    numero_recibo: "REC-2026-0143",
-    fecha_hora: todayISO,
-    fecha_corta: todayStr,
-    hora_corta: "17:45",
-    alumno_id: "demo_2",
-    alumno_nombre: "Carlos Menéndez Ruiz",
-    alumno_dni: "09483726L",
-    alumno_telefono: "611 223 344",
-    concepto: "Bono 10 Clases Open Class",
-    categoria: "bono",
-    importe: 90.00,
-    metodo_pago: "TPV",
-    sede: "tejar",
-    atendido_por: "Recepción Studio 1",
-    notas: "Pago con tarjeta TPV mostrador",
-    estado: "Cobrado"
-  });
-
-  transactions.push({
-    id: "pago_today_3",
-    numero_recibo: "REC-2026-0144",
-    fecha_hora: todayISO,
-    fecha_corta: todayStr,
-    hora_corta: "18:10",
-    alumno_id: "demo_3",
-    alumno_nombre: "Lucía Fernández Santos",
-    alumno_dni: "47382910M",
-    alumno_telefono: "622 334 455",
-    concepto: "Clase Suelta / Prueba Urban Dance",
-    categoria: "clase_suelta",
-    importe: 12.00,
-    metodo_pago: "Bizum",
-    sede: "castilla",
-    atendido_por: "Recepción Studio 2",
-    notas: "Bizum al 600 000 000",
-    estado: "Cobrado"
-  });
-
-  transactions.push({
-    id: "pago_today_4",
-    numero_recibo: "REC-2026-0145",
-    fecha_hora: todayISO,
-    fecha_corta: todayStr,
-    hora_corta: "18:30",
-    alumno_id: "demo_4",
-    alumno_nombre: "Adrián Morales Blanco",
-    alumno_dni: "51829304N",
-    alumno_telefono: "633 445 566",
-    concepto: "Mensualidad Regular Septiembre (Ajuste -20€)",
-    categoria: "mensualidad",
-    importe: 21.00,
-    metodo_pago: "Efectivo",
-    sede: "castilla",
-    atendido_por: "Recepción Studio 2",
-    notas: "Abono en efectivo cuota mensual",
-    estado: "Cobrado"
-  });
-
-  // 2. Simulated Monthly SEPA Remittance for September 1st, 2026
+  // Historical Monthly SEPA Remittance for September 1st, 2026
   let counter = 1;
   const feesMap = studentFeesData as Record<string, any>;
   
@@ -289,7 +308,7 @@ export function generateSeedTransactions(): PagoTransaccion[] {
     counter++;
   });
 
-  return transactions;
+  return sortPagosDesc(transactions);
 }
 
 export function getHistorialPagos(): PagoTransaccion[] {
@@ -301,8 +320,9 @@ export function getHistorialPagos(): PagoTransaccion[] {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
       return initial;
     }
-    const list: PagoTransaccion[] = JSON.parse(raw);
-    let updated = false;
+    const parsed: PagoTransaccion[] = JSON.parse(raw);
+    const list = parsed.filter(p => !isFakeDemoTransaction(p));
+    let updated = list.length !== parsed.length;
     for (const vStripe of VERIFIED_STRIPE_TRANSACTIONS) {
       const exists = list.some(p => p.id === vStripe.id || p.numero_recibo === vStripe.numero_recibo);
       if (!exists) {
@@ -310,10 +330,11 @@ export function getHistorialPagos(): PagoTransaccion[] {
         updated = true;
       }
     }
+    const sorted = sortPagosDesc(list);
     if (updated) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sorted));
     }
-    return list;
+    return sorted;
   } catch (e) {
     return generateSeedTransactions();
   }
@@ -673,7 +694,8 @@ export function contabilizarRemesaMensualSEPA(
   }
 
   if (created.length > 0) {
-    saveHistorialPagos([...created, ...all]);
+    saveHistorialPagos(sortPagosDesc([...created, ...all]));
+    void persistBatchPagosToSupabaseCloud(created);
   }
 
   return {
@@ -707,13 +729,26 @@ export function registrarNuevoPago(data: {
   const today = new Date();
   const nextNum = Math.max(all.length, getMaxReciboSequence(all)) + 1;
   const numero_recibo = generarNumeroRecibo(nextNum, 2026);
+  const fechaCorta = today.toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Europe/Madrid",
+  });
+  const parts = fechaCorta.split("/");
+  const autoPeriodoMes =
+    data.periodo_mes || (parts.length === 3 ? `${parts[2]}-${parts[1]}` : today.toISOString().slice(0, 7));
 
   const nuevoPago: PagoTransaccion = {
     id: "pago_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
     numero_recibo,
     fecha_hora: today.toISOString(),
-    fecha_corta: today.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" }),
-    hora_corta: today.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }),
+    fecha_corta: fechaCorta,
+    hora_corta: today.toLocaleTimeString("es-ES", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "Europe/Madrid",
+    }),
     alumno_id: data.alumno_id,
     alumno_nombre: data.alumno_nombre.trim(),
     alumno_dni: data.alumno_dni?.trim() || undefined,
@@ -725,19 +760,30 @@ export function registrarNuevoPago(data: {
     sede: data.sede,
     atendido_por: data.atendido_por || (data.sede === "tejar" ? "Recepción Studio 1" : "Recepción Studio 2"),
     notas: data.notas?.trim() || undefined,
-    periodo_mes: data.periodo_mes,
+    periodo_mes: autoPeriodoMes,
     estado: "Cobrado"
   };
 
-  const updated = [nuevoPago, ...all];
+  const updated = sortPagosDesc([nuevoPago, ...all]);
   saveHistorialPagos(updated);
+  void persistPagoToSupabaseCloud(nuevoPago);
   return nuevoPago;
 }
 
 export function anularPago(id: string): void {
   const all = getHistorialPagos();
-  const updated = all.map(p => p.id === id ? { ...p, estado: "Anulado" as const } : p);
+  let voidedItem: PagoTransaccion | null = null;
+  const updated = all.map(p => {
+    if (p.id === id) {
+      voidedItem = { ...p, estado: "Anulado" as const };
+      return voidedItem;
+    }
+    return p;
+  });
   saveHistorialPagos(updated);
+  if (voidedItem) {
+    void persistPagoToSupabaseCloud(voidedItem);
+  }
 }
 
 export function cobrarPagoPendiente(alumnoId: string, details?: {
@@ -752,7 +798,7 @@ export function cobrarPagoPendiente(alumnoId: string, details?: {
   if (pendingIndex === -1) return null;
 
   const pending = all[pendingIndex];
-  const nextNum = all.filter(p => p.estado === "Cobrado").length + 1;
+  const nextNum = Math.max(all.length, getMaxReciboSequence(all)) + 1;
   const numero_recibo = "REC-2026-" + String(nextNum).padStart(4, "0");
 
   const updated: PagoTransaccion = {
@@ -767,7 +813,8 @@ export function cobrarPagoPendiente(alumnoId: string, details?: {
   };
 
   all[pendingIndex] = updated;
-  saveHistorialPagos(all);
+  saveHistorialPagos(sortPagosDesc(all));
+  void persistPagoToSupabaseCloud(updated);
   return updated;
 }
 

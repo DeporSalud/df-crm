@@ -6,6 +6,7 @@
 
 import { getTipoAlumnoFromBirthDate } from "./studentFees";
 import { normalizePhoneDigits, normalizeEmail, normalizeDNI } from "./identityUtils";
+import { extractCleanAddress } from "./teacherRegistryService";
 
 export const UTF8_BOM = "\uFEFF";
 
@@ -222,7 +223,7 @@ export function exportAlumnosCSV(
       a.titular_cuenta || "",
       a.metodo_pago || "SEPA",
       a.nfc_token || "",
-      a.direccion || "",
+      extractCleanAddress(a.direccion) || "",
       a.notas || ""
     ];
   });
