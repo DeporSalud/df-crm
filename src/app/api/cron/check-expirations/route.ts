@@ -45,10 +45,16 @@ async function forwardCheckOrFallback(request: NextRequest) {
 
   // 2. Fallback resiliente: consultar directamente Supabase desde el CRM
   try {
-    const { data: students, error } = await supabase
+    const { data: rawStudents, error } = await supabase
       .from("alumnos")
-      .select("id, nombre_completo, email, plan_activo, clases_restantes, creado_en")
+      .select("id, nombre_completo, email, plan_activo, clases_restantes, creado_en, sede, nfc_token")
       .gt("clases_restantes", 0);
+    const students = (rawStudents || []).filter(
+      (s: any) =>
+        String(s?.sede || "").trim().toLowerCase() !== "pilates" &&
+        !String(s?.nfc_token || "").trim().toUpperCase().startsWith("PIL-") &&
+        !String(s?.plan_activo || "").trim().toLowerCase().startsWith("solo pilates")
+    );
 
     if (error) {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 });

@@ -106,9 +106,14 @@ export default function AdminVentajasPage() {
         .select("*");
 
       if (dbStudents && dbStudents.length > 0) {
-        // Filter students that have an active bono / promo or remaining classes
+        // Filter students that have an active bono / promo or remaining classes (excluding Solo Pilates)
         const bonoStudents = dbStudents.filter((s: any) => {
+          const sede = String(s?.sede || "").trim().toLowerCase();
+          if (sede === "pilates" || sede === "solo_pilates" || sede === "deporsalud") return false;
+          if (String(s?.direccion || "").includes("DF_PILATES_META:")) return false;
+          if (String(s?.nfc_token || "").trim().toUpperCase().startsWith("PIL-")) return false;
           const plan = (s.plan_activo || "").toLowerCase();
+          if (plan.startsWith("solo pilates")) return false;
           const hasClases = typeof s.clases_restantes === "number" && s.clases_restantes > 0;
           const isBonoOrPromo = plan.includes("bono") || 
                                 plan.includes("promo") || 

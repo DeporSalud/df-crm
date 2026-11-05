@@ -239,7 +239,14 @@ export async function GET() {
       supabase.from("alumnos").select("*"),
     ]);
 
-    const alumnos = alumnosRes.data || [];
+    const alumnos = (alumnosRes.data || []).filter((row: any) => {
+      const sede = String(row?.sede || "").trim().toLowerCase();
+      if (sede === "pilates" || sede === "solo_pilates" || sede === "deporsalud") return false;
+      if (String(row?.direccion || "").includes("DF_PILATES_META:")) return false;
+      if (String(row?.nfc_token || "").trim().toUpperCase().startsWith("PIL-")) return false;
+      if (String(row?.plan_activo || "").trim().toLowerCase().startsWith("solo pilates")) return false;
+      return true;
+    });
 
     // 1. Collect all explicit Cloud Ledger transactions (DF_PAGOS in alumnos.direccion)
     const cloudPagos: PagoTransaccion[] = [];

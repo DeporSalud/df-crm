@@ -19,6 +19,7 @@ import {
   Calculator
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { isPilatesProfile } from "@/lib/pilatesService";
 import { useSede } from "@/context/SedeContext";
 import { getStudentFee } from "@/lib/studentFees";
 import { 
@@ -69,10 +70,10 @@ export default function GlobalCobroModal() {
   const [receiptData, setReceiptData] = useState<PagoTransaccion | null>(null);
 
   useEffect(() => {
-    // Fetch students list for autocomplete
+    // Fetch students list for autocomplete (strictly Escuela de Baile, excluding Solo Pilates)
     const fetchStudents = async () => {
       const { data } = await supabase.from("alumnos").select("*").eq("estado", "Activo").order("nombre_completo", { ascending: true });
-      if (data) setStudents(data);
+      if (data) setStudents(data.filter((s: any) => !isPilatesProfile(s)));
     };
     fetchStudents();
 

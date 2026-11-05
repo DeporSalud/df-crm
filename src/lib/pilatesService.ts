@@ -232,6 +232,9 @@ export function isPilatesProfile(student: any): boolean {
   const token = String(student.codigo_qr || student.nfc_token || "").trim().toUpperCase();
   if (token.startsWith("PIL-")) return true;
 
+  const plan = String(student.plan_activo || "").trim().toLowerCase();
+  if (plan.startsWith("solo pilates")) return true;
+
   return false;
 }
 
