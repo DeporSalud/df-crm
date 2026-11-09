@@ -411,17 +411,25 @@ export function hasPurchasedSeptemberBono(student?: any): boolean {
     return true;
   }
 
-  // Si tiene un bono, clase suelta o pase adquirido durante septiembre 2026
-  const isSpecificBono = (
-    plan.includes("bono") || 
-    plan.includes("clase suelta") || 
-    plan.includes("sesion suelta") || 
-    plan.includes("sesión suelta") || 
-    plan.includes("open class") || 
-    plan.includes("ilimitad") || 
-    plan.includes("pase")
+  // Si aún conserva un plan genérico de septiembre (p.ej. "Open Class") adquirido en septiembre 2026,
+  // pero EXCLUYENDO planes ya consolidados como bonos estándar de temporada (Bono 4/8/10, Pase Ilimitado)
+  const isConsolidatedStandardBono = (
+    !plan.includes("septiembre") &&
+    !plan.includes("promo") &&
+    !plan.includes("open class") &&
+    (plan.includes("bono 4") || plan.includes("bono 8") || plan.includes("bono 10") || plan.includes("ilimitad") || plan.includes("pase"))
   );
-  if (isSpecificBono && student.creado_en) {
+  if (isConsolidatedStandardBono) {
+    return false;
+  }
+
+  const isLegacySeptGeneric = (
+    plan.includes("open class") ||
+    plan.includes("clase suelta") ||
+    plan.includes("sesion suelta") ||
+    plan.includes("sesión suelta")
+  );
+  if (isLegacySeptGeneric && student.creado_en) {
     const createdDate = new Date(student.creado_en);
     if (!isNaN(createdDate.getTime()) && 
         createdDate >= new Date("2026-09-01T00:00:00Z") && 
@@ -431,6 +439,42 @@ export function hasPurchasedSeptemberBono(student?: any): boolean {
   }
 
   return false;
+}
+
+function hasCloudPaidSeasonBonoOrMatricula(student?: any, currentSeason?: string): boolean {
+  if (!student) return false;
+  if ((!currentSeason || currentSeason === "2026-2027") && student.id && VERIFIED_BONO_PURCHASE_DATES[student.id]) {
+    return true;
+  }
+  const rawDir = typeof student.direccion === "string" ? student.direccion : "";
+  const markerIdx = rawDir.indexOf("DF_PAGOS:");
+  if (markerIdx === -1) return false;
+  const after = rawDir.slice(markerIdx + "DF_PAGOS:".length);
+  const nextMarkerIdx = after.indexOf("||DF_");
+  const jsonPart = (nextMarkerIdx === -1 ? after : after.slice(0, nextMarkerIdx)).replace(/\|\|\s*$/, "").trim();
+  try {
+    const pagos = JSON.parse(jsonPart);
+    if (!Array.isArray(pagos)) return false;
+    const { start, end } = getSeasonDateRange(currentSeason || getCurrentSeason());
+    return pagos.some((p: any) => {
+      if (!p || typeof p !== "object") return false;
+      if (p.estado && String(p.estado).toLowerCase() === "anulado") return false;
+      if (p.fecha_hora) {
+        const dt = new Date(p.fecha_hora);
+        if (!isNaN(dt.getTime()) && (dt < start || dt > end)) return false;
+      }
+      if (p.exencion_matricula === true) return true;
+      const cat = String(p.categoria || "").toLowerCase();
+      const conc = String(p.concepto || "").toLowerCase();
+      if (cat === "matricula" || conc.includes("matrícula") || conc.includes("matricula")) return true;
+      if (cat === "bono" && !conc.includes("promo sep") && !conc.includes("septiembre") && !conc.includes("suelta")) {
+        return true;
+      }
+      return false;
+    });
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -482,8 +526,12 @@ export function hasPaidSeasonMatricula(student?: any, date: Date = new Date()): 
     }
   }
 
-  // 2. Flag explícito alternativo
+  // 2. Flag explícito alternativo o recibo cloud / histórico verificado en temporada activa
   if (student.matricula_bonos_pagada === true) {
+    return true;
+  }
+
+  if (hasCloudPaidSeasonBonoOrMatricula(student, currentSeason)) {
     return true;
   }
 
