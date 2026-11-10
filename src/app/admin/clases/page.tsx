@@ -222,7 +222,7 @@ export default function ClasesPage() {
   // Filter for profesor, class name, studio, or class type
   const [profesorFilter, setProfesorFilter] = useState("");
   const [studioFilter, setStudioFilter] = useState<"all" | "studio1" | "studio2">("all");
-  const [classTypeFilter, setClassTypeFilter] = useState<"all" | "openclass" | "regular">("all");
+  const [classTypeFilter, setClassTypeFilter] = useState<"all" | "openclass" | "regular" | "pole">("all");
 
   // Roster modal states
   const [isRosterOpen, setIsRosterOpen] = useState(false);
@@ -869,6 +869,44 @@ export default function ClasesPage() {
             confirmText: "Entendido"
           });
         } else {
+          // Verificar si al alumno le quedan otras clases regulares; respetar siempre si tiene un Bono activo
+          try {
+            const [{ data: remainingClasses }, { data: stRow }] = await Promise.all([
+              supabase
+                .from("alumnos_clases")
+                .select("clase_id, clases_cuadrante(nombre_clase)")
+                .eq("alumno_id", studentId),
+              supabase
+                .from("alumnos")
+                .select("id, plan_activo, clases_restantes, direccion")
+                .eq("id", studentId)
+                .maybeSingle()
+            ]);
+
+            const remainingRegular = (remainingClasses || []).filter((r: any) => {
+              const nm = String(r.clases_cuadrante?.nombre_clase || "").toUpperCase();
+              return !nm.includes("OPEN") && !nm.includes("FORMACI");
+            });
+
+            if (stRow && remainingRegular.length === 0) {
+              const curPlan = String(stRow.plan_activo || "").toLowerCase();
+              const hasActiveBono =
+                curPlan.includes("bono") ||
+                curPlan.includes("promo") ||
+                curPlan.includes("suelta") ||
+                curPlan.includes("pase") ||
+                (!curPlan.includes("regular") && typeof stRow.clases_restantes === "number" && stRow.clases_restantes > 0);
+
+              if (!hasActiveBono && curPlan.includes("regular")) {
+                // Si no tiene bono activo y se queda con 0 clases regulares, evitar que quede colgado con "Clases Regulares"
+                await supabase
+                  .from("alumnos")
+                  .update({ plan_activo: "Sin Plan Activo", clases_restantes: 0 })
+                  .eq("id", studentId);
+              }
+            }
+          } catch {}
+
           logActivity({
             origen: "recepcion",
             tipo_evento: "modificacion_perfil",
@@ -895,8 +933,10 @@ export default function ClasesPage() {
   // Filter the classes based on profesorFilter, studioFilter and classTypeFilter
   const filteredClases = clases.filter(c => {
     const isOC = isClassOpenClass(c);
+    const isPole = (c.nombre_clase || "").toLowerCase().includes("pole");
     if (classTypeFilter === "openclass" && !isOC) return false;
     if (classTypeFilter === "regular" && isOC) return false;
+    if (classTypeFilter === "pole" && !isPole) return false;
 
     const q = profesorFilter.toLowerCase().trim();
     const parsedSched = parseClassSchedule(c.profesor);
@@ -999,6 +1039,17 @@ export default function ClasesPage() {
                 }`}
               >
                 Regulares
+              </button>
+              <button
+                onClick={() => setClassTypeFilter("pole")}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                  classTypeFilter === "pole"
+                    ? "bg-pink-500 text-white shadow-sm"
+                    : "text-pink-400 hover:text-white"
+                }`}
+                title="Filtrar clases de Pole Dance en Studio 2 Paseo Castilla"
+              >
+                🩰 Pole Dance
               </button>
             </div>
 

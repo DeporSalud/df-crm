@@ -10,6 +10,7 @@ import {
   getStudentFee, 
   calculateFeeFromClasses, 
   saveStudentFeeOverride,
+  removeStudentFeeOverridesForStudent,
   calculateClassDurationHours,
   getClassDurationHours,
   calculateStudentWeeklyHours,
@@ -87,8 +88,54 @@ function validateIBAN(iban: string): { valid: boolean; message?: string } {
   return { valid: true };
 }
 
+function isBonoOrPackPlan(plan?: string | null, remaining?: number | null): boolean {
+  const p = (plan || "").toLowerCase();
+  if (p.includes("bono") || p.includes("promo") || p.includes("suelta") || p.includes("pase") || p.includes("open class")) {
+    return true;
+  }
+  if (!p.includes("regular") && !p.includes("mensual") && typeof remaining === "number" && remaining > 0) {
+    return true;
+  }
+  return false;
+}
+
+function extractRecentPaidBonoFromDireccion(rawDireccion?: string | null): { planName: string; nominalClasses: number; fechaISO: string } | null {
+  if (!rawDireccion || !rawDireccion.includes("||DF_PAGOS:")) return null;
+  try {
+    const idx = rawDireccion.indexOf("||DF_PAGOS:");
+    const jsonPart = rawDireccion.slice(idx + "||DF_PAGOS:".length).split("||DF_")[0].trim();
+    const pagos = JSON.parse(jsonPart);
+    if (!Array.isArray(pagos)) return null;
+    const nowMs = Date.now();
+    for (const p of pagos) {
+      const cat = String(p.categoria || "").toLowerCase();
+      const conc = String(p.concepto || "");
+      if (cat === "bono" || conc.toLowerCase().includes("bono")) {
+        const dt = p.fecha_hora ? new Date(p.fecha_hora).getTime() : 0;
+        if (!dt || (nowMs - dt) <= 35 * 24 * 60 * 60 * 1000) {
+          const cleanName = conc.replace(/^Bono:\s*/i, "").trim() || "Bono 8 Clases";
+          const m = cleanName.match(/\b(4|8|10|12|16)\b/);
+          const nominal = m ? parseInt(m[1], 10) : 8;
+          const fechaISO = p.fecha_hora ? String(p.fecha_hora).slice(0, 10) : getMadridDateISO();
+          return { planName: cleanName, nominalClasses: nominal, fechaISO };
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function isPoleDanceProfile(student: any): boolean {
+  if (!student) return false;
+  const plan = String(student.plan_activo || "").toLowerCase();
+  const token = String(student.nfc_token || "").toUpperCase();
+  const dir = String(student.direccion || "").toLowerCase();
+  return plan.includes("pole") || token.startsWith("POLE-") || token.startsWith("DF-POLE-") || dir.includes("pole dance");
+}
+
 export default function AlumnosPage() {
   const [searchTerm, setSearchTerm] = useState("");
+  const [disciplineFilter, setDisciplineFilter] = useState<"all" | "baile" | "pole" | "bono">("all");
   const [appModal, setAppModal] = useState<ModalState>({ isOpen: false, message: "" });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isCsvModalOpen, setIsCsvModalOpen] = useState(false);
@@ -417,6 +464,11 @@ export default function AlumnosPage() {
     const initialPlan = liveStudent.plan_activo || `Clases Regulares (${feeInfo.cuotaBase}€/mes)`;
     const initialClasesRestantes = typeof liveStudent.clases_restantes === "number" ? liveStudent.clases_restantes : null;
     const initialBonoCaducidad = expMadridISO || "";
+    const initialIsBono = isBonoOrPackPlan(initialPlan, initialClasesRestantes);
+    const initialIsSinPlan = initialPlan.toLowerCase().includes("sin plan") || initialPlan.toLowerCase().includes("pendiente");
+    const initialCuota = (initialIsBono || initialIsSinPlan || (assignedIds.length === 0 && !initialPlan.toLowerCase().includes("regular")))
+      ? 0
+      : feeInfo.cuotaBase;
 
     initialEditSnapshotRef.current = {
       plan_activo: initialPlan,
@@ -437,7 +489,7 @@ export default function AlumnosPage() {
       fecha_nacimiento: liveStudent.fecha_nacimiento || "",
       tipo_alumno: (liveStudent.tipo_alumno || (liveStudent.fecha_nacimiento ? getTipoAlumnoFromBirthDate(liveStudent.fecha_nacimiento) : "adulto")) as "adulto" | "infantil",
       plan_activo: initialPlan,
-      cuota_mensual: feeInfo.cuotaBase,
+      cuota_mensual: initialCuota,
       clases_restantes: initialClasesRestantes,
       bono_caducidad: initialBonoCaducidad,
       nfc_token: liveStudent.nfc_token || "",
@@ -470,18 +522,23 @@ export default function AlumnosPage() {
     }
   };
 
-    const handleTipoAlumnoChange = (tipo: "adulto" | "infantil") => {
+  const handleTipoAlumnoChange = (tipo: "adulto" | "infantil") => {
     setFormData(prev => {
+      const hasBono = isBonoOrPackPlan(prev.plan_activo, prev.clases_restantes);
       let newPlan = prev.plan_activo;
       let newFee = prev.cuota_mensual;
       if (prev.clases_asignadas.length > 0) {
         const selectedObjs = availableClasses.filter(c => prev.clases_asignadas.includes(c.id));
         newFee = calculateFeeFromClasses(selectedObjs, tipo);
-        newPlan = `Clases Regulares (${newFee}€/mes)`;
-      } else {
-        newFee = tipo === "infantil" ? 27 : 30;
-        if (newPlan.toLowerCase().includes("regulares")) {
+        if (!hasBono) {
           newPlan = `Clases Regulares (${newFee}€/mes)`;
+        }
+      } else if (!hasBono) {
+        if (newPlan.toLowerCase().includes("regulares")) {
+          newFee = tipo === "infantil" ? 27 : 30;
+          newPlan = `Clases Regulares (${newFee}€/mes)`;
+        } else {
+          newFee = 0;
         }
       }
       return {
@@ -500,11 +557,41 @@ export default function AlumnosPage() {
         ? prev.clases_asignadas.filter(id => id !== classId)
         : [...prev.clases_asignadas, classId];
       
+      const snap = initialEditSnapshotRef.current;
+      const hasBono =
+        isBonoOrPackPlan(prev.plan_activo, prev.clases_restantes) ||
+        isBonoOrPackPlan(snap?.plan_activo, snap?.clases_restantes);
+      const paidBonoFromHistory = extractRecentPaidBonoFromDireccion(snap?.raw_direccion);
+
       let newPlan = prev.plan_activo;
       let newFee = prev.cuota_mensual;
-      if (newAssigned.length === 0) {
-        newPlan = "Sin Plan Activo";
-        newFee = 0;
+      let newRestantes = prev.clases_restantes;
+
+      if (hasBono) {
+        // Blindaje: dar de baja o cambiar clases regulares JAMÁS pisa ni borra un bono activo
+        newPlan = isBonoOrPackPlan(prev.plan_activo, prev.clases_restantes)
+          ? prev.plan_activo
+          : (snap?.plan_activo || prev.plan_activo);
+        if (newRestantes === null && typeof snap?.clases_restantes === "number") {
+          newRestantes = snap.clases_restantes;
+        }
+        if (newAssigned.length === 0) {
+          newFee = 0;
+        } else {
+          const selectedObjs = availableClasses.filter(c => newAssigned.includes(c.id));
+          newFee = calculateFeeFromClasses(selectedObjs, prev.tipo_alumno || "adulto");
+        }
+      } else if (newAssigned.length === 0) {
+        if (paidBonoFromHistory) {
+          newPlan = paidBonoFromHistory.planName;
+          newFee = 0;
+          if (newRestantes === null) {
+            newRestantes = paidBonoFromHistory.nominalClasses;
+          }
+        } else {
+          newPlan = "Sin Plan Activo";
+          newFee = 0;
+        }
       } else {
         const selectedObjs = availableClasses.filter(c => newAssigned.includes(c.id));
         newFee = calculateFeeFromClasses(selectedObjs, prev.tipo_alumno || "adulto");
@@ -515,14 +602,15 @@ export default function AlumnosPage() {
         ...prev, 
         clases_asignadas: newAssigned,
         cuota_mensual: newFee,
-        plan_activo: newPlan
+        plan_activo: newPlan,
+        clases_restantes: newRestantes
       };
     });
   };
 
   const handleCuotaChange = (newCuota: number) => {
     setFormData(prev => {
-      const isBono = prev.plan_activo.toLowerCase().includes("bono") || prev.plan_activo.toLowerCase().includes("promo") || prev.plan_activo.toLowerCase().includes("suelta");
+      const isBono = isBonoOrPackPlan(prev.plan_activo, prev.clases_restantes);
       const newPlan = isBono 
         ? prev.plan_activo 
         : (newCuota === 0 && prev.clases_asignadas.length === 0 ? "Sin Plan Activo" : `Clases Regulares (${newCuota}€/mes)`);
@@ -562,9 +650,34 @@ export default function AlumnosPage() {
       return;
     }
     
+    const snap = initialEditSnapshotRef.current;
+    const paidBonoFromHistory = extractRecentPaidBonoFromDireccion(snap?.raw_direccion);
+    const allRegularClassesRemoved =
+      isEditing &&
+      snap &&
+      (snap.clases_asignadas?.length || 0) > 0 &&
+      formData.clases_asignadas.length === 0;
+
+    let finalPlan = formData.plan_activo;
     let clases_restantes = typeof formData.clases_restantes === "number" ? formData.clases_restantes : 0;
-    const planLowerForm = formData.plan_activo.toLowerCase();
-    if (formData.clases_restantes === null) {
+
+    // Si se acaban de quitar todas las clases regulares a un alumno que tenía bono en su ficha o en su historial de cobros:
+    if (allRegularClassesRemoved) {
+      if (isBonoOrPackPlan(snap?.plan_activo, snap?.clases_restantes)) {
+        finalPlan = snap!.plan_activo;
+        if (typeof snap!.clases_restantes === "number") {
+          clases_restantes = snap!.clases_restantes;
+        }
+      } else if (paidBonoFromHistory && !isBonoOrPackPlan(finalPlan, formData.clases_restantes)) {
+        finalPlan = paidBonoFromHistory.planName;
+        clases_restantes = paidBonoFromHistory.nominalClasses;
+      } else if (finalPlan.toLowerCase().includes("regular")) {
+        finalPlan = "Sin Plan Activo";
+      }
+    }
+
+    const planLowerForm = finalPlan.toLowerCase();
+    if (formData.clases_restantes === null && !allRegularClassesRemoved) {
       if (planLowerForm.includes("bono 4")) {
         clases_restantes = 4;
       } else if (planLowerForm.includes("bono 8")) {
@@ -578,20 +691,23 @@ export default function AlumnosPage() {
       }
     }
 
-    // Ensure regular students have their custom cuota in plan_activo and NEVER get clases_restantes = 0
-    let finalPlan = formData.plan_activo;
-    const isBonoOrPromo = finalPlan.toLowerCase().includes("bono") || finalPlan.toLowerCase().includes("promo") || finalPlan.toLowerCase().includes("suelta") || finalPlan.toLowerCase().includes("pase");
-    if (!isBonoOrPromo && formData.cuota_mensual > 0) {
-      finalPlan = `Clases Regulares (${formData.cuota_mensual}€/mes)`;
+    const isBonoOrPromo = isBonoOrPackPlan(finalPlan, formData.clases_restantes);
+    const isSinPlanForm = finalPlan.toLowerCase().includes("sin plan") || finalPlan.toLowerCase().includes("pendiente");
+
+    // Ensure regular students have their custom cuota in plan_activo, NEVER overwriting a Bono or Sin Plan Activo
+    if (!isBonoOrPromo && !isSinPlanForm && formData.cuota_mensual > 0 && formData.clases_asignadas.length > 0) {
+      finalPlan = finalPlan.toLowerCase().includes("pole")
+        ? `Pole Dance Regular (${formData.cuota_mensual}€/mes)`
+        : `Clases Regulares (${formData.cuota_mensual}€/mes)`;
     }
     const isRegularMonthlyPlan =
       !isBonoOrPromo &&
+      !isSinPlanForm &&
       (finalPlan.toLowerCase().includes("regular") ||
         finalPlan.toLowerCase().includes("mensual") ||
         finalPlan.toLowerCase().includes("ilimitad"));
 
     // Prepare clean payload containing only columns present in Supabase 'alumnos' table
-    const snap = initialEditSnapshotRef.current;
     const payload: Record<string, any> = {
       sede: formData.sede || (activeSede !== "consolidado" ? activeSede : "tejar"),
       nombre_completo: formData.nombre_completo.trim(),
@@ -607,7 +723,7 @@ export default function AlumnosPage() {
     const bonoFieldsModified =
       !isEditing ||
       !snap ||
-      formData.plan_activo !== snap.plan_activo ||
+      finalPlan !== snap.plan_activo ||
       formData.clases_restantes !== snap.clases_restantes ||
       formData.bono_caducidad !== snap.bono_caducidad;
 
@@ -619,20 +735,22 @@ export default function AlumnosPage() {
 
     if (isRegularMonthlyPlan) {
       payload.clases_restantes = null;
-    } else if (bonoFieldsModified && (isBonoOrPromo || (typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0))) {
-      if (formData.bono_caducidad && !finalPlan.toLowerCase().includes("promo") && !finalPlan.toLowerCase().includes("septiembre")) {
+    } else if (isSinPlanForm) {
+      payload.clases_restantes = 0;
+    } else if (isBonoOrPromo || (bonoFieldsModified && typeof formData.clases_restantes === "number" && formData.clases_restantes >= 0)) {
+      if (bonoFieldsModified && formData.bono_caducidad && !finalPlan.toLowerCase().includes("promo") && !finalPlan.toLowerCase().includes("septiembre")) {
         payload.creado_en = subtractOneCalendarMonthMadrid(formData.bono_caducidad);
       }
 
       // Si se está editando un alumno con bono retroactivo y el campo clases_restantes sigue en el total nominal (4, 8, 10, 12, 16),
       // descontar automáticamente las Open Classes ya reservadas o asistidas desde la fecha de inicio del bono para evitar saldos inflados
-      if (isEditing && editingId && isBonoOrPromo && payload.creado_en) {
+      if (isEditing && editingId && isBonoOrPromo && (payload.creado_en || paidBonoFromHistory?.fechaISO)) {
         const nominalMatch = finalPlan.match(/\b(4|8|10|12|16)\b/);
         const nominalPack = nominalMatch ? parseInt(nominalMatch[1], 10) : 0;
-        const startISO = String(payload.creado_en).slice(0, 10);
+        const startISO = String(payload.creado_en || paidBonoFromHistory?.fechaISO || "").slice(0, 10);
         const todayStr = getMadridDateISO();
 
-        if (nominalPack > 0 && clases_restantes === nominalPack && startISO <= todayStr) {
+        if (nominalPack > 0 && clases_restantes === nominalPack && startISO && startISO <= todayStr) {
           try {
             const { data: usedRows } = await supabase
               .from("alumnos_clases")
@@ -736,7 +854,7 @@ export default function AlumnosPage() {
         setBonosCaducidadMap(prev => ({ ...prev, [studentId]: formData.bono_caducidad }));
       }
       saveStoredIBAN(studentId, formData.iban);
-      if (formData.cuota_mensual > 0) {
+      if (isRegularMonthlyPlan && formData.cuota_mensual > 0) {
         saveStudentFeeOverride(studentId, formData.cuota_mensual);
         if (formData.nombre_completo) {
           saveStudentFeeOverride(formData.nombre_completo.toLowerCase().trim(), formData.cuota_mensual);
@@ -747,6 +865,13 @@ export default function AlumnosPage() {
         if (formData.email) {
           saveStudentFeeOverride("email_" + formData.email.toLowerCase().trim(), formData.cuota_mensual);
         }
+      } else {
+        removeStudentFeeOverridesForStudent({
+          id: studentId,
+          nombre_completo: formData.nombre_completo,
+          nfc_token: formData.nfc_token,
+          email: formData.email
+        });
       }
     }
 
@@ -867,7 +992,13 @@ export default function AlumnosPage() {
   });
 
   const filteredStudents = students
-    .filter(student => studentMatchesSearchQuery(student, searchTerm))
+    .filter(student => {
+      if (!studentMatchesSearchQuery(student, searchTerm)) return false;
+      if (disciplineFilter === "pole") return isPoleDanceProfile(student);
+      if (disciplineFilter === "baile") return !isPoleDanceProfile(student);
+      if (disciplineFilter === "bono") return isBonoOrPackPlan(student.plan_activo, student.clases_restantes);
+      return true;
+    })
     .sort((a, b) => {
       const nameA = a.nombre_completo || "";
       const nameB = b.nombre_completo || "";
@@ -885,7 +1016,7 @@ export default function AlumnosPage() {
       />
 
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-        <div className="flex items-center gap-3 w-full sm:w-auto">
+        <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
           <div className="relative w-full sm:w-80">
             <input 
               type="text" 
@@ -897,6 +1028,55 @@ export default function AlumnosPage() {
             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 absolute left-3 top-2.5 text-[var(--color-text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
+          </div>
+
+          {/* Filtro Rápido por Actividad (Baile / Pole Dance / Bonos) */}
+          <div className="flex items-center gap-1 bg-[var(--color-bg-card)] border border-[var(--color-border)] p-1 rounded-lg shrink-0">
+            <button
+              type="button"
+              onClick={() => setDisciplineFilter("all")}
+              className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                disciplineFilter === "all"
+                  ? "bg-[var(--color-primary)] text-white shadow-sm"
+                  : "text-[var(--color-text-secondary)] hover:text-white"
+              }`}
+            >
+              Todos
+            </button>
+            <button
+              type="button"
+              onClick={() => setDisciplineFilter("baile")}
+              className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                disciplineFilter === "baile"
+                  ? "bg-purple-500 text-white shadow-sm"
+                  : "text-[var(--color-text-secondary)] hover:text-white"
+              }`}
+            >
+              💃 Baile
+            </button>
+            <button
+              type="button"
+              onClick={() => setDisciplineFilter("pole")}
+              className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                disciplineFilter === "pole"
+                  ? "bg-pink-500 text-white shadow-sm"
+                  : "text-pink-400 hover:text-white"
+              }`}
+              title="Filtrar alumnas de Pole Dance (QR POLE-XXXX / Studio 2)"
+            >
+              🩰 Pole Dance
+            </button>
+            <button
+              type="button"
+              onClick={() => setDisciplineFilter("bono")}
+              className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                disciplineFilter === "bono"
+                  ? "bg-cyan-500 text-slate-950 shadow-sm"
+                  : "text-cyan-400 hover:text-white"
+              }`}
+            >
+              🎟️ Bonos
+            </button>
           </div>
 
           {/* Filtro Orden A-Z / Z-A */}
@@ -987,21 +1167,39 @@ export default function AlumnosPage() {
                 filteredStudents.map((student) => {
                   const plan = (student.plan_activo || "").toLowerCase();
                   const isSinPlan = plan.includes("sin plan") || plan.includes("pendiente");
-                  const isRegular = !isSinPlan && (plan.includes("regular") || student.plan_activo === "Clases Regulares" || (student.clases_restantes === null && !plan.includes("bono")));
+                  const isRegular = !isSinPlan && !isBonoOrPackPlan(student.plan_activo, student.clases_restantes) && (plan.includes("regular") || student.plan_activo === "Clases Regulares" || student.clases_restantes === null);
+                  const isPole = isPoleDanceProfile(student);
                   const feeInfo = getStudentFee(student);
 
                   return (
                     <tr key={student.id} className="hover:bg-[var(--color-bg-hover)] transition-colors">
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[var(--color-secondary)] to-[var(--color-primary)] flex items-center justify-center text-white font-bold text-xs shrink-0">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-xs shrink-0 ${
+                            isPole
+                              ? "bg-gradient-to-br from-pink-500 to-fuchsia-600"
+                              : "bg-gradient-to-br from-[var(--color-secondary)] to-[var(--color-primary)]"
+                          }`}>
                             {student.nombre_completo.split(' ').slice(0, 2).map((n: string) => n[0]).join('')}
                           </div>
                           <div>
-                             <span className="font-bold text-[var(--color-text-title)] text-xs block">{student.nombre_completo}</span>
+                             <div className="flex items-center gap-1.5">
+                               <span className="font-bold text-[var(--color-text-title)] text-xs block">{student.nombre_completo}</span>
+                               {isPole && (
+                                 <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-pink-500/15 text-pink-400 border border-pink-500/30">
+                                   🩰 Pole
+                                 </span>
+                               )}
+                             </div>
                              <span className="text-[10px] text-amber-400 font-mono font-medium flex items-center gap-1">
                                <span>🏷️</span>
-                               <span>{student.nfc_token ? (student.nfc_token.startsWith('DF-') ? student.nfc_token : 'DF-' + student.nfc_token) : 'Sin Llavero NFC'}</span>
+                               <span>
+                                 {student.nfc_token
+                                   ? (student.nfc_token.toUpperCase().startsWith('DF-') || student.nfc_token.toUpperCase().startsWith('POLE-')
+                                       ? student.nfc_token
+                                       : 'DF-' + student.nfc_token)
+                                   : 'Sin Llavero NFC'}
+                               </span>
                              </span>
                           </div>
                         </div>
@@ -1598,12 +1796,29 @@ export default function AlumnosPage() {
                      />
                    </div>
                    <div>
-                     <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Número de Tarjeta / Llavero NFC</label>
+                     <div className="flex items-center justify-between mb-1">
+                       <label className="block text-xs font-semibold text-[var(--color-text-secondary)]">Número de Tarjeta / QR / NFC</label>
+                       <button
+                         type="button"
+                         onClick={() => {
+                           const cleanNum = (formData.nfc_token || "").replace(/^(DF-|POLE-|DF-POLE-)/i, "").trim() || String(Math.floor(1000 + Math.random() * 9000));
+                           setFormData(prev => ({
+                             ...prev,
+                             sede: "castilla",
+                             nfc_token: `POLE-${cleanNum}`
+                           }));
+                         }}
+                         className="text-[10px] font-bold px-2 py-0.5 rounded bg-pink-500/15 hover:bg-pink-500/25 text-pink-400 border border-pink-500/30 transition-colors cursor-pointer"
+                         title="Asignar código QR identificativo POLE-XXXX para el lector de Studio 2 Paseo Castilla"
+                       >
+                         🩰 Código QR Pole
+                       </button>
+                     </div>
                      <input 
                        type="text" 
                        value={formData.nfc_token}
                        onChange={(e) => setFormData({...formData, nfc_token: e.target.value})}
-                       placeholder="Ej. 3918"
+                       placeholder="Ej. 3918 o POLE-1001"
                        className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-body)] text-sm rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] font-mono transition-colors" 
                      />
                    </div>
@@ -1788,9 +2003,40 @@ export default function AlumnosPage() {
                         type="text"
                         value={formData.plan_activo}
                         onChange={(e) => setFormData({...formData, plan_activo: e.target.value})}
-                        placeholder="Ej. Clases Regulares (41€/mes)"
+                        placeholder="Ej. Clases Regulares (41€/mes) o Bono 8 Clases"
                         className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] text-white text-xs font-bold font-mono rounded-lg px-3 py-2 outline-none focus:border-[var(--color-primary)] transition-colors"
                       />
+                      {/* Presets rápidos de Bonos y Pole Dance */}
+                      <div className="flex gap-1 flex-wrap mt-2">
+                        {[
+                          { label: "Bono 4", plan: "Bono 4 Clases", clases: 4, cuota: 0 },
+                          { label: "Bono 8", plan: "Bono 8 Clases", clases: 8, cuota: 0 },
+                          { label: "Bono 10", plan: "Bono 10 Clases", clases: 10, cuota: 0 },
+                          { label: "🩰 Pole Regular", plan: "Pole Dance Regular (45€/mes)", clases: null, cuota: 45 },
+                          { label: "🩰 Bono Pole 4", plan: "Bono Pole Dance 4 Clases", clases: 4, cuota: 0 },
+                          { label: "🩰 Bono Pole 8", plan: "Bono Pole Dance 8 Clases", clases: 8, cuota: 0 },
+                        ].map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => {
+                              setFormData(prev => ({
+                                ...prev,
+                                plan_activo: preset.plan,
+                                cuota_mensual: preset.cuota,
+                                clases_restantes: preset.clases !== null ? (typeof prev.clases_restantes === "number" && prev.clases_restantes > 0 && prev.plan_activo === preset.plan ? prev.clases_restantes : preset.clases) : null
+                              }));
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                              formData.plan_activo === preset.plan
+                                ? "bg-cyan-500 text-slate-950 shadow-sm"
+                                : "bg-[var(--color-bg)] text-slate-400 hover:text-white border border-[var(--color-border)]"
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">Estado</label>

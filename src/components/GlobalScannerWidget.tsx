@@ -531,11 +531,14 @@ export default function GlobalScannerWidget() {
         if (keyBuffer.trim().length >= 4) {
           const codeToProcess = keyBuffer.trim();
           keyBuffer = "";
-          // Si estaba en un input y el texto coincide con el buffer de escaneo, no enviar formulario
+          const upper = codeToProcess.toUpperCase();
+          // En modo Kiosco/TPV sin foco en un input (!isInput), o cuando es ráfaga rápida / prefijo QR conocido
           if (
+            !isInput ||
             isFastScan ||
-            codeToProcess.toUpperCase().startsWith("DF") ||
-            codeToProcess.toUpperCase().startsWith("PIL")
+            upper.startsWith("DF") ||
+            upper.startsWith("PIL") ||
+            upper.startsWith("POLE")
           ) {
             e.preventDefault();
             e.stopPropagation();

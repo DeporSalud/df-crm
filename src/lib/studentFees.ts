@@ -192,6 +192,37 @@ export function saveStudentFeeOverride(studentIdentifier: string, cuota: number)
   }
 }
 
+export function removeStudentFeeOverridesForStudent(student: {
+  id?: string | null;
+  nombre_completo?: string | null;
+  nfc_token?: string | null;
+  email?: string | null;
+}): void {
+  if (typeof window === "undefined") return;
+  try {
+    const current = getStudentFeeOverrides();
+    let changed = false;
+    const keysToRemove: string[] = [];
+    if (student.id) keysToRemove.push(student.id);
+    if (student.nombre_completo) keysToRemove.push(student.nombre_completo.toLowerCase().trim());
+    if (student.nfc_token) keysToRemove.push("card_" + student.nfc_token.trim());
+    if (student.email) keysToRemove.push("email_" + student.email.toLowerCase().trim());
+
+    for (const k of keysToRemove) {
+      if (k && k in current) {
+        delete current[k];
+        changed = true;
+      }
+    }
+    if (changed) {
+      localStorage.setItem(OVERRIDES_STORAGE_KEY, JSON.stringify(current));
+      publishSyncEvent("df_student_fees_updated", { studentId: student.id, cuota: 0, timestamp: Date.now() });
+    }
+  } catch (e) {
+    console.error("Error removing student fee override:", e);
+  }
+}
+
 /**
  * Convenient helper to subscribe to student fee updates across tabs and devices
  */

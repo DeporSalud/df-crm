@@ -1404,7 +1404,7 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     if (data) return await resolveActiveSiblingStudent(data);
   }
 
-  // 2. Normalizar teclado español y prefijos (incluye prefijos de profesor DF-TEACHER-, DF-PROFESOR-)
+  // 2. Normalizar teclado español y prefijos (incluye prefijos de profesor DF-TEACHER-, DF-PROFESOR- y Pole Dance POLE-, DF-POLE-)
   const normalized = trimmed.replace(/[/\\':_.]/g, "-").trim();
   const cleanToken = normalized
     .replace(/^DF-TEACHER-/i, "")
@@ -1415,12 +1415,14 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     .replace(/^DF-ALUMNO-/i, "")
     .replace(/^STUDENT-/i, "")
     .replace(/^ALUMNO-/i, "")
+    .replace(/^DF-POLE-/i, "")
+    .replace(/^POLE-/i, "")
     .replace(/^DF-/i, "")
     .trim();
 
   const pureToken = trimmed
     .replace(/[^a-zA-Z0-9]/g, "")
-    .replace(/^(DFTEACHER|DFPROFESOR|TEACHER|PROFESOR|DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DF)/i, "")
+    .replace(/^(DFTEACHER|DFPROFESOR|TEACHER|PROFESOR|DFSTUDENT|DFALUMNO|STUDENT|ALUMNO|DFPOLE|POLE|DF)/i, "")
     .trim();
 
   const candidates = Array.from(new Set([
@@ -1430,6 +1432,9 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     trimmed,
     `DF-${cleanToken}`,
     `DF-${pureToken}`,
+    `POLE-${cleanToken}`,
+    `POLE-${pureToken}`,
+    `DF-POLE-${cleanToken}`,
     `PROF-${cleanToken}`,
     `PROF-${pureToken}`
   ])).filter(Boolean);

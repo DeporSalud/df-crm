@@ -303,8 +303,9 @@ export function parseAlumnosCSV(text: string): {
       const rawTelefono = idxTelefono !== -1 ? row[idxTelefono]?.trim() : "";
       const telefono = (rawTelefono ? normalizePhoneDigits(rawTelefono) : "") || "600000000";
       const rawSede = (idxSede !== -1 ? row[idxSede]?.toLowerCase() : "") || "";
-      const sede = (rawSede.includes("2") || rawSede.includes("castilla") || rawSede.includes("alcorcon")) ? "castilla" : "tejar";
       const plan_activo = (idxPlan !== -1 ? row[idxPlan]?.trim() : "") || "Clases Regulares";
+      const isPoleRow = rawSede.includes("pole") || plan_activo.toLowerCase().includes("pole");
+      const sede = (isPoleRow || rawSede.includes("2") || rawSede.includes("castilla") || rawSede.includes("alcorcon")) ? "castilla" : "tejar";
       const dniRaw = idxDni !== -1 ? row[idxDni]?.trim() : null;
       const dni = dniRaw && dniRaw !== "-" ? normalizeDNI(dniRaw) : null;
       const fecha_nacimiento = (idxFechaNac !== -1 ? row[idxFechaNac]?.trim() : null) || null;
@@ -318,20 +319,25 @@ export function parseAlumnosCSV(text: string): {
         tipo_alumno = getTipoAlumnoFromBirthDate(fecha_nacimiento);
       }
 
-      let clases_restantes = 0;
+      let clases_restantes: number | null = null;
       if (idxClases !== -1 && row[idxClases] && !isNaN(parseInt(row[idxClases], 10))) {
         clases_restantes = parseInt(row[idxClases], 10);
       } else {
         const planLower = plan_activo.toLowerCase();
-        if (planLower.includes("bono 4")) clases_restantes = 4;
-        else if (planLower.includes("bono 8")) clases_restantes = 8;
+        if (planLower.includes("bono 4") || planLower.includes("pole 4")) clases_restantes = 4;
+        else if (planLower.includes("bono 8") || planLower.includes("pole 8")) clases_restantes = 8;
         else if (planLower.includes("bono 10")) clases_restantes = 10;
         else if (planLower.includes("ilimitad")) clases_restantes = 999;
         else if (planLower.includes("suelta")) clases_restantes = 1;
       }
 
       const rawNfc = idxNfc !== -1 ? row[idxNfc]?.trim() : null;
-      const nfc_token = rawNfc && rawNfc !== "-" ? rawNfc : null;
+      let nfc_token = rawNfc && rawNfc !== "-" ? rawNfc : null;
+      if (isPoleRow && !nfc_token) {
+        nfc_token = `POLE-${1001 + r}`;
+      } else if (isPoleRow && nfc_token && !nfc_token.toUpperCase().startsWith("POLE-") && !nfc_token.toUpperCase().startsWith("DF-")) {
+        nfc_token = `POLE-${nfc_token}`;
+      }
       const direccion = (idxDireccion !== -1 ? row[idxDireccion]?.trim() : null) || null;
       const iban = (idxIban !== -1 ? row[idxIban]?.replace(/\s/g, "").toUpperCase() : null) || null;
       const titular_cuenta = (idxTitular !== -1 ? row[idxTitular]?.trim() : null) || null;
