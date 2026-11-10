@@ -1448,16 +1448,16 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     }
 
     // Exact nfc_token
-    const { data: byNfc } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("nfc_token", token).limit(1).maybeSingle();
+    const { data: byNfc } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").eq("nfc_token", token).limit(1).maybeSingle();
     if (byNfc) return await resolveActiveSiblingStudent(byNfc);
 
     // Exact DNI
-    const { data: byDni } = await supabase.from("alumnos").select("*, alumnos_clases(*)").ilike("dni", token).limit(1).maybeSingle();
+    const { data: byDni } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").ilike("dni", token).limit(1).maybeSingle();
     if (byDni) return await resolveActiveSiblingStudent(byDni);
 
     // Exact email
     if (token.includes("@")) {
-      const { data: byEmail } = await supabase.from("alumnos").select("*, alumnos_clases(*)").ilike("email", token).limit(1).maybeSingle();
+      const { data: byEmail } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").ilike("email", token).limit(1).maybeSingle();
       if (byEmail) return await resolveActiveSiblingStudent(byEmail);
     }
 

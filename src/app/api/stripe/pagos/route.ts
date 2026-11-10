@@ -236,7 +236,7 @@ export async function GET() {
 
     const [stripePagos, alumnosRes] = await Promise.all([
       fetchStripePaidTransactions(),
-      supabase.from("alumnos").select("*"),
+      supabase.from("alumnos").select("*").neq("sede", "pilates"),
     ]);
 
     const alumnos = (alumnosRes.data || []).filter((row: any) => {

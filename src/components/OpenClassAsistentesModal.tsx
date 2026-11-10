@@ -230,6 +230,7 @@ export default function OpenClassAsistentesModal({
         const { data } = await supabase
           .from("alumnos")
           .select("*")
+          .neq("sede", "pilates")
           .or(`nombre_completo.ilike.%${addSearch}%,dni.ilike.%${addSearch}%,email.ilike.%${addSearch}%`)
           .limit(5);
         setAddSearchResults(data || []);

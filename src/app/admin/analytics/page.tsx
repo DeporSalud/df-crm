@@ -61,7 +61,7 @@ export default function AnalyticsPage() {
 
     try {
       // 1. Fetch ALL Students to maintain comparative numbers & active filters (excluding Solo Pilates)
-      const { data: allAlumnosData } = await supabase.from("alumnos").select("*");
+      const { data: allAlumnosData } = await supabase.from("alumnos").select("*").neq("sede", "pilates");
       const allAlumnos = (allAlumnosData || []).filter((a: any) => !isPilatesProfile(a));
 
       // 2. Fetch ALL Classes

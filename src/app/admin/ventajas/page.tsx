@@ -103,7 +103,8 @@ export default function AdminVentajasPage() {
     try {
       const { data: dbStudents } = await supabase
         .from("alumnos")
-        .select("*");
+        .select("*")
+        .neq("sede", "pilates");
 
       if (dbStudents && dbStudents.length > 0) {
         // Filter students that have an active bono / promo or remaining classes (excluding Solo Pilates)

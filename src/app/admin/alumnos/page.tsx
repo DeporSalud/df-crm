@@ -277,8 +277,8 @@ export default function AlumnosPage() {
   const fetchData = async () => {
     setIsLoading(true);
     
-    // Fetch students
-    let queryStudents = supabase.from("alumnos").select("*");
+    // Fetch students (strictly Escuela de Baile at SQL level so PostgREST 1000-row limit never truncates)
+    let queryStudents = supabase.from("alumnos").select("*").neq("sede", "pilates");
     if (activeSede !== "consolidado") {
       if (activeSede === "tejar") {
         queryStudents = queryStudents.in("sede", ["tejar", "studio", "mostoles"]);

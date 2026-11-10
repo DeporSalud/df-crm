@@ -710,7 +710,7 @@ export default function ProfesorPortal() {
           }
         }
 
-        const { data: allDbStudents } = await supabase.from("alumnos").select("*");
+        const { data: allDbStudents } = await supabase.from("alumnos").select("*").neq("sede", "pilates");
         const dbMap = new Map((allDbStudents || []).map((s: any) => [s.id, s]));
 
         const attendees = sessionReservas.map(r => {

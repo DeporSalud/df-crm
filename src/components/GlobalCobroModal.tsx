@@ -72,7 +72,7 @@ export default function GlobalCobroModal() {
   useEffect(() => {
     // Fetch students list for autocomplete (strictly Escuela de Baile, excluding Solo Pilates)
     const fetchStudents = async () => {
-      const { data } = await supabase.from("alumnos").select("*").eq("estado", "Activo").order("nombre_completo", { ascending: true });
+      const { data } = await supabase.from("alumnos").select("*").eq("estado", "Activo").neq("sede", "pilates").order("nombre_completo", { ascending: true });
       if (data) setStudents(data.filter((s: any) => !isPilatesProfile(s)));
     };
     fetchStudents();

@@ -48,6 +48,7 @@ async function forwardCheckOrFallback(request: NextRequest) {
     const { data: rawStudents, error } = await supabase
       .from("alumnos")
       .select("id, nombre_completo, email, plan_activo, clases_restantes, creado_en, sede, nfc_token")
+      .neq("sede", "pilates")
       .gt("clases_restantes", 0);
     const students = (rawStudents || []).filter(
       (s: any) =>

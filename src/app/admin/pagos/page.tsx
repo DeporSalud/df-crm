@@ -231,8 +231,8 @@ export default function PagosYFacturacionPage() {
       setPendingRequests([]);
     }
 
-    // Fetch Students
-    let queryStudents = supabase.from("alumnos").select("*");
+    // Fetch Students (strictly Escuela de Baile at SQL level)
+    let queryStudents = supabase.from("alumnos").select("*").neq("sede", "pilates");
     if (activeSede !== "consolidado") {
       if (activeSede === "tejar") {
         queryStudents = queryStudents.in("sede", ["tejar", "studio", "mostoles"]);

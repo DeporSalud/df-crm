@@ -69,7 +69,7 @@ import {
 } from "@/lib/pilatesService";
 
 type PilatesSubTab = "alumnos" | "facturacion" | "importar" | "recepcion";
-type StudentFilter = "all" | "mensual" | "bonos" | "pendientes" | "bajas";
+type StudentFilter = "activos" | "bajas" | "all" | "bonos" | "pendientes";
 
 const BILLING_MONTHS = [
   { value: "2026-09", label: "Septiembre 2026" },
@@ -109,10 +109,12 @@ export default function SoloPilatesPage() {
 
   // --- Filters ---
   const [searchQuery, setSearchQuery] = useState("");
-  const [studentFilter, setStudentFilter] = useState<StudentFilter>("all");
+  const [studentFilter, setStudentFilter] = useState<StudentFilter>("activos");
+  const [visibleLimit, setVisibleLimit] = useState<number>(60);
+  const [showTarifarioCard, setShowTarifarioCard] = useState<boolean>(true);
   const [selectedBillingMonth, setSelectedBillingMonth] = useState<string>(() => {
     const cur = getCurrentYearMonth();
-    return BILLING_MONTHS.some((m) => m.value === cur) ? cur : "2026-10";
+    return BILLING_MONTHS.some((m) => m.value === cur) ? cur : "2026-11";
   });
 
   // --- Native <dialog> Refs & Accessible Heading IDs ---
@@ -137,9 +139,9 @@ export default function SoloPilatesPage() {
   const [formTelefono, setFormTelefono] = useState("");
   const [formEmail, setFormEmail] = useState("");
   const [formFotoUrl, setFormFotoUrl] = useState("");
-  const [formPlan, setFormPlan] = useState<PilatesPlanType>("Mensualidad Flexible 24h");
-  const [formImporte, setFormImporte] = useState<string>("55");
-  const [formSesiones, setFormSesiones] = useState<string>("4");
+  const [formPlan, setFormPlan] = useState<PilatesPlanType>("Suelo · 8 Clases (Mañana)");
+  const [formImporte, setFormImporte] = useState<string>("48");
+  const [formSesiones, setFormSesiones] = useState<string>("8");
   const [formMetodoPago, setFormMetodoPago] = useState<PilatesMetodoPago>("TPV");
   const [formIban, setFormIban] = useState("");
   const [formEstado, setFormEstado] = useState<"Activo" | "Baja">("Activo");
@@ -153,11 +155,11 @@ export default function SoloPilatesPage() {
 
   // --- Cobro / Renewal Form State ---
   const [cobroStudentId, setCobroStudentId] = useState("");
-  const [cobroPlan, setCobroPlan] = useState<PilatesPlanType>("Mensualidad Flexible 24h");
-  const [cobroImporte, setCobroImporte] = useState("55");
+  const [cobroPlan, setCobroPlan] = useState<PilatesPlanType>("Suelo · 8 Clases (Mañana)");
+  const [cobroImporte, setCobroImporte] = useState("48");
   const [cobroMetodo, setCobroMetodo] = useState<PilatesMetodoPago>("TPV");
   const [cobroPeriodo, setCobroPeriodo] = useState<string>(() => getCurrentYearMonth());
-  const [cobroSesionesExtra, setCobroSesionesExtra] = useState("4");
+  const [cobroSesionesExtra, setCobroSesionesExtra] = useState("8");
   const [cobroNotas, setCobroNotas] = useState("");
 
   // --- Delete Confirmation Target ---
@@ -246,7 +248,7 @@ export default function SoloPilatesPage() {
   const filteredStudents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return students.filter((s) => {
-      if (studentFilter === "mensual" && (s.es_bono || s.estado === "Baja")) return false;
+      if (studentFilter === "activos" && s.estado === "Baja") return false;
       if (studentFilter === "bonos" && (!s.es_bono || s.estado === "Baja")) return false;
       if (
         studentFilter === "pendientes" &&
@@ -266,10 +268,22 @@ export default function SoloPilatesPage() {
         s.dni.toLowerCase().includes(q) ||
         s.telefono.toLowerCase().includes(q) ||
         s.email.toLowerCase().includes(q) ||
-        s.codigo_qr.toLowerCase().includes(q)
+        s.codigo_qr.toLowerCase().includes(q) ||
+        (s.num_socio || "").toLowerCase().includes(q) ||
+        (s.notas_salud || "").toLowerCase().includes(q)
       );
     });
   }, [students, searchQuery, studentFilter]);
+
+  const visibleStudents = useMemo(
+    () => filteredStudents.slice(0, visibleLimit),
+    [filteredStudents, visibleLimit]
+  );
+
+  const bajasCount = useMemo(
+    () => students.filter((s) => s.estado === "Baja").length,
+    [students]
+  );
 
   const filteredPayments = useMemo(() => {
     if (selectedBillingMonth === "all") return payments;
@@ -334,9 +348,9 @@ export default function SoloPilatesPage() {
     setFormTelefono("");
     setFormEmail("");
     setFormFotoUrl("");
-    setFormPlan("Mensualidad Flexible 24h");
-    setFormImporte("55");
-    setFormSesiones("4");
+    setFormPlan("Suelo · 8 Clases (Mañana)");
+    setFormImporte("48");
+    setFormSesiones("8");
     setFormMetodoPago("TPV");
     setFormIban("");
     setFormEstado("Activo");
@@ -875,7 +889,7 @@ export default function SoloPilatesPage() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
-                Alumnos Activos Pilates
+                Alumnos en Alta (Activos)
               </p>
               <h2 className="mt-1 text-3xl font-extrabold font-[family-name:var(--font-heading)] text-[var(--color-text-title)]">
                 {kpis.alumnosActivos}
@@ -886,7 +900,7 @@ export default function SoloPilatesPage() {
             </div>
           </div>
           <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
-            {kpis.totalRegistrados} fichas totales registradas
+            {kpis.totalRegistrados} socios totales ({bajasCount} en Baja)
           </p>
         </div>
 
@@ -905,7 +919,7 @@ export default function SoloPilatesPage() {
             </div>
           </div>
           <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
-            Horario libre 24h sin bloqueo
+            Horario libre 24h · QR PIL-XXXX
           </p>
         </div>
 
@@ -945,9 +959,154 @@ export default function SoloPilatesPage() {
             </div>
           </div>
           <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
-            Contabilidad aislada Solo Pilates
+            Tarifas Oficiales EZG Pilates Sept. 2026
           </p>
         </div>
+      </div>
+
+      {/* Cuadro Oficial de Tarifas EZG Pilates (A partir del 1 de Septiembre) */}
+      <div className="rounded-3xl border border-teal-500/35 bg-[var(--color-bg-card)] p-4 sm:p-5 shadow-md space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <span className="text-[11px] font-extrabold uppercase tracking-wider text-teal-600 dark:text-teal-400">
+              Cartel Oficial · EZG Pilates (A partir del 1 de Septiembre)
+            </span>
+            <h2 className="text-base sm:text-lg font-extrabold text-[var(--color-text-title)]">
+              Cuadro Oficial de Tarifas EZG Pilates (Suelo · Máquina · Combinados · Extras)
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowTarifarioCard((v) => !v)}
+            className="self-start sm:self-auto rounded-xl border border-teal-500/35 bg-teal-500/10 hover:bg-teal-500/20 px-3.5 py-1.5 text-xs font-bold text-teal-700 dark:text-teal-300 cursor-pointer"
+          >
+            {showTarifarioCard ? "Ocultar Tarifario" : "Ver Tarifas Oficiales EZG Pilates"}
+          </button>
+        </div>
+
+        {showTarifarioCard && (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3.5 text-xs">
+            {/* Bloque 1: Clases de Suelo */}
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3.5 space-y-2">
+              <p className="font-extrabold uppercase tracking-wider text-teal-600 dark:text-teal-400 border-b border-[var(--color-border)] pb-1.5">
+                Clases de Suelo
+              </p>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">4 Clases</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    Mañana 32€ · Tarde 35€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">8 Clases</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    Mañana 48€ · Tarde 53€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">12 Clases</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    Mañana 76€ · Tarde 82€
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bloque 2: Clases Máquina */}
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3.5 space-y-2">
+              <p className="font-extrabold uppercase tracking-wider text-teal-600 dark:text-teal-400 border-b border-[var(--color-border)] pb-1.5">
+                Clases Máquina
+              </p>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">4 Clases</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    Mañana 55€ · Tarde 58€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">8 Clases</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    Mañana 83€ · Tarde 93€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">12 Clases</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    Mañana 113€ · Tarde 123€
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bloque 3: Suelo + Máquina */}
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3.5 space-y-2">
+              <p className="font-extrabold uppercase tracking-wider text-teal-600 dark:text-teal-400 border-b border-[var(--color-border)] pb-1.5">
+                Combinados Suelo + Máquina
+              </p>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">1 Suelo + 1 Máq. (8 cl.)</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    65€ / 68€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">2 Suelo + 1 Máq. (12 cl.)</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    90€ / 97€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">1 Suelo + 2 Máq. (12 cl.)</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    102€ / 114€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[var(--color-text-title)]">3 Suelo + 1 Máq. (16 cl.)</span>
+                  <span className="font-mono font-bold text-[var(--color-text-body)] whitespace-nowrap">
+                    105€ / 116€
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bloque 4: Clases Sueltas y Extras */}
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3.5 space-y-2">
+              <p className="font-extrabold uppercase tracking-wider text-teal-600 dark:text-teal-400 border-b border-[var(--color-border)] pb-1.5">
+                Clases Sueltas, Reserva y Parking
+              </p>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[var(--color-text-secondary)]">Clase Suelta Suelo / Máq.</span>
+                  <span className="font-mono font-bold text-[var(--color-text-title)] whitespace-nowrap">
+                    12€ / 17€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[var(--color-text-secondary)]">Reserva Mes (1/curso)</span>
+                  <span className="font-mono font-bold text-[var(--color-text-title)] whitespace-nowrap">
+                    15€ (+3€ var.)
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[var(--color-text-secondary)]">Matrícula / Tarjeta</span>
+                  <span className="font-mono font-bold text-[var(--color-text-title)] whitespace-nowrap">
+                    30€ / 5€
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[var(--color-text-secondary)]">Parking 1h · Bono 4h / 8h</span>
+                  <span className="font-mono font-bold text-[var(--color-text-title)] whitespace-nowrap">
+                    1,30€ · 4€ / 8€
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Selector de Subpestañas Responsivo (2x2 en Móvil 390px, 4 columnas en Desktop) */}
@@ -1004,10 +1163,13 @@ export default function SoloPilatesPage() {
               <input
                 type="search"
                 name="q"
-                aria-label="Buscar alumno de Pilates por nombre, DNI, teléfono o código QR"
-                placeholder="Buscar por nombre, DNI, teléfono o código PIL-XXXX..."
+                aria-label="Buscar alumno de Pilates por nombre, DNI, teléfono, objetivo médico o código QR"
+                placeholder="Buscar por nombre, DNI, móvil, código PIL-1319 o motivo (Recomendación médica, Embarazada...)"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setVisibleLimit(60);
+                }}
                 className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] pl-10 pr-4 py-2.5 text-xs text-[var(--color-text-title)] outline-none focus:border-teal-500"
               />
             </form>
@@ -1015,17 +1177,20 @@ export default function SoloPilatesPage() {
             <div className="flex flex-wrap items-center gap-1.5">
               {(
                 [
-                  { id: "all", label: "Todos" },
-                  { id: "mensual", label: "Mensualidad" },
+                  { id: "activos", label: `En Alta (${kpis.alumnosActivos})` },
+                  { id: "bajas", label: `Bajas (${bajasCount})` },
+                  { id: "all", label: `Todos (${students.length})` },
                   { id: "bonos", label: "Bonos" },
                   { id: "pendientes", label: "Renovación Pendiente" },
-                  { id: "bajas", label: "Bajas" },
                 ] as Array<{ id: StudentFilter; label: string }>
               ).map((f) => (
                 <button
                   key={f.id}
                   type="button"
-                  onClick={() => setStudentFilter(f.id)}
+                  onClick={() => {
+                    setStudentFilter(f.id);
+                    setVisibleLimit(60);
+                  }}
                   className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
                     studentFilter === f.id
                       ? "bg-teal-600 text-white"
@@ -1051,7 +1216,7 @@ export default function SoloPilatesPage() {
                 </h3>
                 <p className="text-xs text-[var(--color-text-secondary)] max-w-md mx-auto leading-relaxed">
                   Puedes crear fichas individuales con foto y QR o importar todo el listado de
-                  Enrique desde Excel / CSV en un solo clic.
+                  Enrique desde Excel / XML / CSV en un solo clic.
                 </p>
               </div>
               <div className="flex flex-wrap items-center justify-center gap-3">
@@ -1069,28 +1234,51 @@ export default function SoloPilatesPage() {
                   className="inline-flex items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-title)] font-bold px-4 py-2.5 text-xs cursor-pointer"
                 >
                   <Upload size={15} />
-                  <span>Importar Excel / CSV en 1 Clic</span>
+                  <span>Importar Excel / XML / CSV en 1 Clic</span>
                 </button>
               </div>
             </div>
           ) : (
             <>
+              {/* Barra informativa de censo activo / histórico */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1 text-xs text-[var(--color-text-secondary)]">
+                <span>
+                  Mostrando{" "}
+                  <strong className="text-[var(--color-text-title)]">
+                    {visibleStudents.length}
+                  </strong>{" "}
+                  de{" "}
+                  <strong className="text-[var(--color-text-title)]">
+                    {filteredStudents.length}
+                  </strong>{" "}
+                  alumnos en este filtro · Censo EZG Pilates:{" "}
+                  <strong className="text-teal-600 dark:text-teal-400">
+                    {kpis.alumnosActivos} en Alta
+                  </strong>{" "}
+                  y{" "}
+                  <strong className="text-[var(--color-text-title)]">
+                    {bajasCount} en Baja
+                  </strong>{" "}
+                  ({students.length} socios)
+                </span>
+              </div>
+
               {/* Tabla Desktop (>= md) */}
               <div className="hidden md:block rounded-3xl border border-[var(--color-border)] bg-[var(--color-bg-card)] overflow-hidden shadow-md">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
-                      <th className="py-3.5 pl-4 pr-2">Alumno / Foto</th>
+                      <th className="py-3.5 pl-4 pr-2">Alumno / Tipo Alumno (Salud)</th>
                       <th className="py-3.5 px-2">Contacto / DNI</th>
-                      <th className="py-3.5 px-2">Plan / Bono 24h</th>
+                      <th className="py-3.5 px-2">Tarifa EZG Pilates</th>
                       <th className="py-3.5 px-2">Cuota</th>
-                      <th className="py-3.5 px-2">Código QR</th>
-                      <th className="py-3.5 px-2">Estado</th>
+                      <th className="py-3.5 px-2">Socio QR</th>
+                      <th className="py-3.5 px-2">Estado / Alta</th>
                       <th className="py-3.5 pl-2 pr-4 text-right whitespace-nowrap">Acciones</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--color-border)] text-xs">
-                    {filteredStudents.map((s) => {
+                    {visibleStudents.map((s) => {
                       const needsRenewal =
                         s.estado === "Activo" &&
                         (s.estado_cuota === "Renovación Pendiente" ||
@@ -1101,7 +1289,7 @@ export default function SoloPilatesPage() {
                           key={s.id}
                           className="hover:bg-[var(--color-bg-hover)]/60 transition-colors"
                         >
-                          <td className="py-3 pl-4 pr-2 max-w-[215px]">
+                          <td className="py-3 pl-4 pr-2 max-w-[235px]">
                             <div className="flex items-center gap-2.5">
                               <div className="w-11 h-11 rounded-2xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-bg)] shrink-0 flex items-center justify-center">
                                 {s.foto_url ? (
@@ -1122,29 +1310,34 @@ export default function SoloPilatesPage() {
                                   {s.nombre_completo}
                                 </p>
                                 {s.notas_salud && (
-                                  <p className="text-[11px] text-[var(--color-text-secondary)] leading-snug break-words mt-0.5">
+                                  <span className="mt-1 inline-flex items-center rounded-lg bg-teal-500/12 border border-teal-500/25 px-2 py-0.5 text-[10px] font-bold text-teal-700 dark:text-teal-300 leading-snug break-words">
                                     {s.notas_salud}
-                                  </p>
+                                  </span>
                                 )}
                               </div>
                             </div>
                           </td>
-                          <td className="py-3 px-2 max-w-[155px]">
+                          <td className="py-3 px-2 max-w-[165px]">
                             <p className="font-mono font-semibold text-[var(--color-text-body)]">
                               {s.dni || "Sin DNI"}
                             </p>
                             <p className="text-[11px] text-[var(--color-text-secondary)] leading-snug break-all">
                               {s.telefono || s.email || "Sin teléfono"}
                             </p>
+                            {s.telefono && s.email && (
+                              <p className="text-[10px] text-[var(--color-text-secondary)] leading-snug break-all">
+                                {s.email}
+                              </p>
+                            )}
                           </td>
-                          <td className="py-3 px-2 max-w-[150px]">
+                          <td className="py-3 px-2 max-w-[165px]">
                             <p className="font-bold text-[var(--color-text-title)] leading-snug break-words">
                               {s.tipo_plan}
                             </p>
                             <p className="text-[11px] text-[var(--color-text-secondary)] leading-snug">
                               {s.es_bono
                                 ? `${s.sesiones_restantes ?? 0}/${
-                                    s.sesiones_totales_bono ?? 4
+                                    s.sesiones_totales_bono ?? 8
                                   } sesiones disponibles`
                                 : `Acceso Libre 24h · ${s.metodo_pago}`}
                             </p>
@@ -1165,19 +1358,31 @@ export default function SoloPilatesPage() {
                             </button>
                           </td>
                           <td className="py-3 px-2">
-                            {s.estado === "Baja" ? (
-                              <span className="inline-flex items-center rounded-full bg-slate-500/15 border border-slate-500/30 px-2.5 py-0.5 text-[11px] font-bold text-[var(--color-text-secondary)] whitespace-nowrap">
-                                Baja
-                              </span>
-                            ) : needsRenewal ? (
-                              <span className="inline-flex items-center rounded-full bg-amber-500/15 border border-amber-500/35 px-2.5 py-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-300 whitespace-nowrap">
-                                Renovación
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center rounded-full bg-emerald-500/15 border border-emerald-500/35 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 whitespace-nowrap">
-                                Al día
-                              </span>
-                            )}
+                            <div className="space-y-0.5">
+                              {s.estado === "Baja" ? (
+                                <span className="inline-flex items-center rounded-full bg-slate-500/15 border border-slate-500/30 px-2.5 py-0.5 text-[11px] font-bold text-[var(--color-text-secondary)] whitespace-nowrap">
+                                  Baja
+                                </span>
+                              ) : needsRenewal ? (
+                                <span className="inline-flex items-center rounded-full bg-amber-500/15 border border-amber-500/35 px-2.5 py-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-300 whitespace-nowrap">
+                                  Renovación
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center rounded-full bg-emerald-500/15 border border-emerald-500/35 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 whitespace-nowrap">
+                                  Alta · Al día
+                                </span>
+                              )}
+                              {s.fecha_alta && (
+                                <p className="text-[10px] font-mono text-[var(--color-text-secondary)] whitespace-nowrap">
+                                  Alta: {s.fecha_alta}
+                                </p>
+                              )}
+                              {s.estado === "Baja" && s.fecha_baja && (
+                                <p className="text-[10px] font-mono text-[var(--color-text-secondary)] whitespace-nowrap">
+                                  Baja: {s.fecha_baja}
+                                </p>
+                              )}
+                            </div>
                           </td>
                           <td className="py-3 pl-2 pr-4">
                             <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
@@ -1226,7 +1431,7 @@ export default function SoloPilatesPage() {
 
               {/* Vista Tarjetas Móvil (< md, 390px Cero Scroll Horizontal) */}
               <div className="md:hidden space-y-3">
-                {filteredStudents.map((s) => {
+                {visibleStudents.map((s) => {
                   const needsRenewal =
                     s.estado === "Activo" &&
                     (s.estado_cuota === "Renovación Pendiente" ||
@@ -1259,7 +1464,12 @@ export default function SoloPilatesPage() {
                           <p className="text-xs font-mono text-[var(--color-text-secondary)]">
                             {s.codigo_qr} · {s.dni || s.telefono || "Sin DNI"}
                           </p>
-                          <p className="text-xs font-semibold text-teal-600 dark:text-teal-400 leading-snug break-words mt-0.5">
+                          {s.notas_salud && (
+                            <span className="mt-1 inline-flex items-center rounded-lg bg-teal-500/12 border border-teal-500/25 px-2 py-0.5 text-[10px] font-bold text-teal-700 dark:text-teal-300 leading-snug break-words">
+                              {s.notas_salud}
+                            </span>
+                          )}
+                          <p className="text-xs font-semibold text-teal-600 dark:text-teal-400 leading-snug break-words mt-1">
                             {s.tipo_plan} ·{" "}
                             <span className="whitespace-nowrap inline-block">
                               {s.importe_cuota.toFixed(2)} €
@@ -1270,24 +1480,22 @@ export default function SoloPilatesPage() {
 
                       <div className="flex items-center justify-between gap-2 text-xs pt-2 border-t border-[var(--color-border)]">
                         <span className="text-[var(--color-text-secondary)]">
-                          {s.es_bono
-                            ? `${s.sesiones_restantes ?? 0}/${
-                                s.sesiones_totales_bono ?? 4
-                              } sesiones`
-                            : "Horario Libre 24h"}
+                          {s.fecha_alta ? `Alta: ${s.fecha_alta}` : "Horario Libre 24h"}
                         </span>
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                            needsRenewal
+                            s.estado === "Baja"
+                              ? "bg-slate-500/15 text-[var(--color-text-secondary)]"
+                              : needsRenewal
                               ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
                               : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                           }`}
                         >
                           {s.estado === "Baja"
-                            ? "Baja"
+                            ? `Baja${s.fecha_baja ? ` (${s.fecha_baja})` : ""}`
                             : needsRenewal
                             ? "Renovación Pendiente"
-                            : "Al día"}
+                            : "Alta · Al día"}
                         </span>
                       </div>
 
@@ -1329,6 +1537,32 @@ export default function SoloPilatesPage() {
                   );
                 })}
               </div>
+
+              {/* Paginación ligera para listado de 1.317 alumnos */}
+              {filteredStudents.length > visibleLimit && (
+                <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <p className="text-xs text-[var(--color-text-secondary)]">
+                    Mostrando <strong className="text-[var(--color-text-title)]">{visibleStudents.length}</strong> de{" "}
+                    <strong className="text-[var(--color-text-title)]">{filteredStudents.length}</strong> alumnos
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit((prev) => prev + 100)}
+                      className="rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold px-4 py-2 text-xs cursor-pointer"
+                    >
+                      Cargar 100 más
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setVisibleLimit(filteredStudents.length)}
+                      className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] text-[var(--color-text-title)] font-bold px-4 py-2 text-xs cursor-pointer"
+                    >
+                      Ver los {filteredStudents.length} alumnos
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -1631,8 +1865,8 @@ export default function SoloPilatesPage() {
                 <input
                   type="file"
                   name="pilates_import_file"
-                  aria-label="Seleccionar archivo CSV o Excel de alumnos de Pilates"
-                  accept=".csv,.tsv,.xlsx,.txt"
+                  aria-label="Seleccionar archivo CSV, XML o Excel de alumnos de Pilates"
+                  accept=".csv,.tsv,.xlsx,.xml,.txt"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) processSelectedImportFile(f);
@@ -2493,7 +2727,7 @@ export default function SoloPilatesPage() {
                 >
                   {PILATES_PLAN_PRESETS.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.id}
+                      {p.label}
                     </option>
                   ))}
                 </select>

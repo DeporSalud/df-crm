@@ -218,6 +218,7 @@ export default function AccessDeniedOverlay({
         const { data } = await supabase
           .from("alumnos")
           .select("*, alumnos_clases(*)")
+          .neq("sede", "pilates")
           .order("nombre_completo", { ascending: true });
 
         if (!cancelled && data) {

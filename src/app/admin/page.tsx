@@ -507,6 +507,7 @@ export default function AdminDashboardRecepcion() {
       let query = supabase
         .from("alumnos")
         .select("*, alumnos_clases(clase_id, asignado_en, clases_cuadrante(id, nombre_clase, dia_semana, hora_inicio, sede))")
+        .neq("sede", "pilates")
         .or(`nombre_completo.ilike.%${manualSearch}%,dni.ilike.%${manualSearch}%`)
         .limit(5);
         

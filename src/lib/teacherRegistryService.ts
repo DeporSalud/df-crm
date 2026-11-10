@@ -583,7 +583,7 @@ export function mergeTeachersFromAlumnosRows(rows: any[] | null | undefined): Te
 
 export async function fetchAllTeachersFromSupabase(): Promise<TeacherRecord[]> {
   try {
-    const { data, error } = await supabase.from("alumnos").select("*");
+    const { data, error } = await supabase.from("alumnos").select("*").neq("sede", "pilates");
     if (error || !data) {
       return getInitialTeacherRecords(false);
     }

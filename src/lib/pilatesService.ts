@@ -37,11 +37,41 @@ const STORAGE_KEYS = {
 } as const;
 
 export type PilatesPlanType =
+  | "Suelo · 4 Clases (Mañana)"
+  | "Suelo · 4 Clases (Tarde)"
+  | "Suelo · 8 Clases (Mañana)"
+  | "Suelo · 8 Clases (Tarde)"
+  | "Suelo · 12 Clases (Mañana)"
+  | "Suelo · 12 Clases (Tarde)"
+  | "Máquina · 4 Clases (Mañana)"
+  | "Máquina · 4 Clases (Tarde)"
+  | "Máquina · 8 Clases (Mañana)"
+  | "Máquina · 8 Clases (Tarde)"
+  | "Máquina · 12 Clases (Mañana)"
+  | "Máquina · 12 Clases (Tarde)"
+  | "1 Suelo + 1 Máquina · 8 Clases (Mañana)"
+  | "1 Suelo + 1 Máquina · 8 Clases (Tarde)"
+  | "2 Suelo + 1 Máquina · 12 Clases (Mañana)"
+  | "2 Suelo + 1 Máquina · 12 Clases (Tarde)"
+  | "1 Suelo + 2 Máquina · 12 Clases (Mañana)"
+  | "1 Suelo + 2 Máquina · 12 Clases (Tarde)"
+  | "3 Suelo + 1 Máquina · 16 Clases (Mañana)"
+  | "3 Suelo + 1 Máquina · 16 Clases (Tarde)"
+  | "Clase Suelta Pilates Suelo"
+  | "Clase Suelta Pilates Máquina"
+  | "Reserva del Mes (1 por curso)"
+  | "Suplemento Cuota Alumno Variable (+3€)"
+  | "Matrícula EZG Pilates"
+  | "Tarjeta de Acceso"
+  | "Parking 1 Hora"
+  | "Bono Mensual Parking 4 Horas"
+  | "Bono Mensual Parking 8 Horas"
   | "Mensualidad Flexible 24h"
   | "Pilates Máquinas Mensual"
   | "Bono 4 Sesiones"
   | "Bono 8 Sesiones"
-  | "Bono 10 Sesiones";
+  | "Bono 10 Sesiones"
+  | (string & {});
 
 export type PilatesMetodoPago = "Efectivo" | "TPV" | "Transferencia" | "SEPA";
 
@@ -50,52 +80,288 @@ export type PilatesEstadoCuota = "Al día" | "Renovación Pendiente" | "Baja";
 export interface PilatesPlanPreset {
   id: PilatesPlanType;
   label: string;
+  categoria?: "Clases de Suelo" | "Clases Máquina" | "Suelo + Máquina" | "Clases Sueltas y Extras";
+  turno?: "Mañana" | "Tarde" | "General";
   esBono: boolean;
   sesionesIncluidas: number | null;
   importeSugerido: number;
 }
 
 export const PILATES_PLAN_PRESETS: PilatesPlanPreset[] = [
+  // --- CLASES DE SUELO (Cartel Oficial EZG Pilates Septiembre 2026) ---
   {
-    id: "Mensualidad Flexible 24h",
-    label: "Mensualidad Flexible 24h (Acceso Libre)",
-    esBono: false,
-    sesionesIncluidas: null,
-    importeSugerido: 55,
-  },
-  {
-    id: "Pilates Máquinas Mensual",
-    label: "Pilates Máquinas Mensual (24h)",
-    esBono: false,
-    sesionesIncluidas: null,
-    importeSugerido: 75,
-  },
-  {
-    id: "Bono 4 Sesiones",
-    label: "Bono 4 Sesiones Pilates",
+    id: "Suelo · 4 Clases (Mañana)",
+    label: "Clases de Suelo · 4 Clases — Mañana (32,00 €)",
+    categoria: "Clases de Suelo",
+    turno: "Mañana",
     esBono: true,
     sesionesIncluidas: 4,
+    importeSugerido: 32,
+  },
+  {
+    id: "Suelo · 4 Clases (Tarde)",
+    label: "Clases de Suelo · 4 Clases — Tarde (35,00 €)",
+    categoria: "Clases de Suelo",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 4,
+    importeSugerido: 35,
+  },
+  {
+    id: "Suelo · 8 Clases (Mañana)",
+    label: "Clases de Suelo · 8 Clases — Mañana (48,00 €)",
+    categoria: "Clases de Suelo",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 8,
     importeSugerido: 48,
   },
   {
-    id: "Bono 8 Sesiones",
-    label: "Bono 8 Sesiones Pilates",
+    id: "Suelo · 8 Clases (Tarde)",
+    label: "Clases de Suelo · 8 Clases — Tarde (53,00 €)",
+    categoria: "Clases de Suelo",
+    turno: "Tarde",
     esBono: true,
     sesionesIncluidas: 8,
-    importeSugerido: 85,
+    importeSugerido: 53,
   },
   {
-    id: "Bono 10 Sesiones",
-    label: "Bono 10 Sesiones Pilates",
+    id: "Suelo · 12 Clases (Mañana)",
+    label: "Clases de Suelo · 12 Clases — Mañana (76,00 €)",
+    categoria: "Clases de Suelo",
+    turno: "Mañana",
     esBono: true,
-    sesionesIncluidas: 10,
-    importeSugerido: 100,
+    sesionesIncluidas: 12,
+    importeSugerido: 76,
+  },
+  {
+    id: "Suelo · 12 Clases (Tarde)",
+    label: "Clases de Suelo · 12 Clases — Tarde (82,00 €)",
+    categoria: "Clases de Suelo",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 12,
+    importeSugerido: 82,
+  },
+
+  // --- CLASES MÁQUINA (Cartel Oficial EZG Pilates Septiembre 2026) ---
+  {
+    id: "Máquina · 4 Clases (Mañana)",
+    label: "Clases Máquina · 4 Clases — Mañana (55,00 €)",
+    categoria: "Clases Máquina",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 4,
+    importeSugerido: 55,
+  },
+  {
+    id: "Máquina · 4 Clases (Tarde)",
+    label: "Clases Máquina · 4 Clases — Tarde (58,00 €)",
+    categoria: "Clases Máquina",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 4,
+    importeSugerido: 58,
+  },
+  {
+    id: "Máquina · 8 Clases (Mañana)",
+    label: "Clases Máquina · 8 Clases — Mañana (83,00 €)",
+    categoria: "Clases Máquina",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 8,
+    importeSugerido: 83,
+  },
+  {
+    id: "Máquina · 8 Clases (Tarde)",
+    label: "Clases Máquina · 8 Clases — Tarde (93,00 €)",
+    categoria: "Clases Máquina",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 8,
+    importeSugerido: 93,
+  },
+  {
+    id: "Máquina · 12 Clases (Mañana)",
+    label: "Clases Máquina · 12 Clases — Mañana (113,00 €)",
+    categoria: "Clases Máquina",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 12,
+    importeSugerido: 113,
+  },
+  {
+    id: "Máquina · 12 Clases (Tarde)",
+    label: "Clases Máquina · 12 Clases — Tarde (123,00 €)",
+    categoria: "Clases Máquina",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 12,
+    importeSugerido: 123,
+  },
+
+  // --- COMBINADOS SUELO + MÁQUINA (Cartel Oficial EZG Pilates Septiembre 2026) ---
+  {
+    id: "1 Suelo + 1 Máquina · 8 Clases (Mañana)",
+    label: "1 Suelo + 1 Máquina (8 cl.) — Mañana (65,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 8,
+    importeSugerido: 65,
+  },
+  {
+    id: "1 Suelo + 1 Máquina · 8 Clases (Tarde)",
+    label: "1 Suelo + 1 Máquina (8 cl.) — Tarde (68,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 8,
+    importeSugerido: 68,
+  },
+  {
+    id: "2 Suelo + 1 Máquina · 12 Clases (Mañana)",
+    label: "2 Suelo + 1 Máquina (12 cl.) — Mañana (90,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 12,
+    importeSugerido: 90,
+  },
+  {
+    id: "2 Suelo + 1 Máquina · 12 Clases (Tarde)",
+    label: "2 Suelo + 1 Máquina (12 cl.) — Tarde (97,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 12,
+    importeSugerido: 97,
+  },
+  {
+    id: "1 Suelo + 2 Máquina · 12 Clases (Mañana)",
+    label: "1 Suelo + 2 Máquina (12 cl.) — Mañana (102,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 12,
+    importeSugerido: 102,
+  },
+  {
+    id: "1 Suelo + 2 Máquina · 12 Clases (Tarde)",
+    label: "1 Suelo + 2 Máquina (12 cl.) — Tarde (114,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 12,
+    importeSugerido: 114,
+  },
+  {
+    id: "3 Suelo + 1 Máquina · 16 Clases (Mañana)",
+    label: "3 Suelo + 1 Máquina (16 cl.) — Mañana (105,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Mañana",
+    esBono: true,
+    sesionesIncluidas: 16,
+    importeSugerido: 105,
+  },
+  {
+    id: "3 Suelo + 1 Máquina · 16 Clases (Tarde)",
+    label: "3 Suelo + 1 Máquina (16 cl.) — Tarde (116,00 €)",
+    categoria: "Suelo + Máquina",
+    turno: "Tarde",
+    esBono: true,
+    sesionesIncluidas: 16,
+    importeSugerido: 116,
+  },
+
+  // --- CLASES SUELTAS, RESERVA, MATRÍCULA, TARJETA Y PARKING ---
+  {
+    id: "Clase Suelta Pilates Suelo",
+    label: "Clase Suelta Pilates Suelo (12,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: true,
+    sesionesIncluidas: 1,
+    importeSugerido: 12,
+  },
+  {
+    id: "Clase Suelta Pilates Máquina",
+    label: "Clase Suelta Pilates Máquina (17,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: true,
+    sesionesIncluidas: 1,
+    importeSugerido: 17,
+  },
+  {
+    id: "Reserva del Mes (1 por curso)",
+    label: "Reserva del Mes · 1 por curso (15,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: false,
+    sesionesIncluidas: null,
+    importeSugerido: 15,
+  },
+  {
+    id: "Suplemento Cuota Alumno Variable (+3€)",
+    label: "Suplemento Cuota Alumno Variable (+3,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: false,
+    sesionesIncluidas: null,
+    importeSugerido: 3,
+  },
+  {
+    id: "Matrícula EZG Pilates",
+    label: "Matrícula EZG Pilates (30,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: false,
+    sesionesIncluidas: null,
+    importeSugerido: 30,
+  },
+  {
+    id: "Tarjeta de Acceso",
+    label: "Tarjeta de Acceso QR / NFC (5,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: false,
+    sesionesIncluidas: null,
+    importeSugerido: 5,
+  },
+  {
+    id: "Parking 1 Hora",
+    label: "Parking 1 Hora (1,30 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: false,
+    sesionesIncluidas: null,
+    importeSugerido: 1.3,
+  },
+  {
+    id: "Bono Mensual Parking 4 Horas",
+    label: "Bono Mensual Parking · 4 Horas (4,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: false,
+    sesionesIncluidas: null,
+    importeSugerido: 4,
+  },
+  {
+    id: "Bono Mensual Parking 8 Horas",
+    label: "Bono Mensual Parking · 8 Horas (8,00 €)",
+    categoria: "Clases Sueltas y Extras",
+    turno: "General",
+    esBono: false,
+    sesionesIncluidas: null,
+    importeSugerido: 8,
   },
 ];
 
 export interface PilatesStudent {
   id: string;
-  codigo_qr: string; // Ej: PIL-1001
+  codigo_qr: string; // Ej: PIL-1319
+  num_socio?: string; // Ej: "1319"
   nombre: string;
   apellidos: string;
   nombre_completo: string;
@@ -113,7 +379,10 @@ export interface PilatesStudent {
   estado: "Activo" | "Baja";
   estado_cuota: PilatesEstadoCuota;
   ultimo_mes_pagado: string; // YYYY-MM
-  notas_salud: string;
+  notas_salud: string; // Tipo Alumno / observación médica (Recomendación médica, Reeducación postural, etc.)
+  fecha_alta?: string; // DD/MM/YYYY
+  fecha_baja?: string; // DD/MM/YYYY
+  matriculado?: boolean;
   creado_en: string;
   actualizado_en: string;
 }
@@ -444,7 +713,32 @@ export function getPilatesStudents(): PilatesStudent[] {
   }
 }
 
-function writePilatesStudentsLocal(students: PilatesStudent[], broadcastSync = true): void {
+function sortPilatesStudentsBySocioDesc(list: PilatesStudent[]): PilatesStudent[] {
+  return [...list].sort((a, b) => {
+    const extractNum = (s: PilatesStudent): number => {
+      if (s.num_socio && /^\d+$/.test(s.num_socio)) {
+        const n = parseInt(s.num_socio, 10);
+        if (n > 0) return n;
+      }
+      const m = String(s.codigo_qr || "").match(/^PIL-(\d+)$/i);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n > 0) return n;
+      }
+      return -1;
+    };
+    const na = extractNum(a);
+    const nb = extractNum(b);
+    if (na !== nb) return nb - na;
+    return (b.creado_en || "").localeCompare(a.creado_en || "");
+  });
+}
+
+function writePilatesStudentsLocal(
+  students: PilatesStudent[],
+  broadcastSync = true,
+  singleUpdatedStudent?: PilatesStudent
+): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(students));
@@ -453,7 +747,12 @@ function writePilatesStudentsLocal(students: PilatesStudent[], broadcastSync = t
   }
   if (broadcastSync) {
     publishSyncEvent("df_pilates_roster_sync", {
-      students,
+      students: singleUpdatedStudent
+        ? [singleUpdatedStudent]
+        : students.length <= 150
+        ? students
+        : undefined,
+      reloadFromCloud: !singleUpdatedStudent && students.length > 150,
       senderInstance: getClientInstanceId(),
       ts: Date.now(),
     });
@@ -520,15 +819,23 @@ export function initPilatesCrossPcSync(): void {
     if (!detail) return;
     let changed = false;
 
-    if (Array.isArray(detail.students)) {
+    if (detail.reloadFromCloud) {
+      syncPilatesFromCloudIfEnabled().then(() => {
+        window.dispatchEvent(new CustomEvent("df_pilates_updated", { detail: { remote: true } }));
+      });
+    }
+
+    if (Array.isArray(detail.students) || detail.deletedStudentId) {
       const local = getPilatesStudents();
       const mergedMap = new Map<string, PilatesStudent>();
       for (const s of local) mergedMap.set(s.id, s);
-      for (const incoming of detail.students as PilatesStudent[]) {
-        const prev = mergedMap.get(incoming.id);
-        if (!prev || (incoming.actualizado_en || "") >= (prev.actualizado_en || "")) {
-          mergedMap.set(incoming.id, incoming);
-          changed = true;
+      if (Array.isArray(detail.students)) {
+        for (const incoming of detail.students as PilatesStudent[]) {
+          const prev = mergedMap.get(incoming.id);
+          if (!prev || (incoming.actualizado_en || "") >= (prev.actualizado_en || "")) {
+            mergedMap.set(incoming.id, incoming);
+            changed = true;
+          }
         }
       }
       if (detail.deletedStudentId && mergedMap.has(detail.deletedStudentId)) {
@@ -536,9 +843,7 @@ export function initPilatesCrossPcSync(): void {
         changed = true;
       }
       if (changed) {
-        const merged = Array.from(mergedMap.values()).sort((a, b) =>
-          (b.creado_en || "").localeCompare(a.creado_en || "")
-        );
+        const merged = sortPilatesStudentsBySocioDesc(Array.from(mergedMap.values()));
         writePilatesStudentsLocal(merged, false);
       }
     }
@@ -592,7 +897,8 @@ export function initPilatesCrossPcSync(): void {
     const cfg = getPilatesSecurityConfig();
     if (students.length > 0 || payments.length > 0) {
       publishSyncEvent("df_pilates_roster_sync", {
-        students,
+        students: students.length <= 150 ? students : undefined,
+        reloadFromCloud: students.length > 150,
         payments,
         securityConfig: {
           masterPin: cfg.masterPin,
@@ -612,20 +918,26 @@ export function initPilatesCrossPcSync(): void {
 }
 
 /**
- * Sincronización opcional con tabla Supabase `alumnos` (SOLO cuando NEXT_PUBLIC_PILATES_CLOUD_DB === "true")
+ * Sincronización opcional con tabla Supabase `alumnos` (SOLO cuando NEXT_PUBLIC_PILATES_CLOUD_DB === "true" o en producción)
  */
 async function syncPilatesStudentToCloudIfEnabled(student: PilatesStudent): Promise<void> {
   if (!isPilatesCloudDbEnabled()) return;
   try {
     const metaPayload = {
       codigo_qr: student.codigo_qr,
+      num_socio: student.num_socio || student.codigo_qr.replace(/^PIL-/i, ""),
       foto_url: student.foto_url,
+      tipo_plan: student.tipo_plan,
+      es_bono: student.es_bono,
       importe_cuota: student.importe_cuota,
       metodo_pago: student.metodo_pago,
       iban: student.iban,
       estado_cuota: student.estado_cuota,
       ultimo_mes_pagado: student.ultimo_mes_pagado,
       notas_salud: student.notas_salud,
+      fecha_alta: student.fecha_alta || "",
+      fecha_baja: student.fecha_baja || "",
+      matriculado: Boolean(student.matriculado),
       sesiones_totales_bono: student.sesiones_totales_bono,
     };
 
@@ -634,9 +946,9 @@ async function syncPilatesStudentToCloudIfEnabled(student: PilatesStudent): Prom
         id: student.id,
         sede: "pilates",
         nombre_completo: student.nombre_completo,
-        dni: student.dni || null,
+        dni: student.dni || "",
         telefono: student.telefono || "",
-        email: student.email || null,
+        email: student.email || "",
         plan_activo: `Solo Pilates · ${student.tipo_plan}`,
         clases_restantes: student.sesiones_restantes,
         nfc_token: student.codigo_qr,
@@ -654,15 +966,27 @@ export async function syncPilatesFromCloudIfEnabled(): Promise<PilatesStudent[]>
   if (!isPilatesCloudDbEnabled()) return local;
 
   try {
-    const { data, error } = await supabase
-      .from("alumnos")
-      .select("*")
-      .eq("sede", "pilates")
-      .order("creado_en", { ascending: false });
+    const allRows: any[] = [];
+    const pageSize = 1000;
+    let offset = 0;
 
-    if (error || !data) return local;
+    while (true) {
+      const { data, error } = await supabase
+        .from("alumnos")
+        .select("*")
+        .eq("sede", "pilates")
+        .order("id", { ascending: true })
+        .range(offset, offset + pageSize - 1);
 
-    const mapped: PilatesStudent[] = data.map((row: any) => {
+      if (error || !data || data.length === 0) break;
+      allRows.push(...data);
+      if (data.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    if (allRows.length === 0) return local;
+
+    const mapped: PilatesStudent[] = allRows.map((row: any) => {
       let meta: any = {};
       const dir = String(row.direccion || "");
       if (dir.startsWith(PILATES_META_PREFIX)) {
@@ -674,13 +998,19 @@ export async function syncPilatesFromCloudIfEnabled(): Promise<PilatesStudent[]>
       const parts = fullName.split(/\s+/);
       const nombre = parts[0] || "";
       const apellidos = parts.slice(1).join(" ");
-      const rawPlan = String(row.plan_activo || "").replace(/^Solo Pilates\s*·\s*/i, "");
+      const rawPlan = String(meta.tipo_plan || row.plan_activo || "").replace(/^Solo Pilates\s*·\s*/i, "");
       const preset =
-        PILATES_PLAN_PRESETS.find((p) => p.id === rawPlan) || PILATES_PLAN_PRESETS[0];
+        PILATES_PLAN_PRESETS.find((p) => p.id === rawPlan) ||
+        PILATES_PLAN_PRESETS.find((p) => p.id === "Suelo · 8 Clases (Mañana)") ||
+        PILATES_PLAN_PRESETS[0];
+
+      const isBaja = row.estado === "Baja";
+      const codigoQr = String(meta.codigo_qr || row.nfc_token || "PIL-1001").trim();
 
       return {
         id: row.id,
-        codigo_qr: meta.codigo_qr || row.nfc_token || "PIL-1001",
+        codigo_qr: codigoQr,
+        num_socio: meta.num_socio || codigoQr.replace(/^PIL-/i, ""),
         nombre,
         apellidos,
         nombre_completo: fullName,
@@ -688,28 +1018,38 @@ export async function syncPilatesFromCloudIfEnabled(): Promise<PilatesStudent[]>
         telefono: row.telefono || "",
         email: row.email || "",
         foto_url: meta.foto_url || "",
-        tipo_plan: preset.id,
-        es_bono: preset.esBono,
+        tipo_plan: meta.tipo_plan || preset.id,
+        es_bono: typeof meta.es_bono === "boolean" ? meta.es_bono : preset.esBono,
         importe_cuota: Number(meta.importe_cuota ?? preset.importeSugerido),
         sesiones_restantes:
-          typeof row.clases_restantes === "number" ? row.clases_restantes : preset.sesionesIncluidas,
+          typeof row.clases_restantes === "number"
+            ? row.clases_restantes
+            : isBaja
+            ? 0
+            : preset.sesionesIncluidas,
         sesiones_totales_bono: meta.sesiones_totales_bono ?? preset.sesionesIncluidas,
         metodo_pago: meta.metodo_pago || "TPV",
         iban: meta.iban || "",
-        estado: row.estado === "Baja" ? "Baja" : "Activo",
-        estado_cuota: meta.estado_cuota || "Al día",
+        estado: isBaja ? "Baja" : "Activo",
+        estado_cuota: isBaja ? "Baja" : meta.estado_cuota || "Al día",
         ultimo_mes_pagado: meta.ultimo_mes_pagado || getCurrentYearMonth(),
         notas_salud: meta.notas_salud || "",
+        fecha_alta: meta.fecha_alta || "",
+        fecha_baja: meta.fecha_baja || "",
+        matriculado: Boolean(meta.matriculado),
         creado_en: row.creado_en || new Date().toISOString(),
         actualizado_en: new Date().toISOString(),
       };
     });
 
-    if (mapped.length > 0) {
-      writePilatesStudentsLocal(mapped, false);
-      return mapped;
+    const sorted = sortPilatesStudentsBySocioDesc(mapped);
+    if (sorted.length > 0) {
+      writePilatesStudentsLocal(sorted, false);
+      return sorted;
     }
-  } catch {}
+  } catch (err) {
+    console.warn("[PilatesService] Error sincronizando desde Cloud DB:", err);
+  }
   return local;
 }
 
@@ -818,6 +1158,7 @@ export async function savePilatesStudent(
       (input.codigo_qr && input.codigo_qr.trim().toUpperCase()) ||
       previous?.codigo_qr ||
       generateNextPilatesQrCode(existing),
+    num_socio: previous?.num_socio,
     nombre: cleanNombre,
     apellidos: cleanApellidos,
     nombre_completo: nombreCompleto,
@@ -839,6 +1180,9 @@ export async function savePilatesStudent(
     estado_cuota: estadoCuotaFinal,
     ultimo_mes_pagado: previous?.ultimo_mes_pagado || getCurrentYearMonth(),
     notas_salud: String(input.notas_salud || "").trim(),
+    fecha_alta: previous?.fecha_alta,
+    fecha_baja: previous?.fecha_baja,
+    matriculado: previous?.matriculado,
     creado_en: previous?.creado_en || nowIso,
     actualizado_en: nowIso,
   };
@@ -851,7 +1195,7 @@ export async function savePilatesStudent(
     updatedList = [student, ...existing];
   }
 
-  writePilatesStudentsLocal(updatedList, true);
+  writePilatesStudentsLocal(updatedList, true, student);
   await syncPilatesStudentToCloudIfEnabled(student);
 
   return student;
@@ -863,7 +1207,7 @@ export async function deletePilatesStudent(studentId: string): Promise<void> {
   if (typeof window !== "undefined") {
     localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(next));
     publishSyncEvent("df_pilates_roster_sync", {
-      students: next,
+      students: next.length <= 150 ? next : undefined,
       deletedStudentId: studentId,
       senderInstance: getClientInstanceId(),
       ts: Date.now(),
@@ -886,8 +1230,8 @@ export function extractPilatesCodeCandidate(rawInput: string): string {
   const trimmed = String(rawInput || "").trim();
   if (!trimmed) return "";
 
-  // Soportar URLs con código embebido (ej: ?qr=PIL-1001 o /PIL-1001)
-  const pilMatch = trimmed.toUpperCase().match(/\b(PIL-\d{3,8})\b/);
+  // Soportar URLs con código embebido (ej: ?qr=PIL-1319 o /PIL-1)
+  const pilMatch = trimmed.toUpperCase().match(/\b(PIL-\d{1,8}(?:-\d+)?)\b/);
   if (pilMatch) return pilMatch[1];
 
   return trimmed;
@@ -898,12 +1242,14 @@ export function findPilatesStudentByCode(rawCode: string): PilatesStudent | null
   if (!clean) return null;
 
   const upper = clean.toUpperCase();
+  const normPilNum = upper.replace(/^PIL-0*(\d+)$/, "PIL-$1");
   const normDniCandidate = normalizeDni(clean);
   const lower = clean.toLowerCase();
 
   const students = getPilatesStudents();
   for (const s of students) {
-    if (String(s.codigo_qr || "").toUpperCase() === upper) return s;
+    const sQr = String(s.codigo_qr || "").toUpperCase();
+    if (sQr === upper || sQr.replace(/^PIL-0*(\d+)$/, "PIL-$1") === normPilNum) return s;
     if (s.id === clean) return s;
     if (normDniCandidate.length >= 6 && normalizeDni(s.dni) === normDniCandidate) return s;
     if (s.email && s.email.toLowerCase() === lower) return s;
@@ -1013,7 +1359,7 @@ export async function processPilatesScan(
     actualizado_en: nowIso,
   };
   const nextStudents = allStudents.map((s) => (s.id === student.id ? updatedStudent : s));
-  writePilatesStudentsLocal(nextStudents, true);
+  writePilatesStudentsLocal(nextStudents, true, updatedStudent);
   await syncPilatesStudentToCloudIfEnabled(updatedStudent);
 
   // Registrar asistencia 24h
@@ -1145,7 +1491,7 @@ export async function registrarCobroPilates(
 
   const nextStudents = [...students];
   nextStudents[idx] = updatedStudent;
-  writePilatesStudentsLocal(nextStudents, true);
+  writePilatesStudentsLocal(nextStudents, true, updatedStudent);
   await syncPilatesStudentToCloudIfEnabled(updatedStudent);
 
   const existingPayments = getPilatesPayments();
@@ -1471,6 +1817,32 @@ export async function parsePilatesImportFile(file: File): Promise<PilatesImportP
   if (ext === "xlsx") {
     const buf = await file.arrayBuffer();
     matrix = await parseXlsxBufferToMatrix(buf);
+  } else if (ext === "xml") {
+    const buf = await file.arrayBuffer();
+    const text = new TextDecoder("utf-8").decode(buf);
+    const items = [...text.matchAll(/<Elemento>([\s\S]*?)<\/Elemento>/g)].map((m) => {
+      const getTag = (tag: string) => {
+        const r = m[1].match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i"));
+        return r ? r[1].trim() : "";
+      };
+      return [
+        getTag("Numero"),
+        getTag("Nombre"),
+        getTag("NIF_CIF"),
+        getTag("Movil") || getTag("Telefono"),
+        getTag("CorreoElectronico"),
+        getTag("TipoAlumno"),
+        getTag("Estado"),
+        getTag("FechaAlta"),
+        getTag("FechaBaja"),
+      ];
+    });
+    if (items.length > 0) {
+      matrix = [
+        ["numero", "nombre_completo", "dni", "telefono", "email", "notas_salud", "estado", "fecha_alta", "fecha_baja"],
+        ...items,
+      ];
+    }
   } else {
     const buf = await file.arrayBuffer();
     let text = new TextDecoder("utf-8").decode(buf);
