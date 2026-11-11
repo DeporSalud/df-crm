@@ -29,10 +29,15 @@ import {
   X,
   Play,
   RefreshCw,
+  Clock,
+  History,
+  LogOut,
 } from "lucide-react";
 import { isRealtimeSyncConnected, subscribeSyncEvent } from "@/lib/syncEventBus";
 import {
   PILATES_PLAN_PRESETS,
+  PILATES_SESSION_DURATION_MINUTES,
+  PilatesActiveRoomSession,
   PilatesAttendance,
   PilatesImportPreview,
   PilatesMetodoPago,
@@ -44,15 +49,19 @@ import {
   deletePilatesPayment,
   deletePilatesStudent,
   downloadPilatesCsvTemplate,
+  exportPilatesAttendancesCsv,
   exportPilatesPaymentsCsv,
+  finalizarSesionSalaPilates,
   getCurrentYearMonth,
   getDesktopNotificationPermission,
+  getPilatesActiveRoomSessions,
   getPilatesAttendances,
   getPilatesDashboardKpis,
   getPilatesInitials,
   getPilatesPayments,
   getPilatesSecurityConfig,
   getPilatesStudents,
+  getTodayISO,
   importPilatesStudentsBatch,
   initPilatesCrossPcSync,
   isPilatesSessionUnlocked,
@@ -68,8 +77,9 @@ import {
   verifyPilatesPin,
 } from "@/lib/pilatesService";
 
-type PilatesSubTab = "alumnos" | "facturacion" | "importar" | "recepcion";
+type PilatesSubTab = "alumnos" | "historial" | "facturacion" | "importar" | "recepcion";
 type StudentFilter = "activos" | "bajas" | "all" | "bonos" | "pendientes";
+type HistoryDateFilter = "hoy" | "ayer" | "7dias" | "todas" | "fecha";
 
 const BILLING_MONTHS = [
   { value: "2026-09", label: "Septiembre 2026" },
@@ -111,7 +121,11 @@ export default function SoloPilatesPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [studentFilter, setStudentFilter] = useState<StudentFilter>("activos");
   const [visibleLimit, setVisibleLimit] = useState<number>(60);
-  const [showTarifarioCard, setShowTarifarioCard] = useState<boolean>(true);
+  const [showTarifarioCard, setShowTarifarioCard] = useState<boolean>(false);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [historyDateFilter, setHistoryDateFilter] = useState<HistoryDateFilter>("hoy");
+  const [historyCustomDate, setHistoryCustomDate] = useState<string>(() => getTodayISO());
+  const [historySearchQuery, setHistorySearchQuery] = useState<string>("");
   const [selectedBillingMonth, setSelectedBillingMonth] = useState<string>(() => {
     const cur = getCurrentYearMonth();
     return BILLING_MONTHS.some((m) => m.value === cur) ? cur : "2026-11";
@@ -231,19 +245,72 @@ export default function SoloPilatesPage() {
       setRealtimeOnline(isRealtimeSyncConnected());
     }, 2500);
 
+    // Reloj en vivo cada 1 segundo para la cuenta atrás de 50 minutos y salida automática de sala
+    const roomTimer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
     return () => {
       unsubUpdates();
       window.removeEventListener("df_realtime_status" as any, handleRealtimeStatus);
       window.removeEventListener("df_pilates_lock_changed" as any, handleLockChange);
       clearInterval(statusPoll);
+      clearInterval(roomTimer);
     };
   }, [refreshAllPilatesData]);
 
+  // --- Sesiones Activas en Sala Ahora (50 minutos exactos desde entrada QR / manual) ---
+  const activeRoomSessions: PilatesActiveRoomSession[] = useMemo(
+    () => getPilatesActiveRoomSessions(nowMs),
+    [attendances, students, nowMs]
+  );
+
+  const activeRoomByStudentId = useMemo(() => {
+    const map = new Map<string, PilatesActiveRoomSession>();
+    for (const sess of activeRoomSessions) {
+      map.set(sess.attendance.alumno_id, sess);
+    }
+    return map;
+  }, [activeRoomSessions]);
+
   // --- Derived Metrics & Filtered Lists ---
   const kpis = useMemo(
-    () => getPilatesDashboardKpis(selectedBillingMonth === "all" ? getCurrentYearMonth() : selectedBillingMonth),
-    [students, attendances, payments, selectedBillingMonth]
+    () =>
+      getPilatesDashboardKpis(
+        selectedBillingMonth === "all" ? getCurrentYearMonth() : selectedBillingMonth,
+        nowMs
+      ),
+    [students, attendances, payments, selectedBillingMonth, nowMs]
   );
+
+  const filteredHistoryAttendances = useMemo(() => {
+    const todayIso = getTodayISO();
+    const yesterdayDate = new Date(nowMs - 24 * 60 * 60 * 1000);
+    const yesterdayIso = `${yesterdayDate.getFullYear()}-${String(
+      yesterdayDate.getMonth() + 1
+    ).padStart(2, "0")}-${String(yesterdayDate.getDate()).padStart(2, "0")}`;
+    const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+    const q = historySearchQuery.trim().toLowerCase();
+
+    return attendances.filter((a) => {
+      if (historyDateFilter === "hoy" && a.fecha_iso !== todayIso) return false;
+      if (historyDateFilter === "ayer" && a.fecha_iso !== yesterdayIso) return false;
+      if (historyDateFilter === "fecha" && historyCustomDate && a.fecha_iso !== historyCustomDate) {
+        return false;
+      }
+      if (historyDateFilter === "7dias") {
+        const t = new Date(a.fecha_hora).getTime();
+        if (isNaN(t) || t < sevenDaysAgoMs) return false;
+      }
+      if (!q) return true;
+      return (
+        a.alumno_nombre.toLowerCase().includes(q) ||
+        a.codigo_qr.toLowerCase().includes(q) ||
+        a.tipo_plan.toLowerCase().includes(q) ||
+        a.fecha_iso.includes(q)
+      );
+    });
+  }, [attendances, historyDateFilter, historyCustomDate, historySearchQuery, nowMs]);
 
   const filteredStudents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -501,12 +568,22 @@ export default function SoloPilatesPage() {
   // --- Handlers: Test Live 2-PC QR Scan ---
   const handleTriggerLiveScan = async (student: PilatesStudent) => {
     const res = await processPilatesScan(student.codigo_qr, { bypassDebounce: true });
+    setNowMs(Date.now());
     refreshAllPilatesData();
     if (res.event) {
       showBanner(
-        `Lectura 24h emitida a los 2 PCs: ${res.event.nombreCompleto} (${res.event.codigoQr})`
+        `Entrada registrada (${PILATES_SESSION_DURATION_MINUTES} min en sala): ${res.event.nombreCompleto} (${res.event.codigoQr})`
       );
     }
+  };
+
+  const handleEarlyExitFromRoom = (attendanceId: string, alumnoNombre: string) => {
+    finalizarSesionSalaPilates(attendanceId);
+    setNowMs(Date.now());
+    refreshAllPilatesData();
+    showBanner(
+      `${alumnoNombre} ha salido de la sala activa (su entrada permanece guardada en el Historial del día).`
+    );
   };
 
   // --- Handlers: Cobros & Renovaciones ---
@@ -904,22 +981,34 @@ export default function SoloPilatesPage() {
           </p>
         </div>
 
-        <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-5 shadow-md">
+        <div className="rounded-2xl border border-emerald-500/35 bg-[var(--color-bg-card)] p-5 shadow-md">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
-                Asistencias Hoy (24h)
+              <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                En Sala Ahora (Sesión 50 min)
               </p>
-              <h2 className="mt-1 text-3xl font-extrabold font-[family-name:var(--font-heading)] text-[var(--color-text-title)]">
-                {kpis.asistenciasHoy}
-              </h2>
+              <div className="mt-1 flex items-baseline gap-2.5">
+                <h2 className="text-3xl font-extrabold font-[family-name:var(--font-heading)] text-[var(--color-text-title)]">
+                  {activeRoomSessions.length}
+                </h2>
+                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                  {activeRoomSessions.length === 1 ? "alumno en clase" : "alumnos en clase"}
+                </span>
+              </div>
             </div>
             <div className="rounded-xl bg-emerald-500/15 border border-emerald-500/30 p-2.5 text-emerald-600 dark:text-emerald-400">
-              <CalendarCheck2 size={20} />
+              <Clock size={20} />
             </div>
           </div>
-          <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
-            Horario libre 24h · QR PIL-XXXX
+          <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
+            Salida auto. a los 50 min ·{" "}
+            <button
+              type="button"
+              onClick={() => setActiveTab("historial")}
+              className="font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+            >
+              Hoy: {kpis.asistenciasHoy} entradas
+            </button>
           </p>
         </div>
 
@@ -962,6 +1051,152 @@ export default function SoloPilatesPage() {
             Tarifas Oficiales EZG Pilates Sept. 2026
           </p>
         </div>
+      </div>
+
+      {/* Control de Sala en Vivo · Salida Automática a los 50 Minutos (Acordado con Enrique) */}
+      <div className="rounded-3xl border border-emerald-500/35 bg-[var(--color-bg-card)] p-4 sm:p-5 shadow-md space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="rounded-2xl bg-emerald-500/15 border border-emerald-500/35 p-2.5 text-emerald-600 dark:text-emerald-400 shrink-0">
+              <Clock size={20} />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                  Control de Sala en Vivo · Temporizador 50 Minutos
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700 dark:text-emerald-300">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      activeRoomSessions.length > 0 ? "bg-emerald-500 animate-ping" : "bg-slate-400"
+                    }`}
+                  />
+                  <span>
+                    {activeRoomSessions.length}{" "}
+                    {activeRoomSessions.length === 1 ? "presente ahora" : "presentes ahora"}
+                  </span>
+                </span>
+              </div>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5 leading-relaxed">
+                Cada alumno que ficha con su QR o al que se le marca entrada permanece{" "}
+                <strong className="text-[var(--color-text-title)]">50 minutos en sala</strong> y
+                sale automáticamente al terminar su clase (quedando guardado en el{" "}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("historial")}
+                  className="font-bold text-teal-600 dark:text-teal-400 hover:underline cursor-pointer"
+                >
+                  Historial de Asistencias
+                </button>
+                ).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveTab("historial")}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] px-3.5 py-2 text-xs font-bold text-[var(--color-text-title)] cursor-pointer"
+            >
+              <History size={14} className="text-teal-500 shrink-0" />
+              <span>
+                Historial Hoy ({kpis.asistenciasHoy}) · Ayer ({kpis.asistenciasAyer})
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {activeRoomSessions.length === 0 ? (
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+            <span className="text-[var(--color-text-secondary)]">
+              No hay alumnos con sesión de 50 minutos activa en este instante. Cuando alguien pase el
+              QR o pulses <strong>Escanear / Entrada</strong> aparecerá aquí con su cuenta atrás de
+              50 minutos.
+            </span>
+            <span className="font-mono font-bold text-[var(--color-text-title)] whitespace-nowrap">
+              Entradas registradas hoy: {kpis.asistenciasHoy}
+            </span>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {activeRoomSessions.map((sess) => {
+              const { attendance, student, remainingFormatted, progressPct, horaSalidaPrevista } =
+                sess;
+              const remainingPct = Math.max(0, Math.min(100, 100 - progressPct));
+              return (
+                <div
+                  key={attendance.id}
+                  className="rounded-2xl border border-emerald-500/35 bg-[var(--color-bg)] p-3.5 space-y-2.5 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-10 h-10 rounded-xl overflow-hidden border border-emerald-500/40 bg-[var(--color-bg-card)] shrink-0 flex items-center justify-center">
+                        {student?.foto_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={student.foto_url}
+                            alt={attendance.alumno_nombre}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">
+                            {getPilatesInitials(attendance.alumno_nombre)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-extrabold text-[var(--color-text-title)] leading-snug break-words">
+                          {attendance.alumno_nombre}
+                        </p>
+                        <p className="text-[11px] font-mono text-[var(--color-text-secondary)]">
+                          {attendance.codigo_qr} · Entrada {attendance.hora_corta}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span
+                        title="Tiempo restante para salida automática de sala (50 min)"
+                        className="inline-flex items-center gap-1 rounded-xl bg-emerald-500/15 border border-emerald-500/35 px-2.5 py-1 font-mono text-xs font-extrabold text-emerald-700 dark:text-emerald-300"
+                      >
+                        <Clock size={12} className="shrink-0" />
+                        <span>{remainingFormatted}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleEarlyExitFromRoom(attendance.id, attendance.alumno_nombre)
+                        }
+                        title="Finalizar estancia en sala ahora (se conserva en el Historial del día)"
+                        aria-label={`Finalizar estancia en sala de ${attendance.alumno_nombre}`}
+                        className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-card)] hover:bg-rose-500/15 p-1.5 text-[var(--color-text-secondary)] hover:text-rose-500 cursor-pointer"
+                      >
+                        <LogOut size={13} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Barra de progreso de los 50 minutos */}
+                  <div className="space-y-1">
+                    <div className="h-1.5 w-full rounded-full bg-[var(--color-bg-card)] overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 transition-all duration-500"
+                        style={{ width: `${remainingPct}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-[var(--color-text-secondary)]">
+                      <span>{attendance.tipo_plan}</span>
+                      <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
+                        Sale auto. {horaSalidaPrevista}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Cuadro Oficial de Tarifas EZG Pilates (A partir del 1 de Septiembre) */}
@@ -1092,9 +1327,9 @@ export default function SoloPilatesPage() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[var(--color-text-secondary)]">Matrícula / Tarjeta</span>
+                  <span className="text-[var(--color-text-secondary)]">Matrícula (App + QR Gratis)</span>
                   <span className="font-mono font-bold text-[var(--color-text-title)] whitespace-nowrap">
-                    30€ / 5€
+                    30€
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
@@ -1109,15 +1344,16 @@ export default function SoloPilatesPage() {
         )}
       </div>
 
-      {/* Selector de Subpestañas Responsivo (2x2 en Móvil 390px, 4 columnas en Desktop) */}
+      {/* Selector de Subpestañas Responsivo (Móvil 390px y Desktop) */}
       <div
         role="tablist"
         aria-label="Secciones de Solo Pilates"
-        className="grid grid-cols-2 lg:grid-cols-4 gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-2 shadow-sm"
+        className="grid grid-cols-2 lg:grid-cols-5 gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-2 shadow-sm"
       >
         {(
           [
             { id: "alumnos", label: `Alumnos Pilates (${students.length})` },
+            { id: "historial", label: `Historial Asistencias (${kpis.asistenciasHoy} hoy)` },
             { id: "facturacion", label: `Cuotas y Facturación (${payments.length})` },
             { id: "importar", label: "Importar Alumnos (1 Clic)" },
             { id: "recepcion", label: "Recepción 2 PCs y Clave" },
@@ -1283,6 +1519,7 @@ export default function SoloPilatesPage() {
                         s.estado === "Activo" &&
                         (s.estado_cuota === "Renovación Pendiente" ||
                           (s.es_bono && (s.sesiones_restantes ?? 0) <= 0));
+                      const activeSess = activeRoomByStudentId.get(s.id);
 
                       return (
                         <tr
@@ -1290,8 +1527,13 @@ export default function SoloPilatesPage() {
                           className="hover:bg-[var(--color-bg-hover)]/60 transition-colors"
                         >
                           <td className="py-3 pl-4 pr-2 max-w-[235px]">
-                            <div className="flex items-center gap-2.5">
-                              <div className="w-11 h-11 rounded-2xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-bg)] shrink-0 flex items-center justify-center">
+                            <button
+                              type="button"
+                              onClick={() => openEditStudentModal(s)}
+                              title="Hacer clic para abrir ficha del alumno y adjuntar foto"
+                              className="flex items-center gap-2.5 text-left group cursor-pointer w-full"
+                            >
+                              <div className="w-11 h-11 rounded-2xl overflow-hidden border border-[var(--color-border)] group-hover:border-teal-500 bg-[var(--color-bg)] shrink-0 flex items-center justify-center transition-colors">
                                 {s.foto_url ? (
                                   // eslint-disable-next-line @next/next/no-img-element
                                   <img
@@ -1306,16 +1548,24 @@ export default function SoloPilatesPage() {
                                 )}
                               </div>
                               <div className="min-w-0">
-                                <p className="font-bold text-[var(--color-text-title)] leading-snug break-words">
+                                <p className="font-bold text-[var(--color-text-title)] group-hover:text-teal-600 dark:group-hover:text-teal-400 leading-snug break-words transition-colors">
                                   {s.nombre_completo}
                                 </p>
-                                {s.notas_salud && (
-                                  <span className="mt-1 inline-flex items-center rounded-lg bg-teal-500/12 border border-teal-500/25 px-2 py-0.5 text-[10px] font-bold text-teal-700 dark:text-teal-300 leading-snug break-words">
-                                    {s.notas_salud}
-                                  </span>
-                                )}
+                                <div className="flex flex-wrap items-center gap-1 mt-1">
+                                  {activeSess && (
+                                    <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/15 border border-emerald-500/35 px-2 py-0.5 text-[10px] font-mono font-extrabold text-emerald-700 dark:text-emerald-300">
+                                      <Clock size={10} className="shrink-0" />
+                                      <span>En sala ({activeSess.remainingFormatted})</span>
+                                    </span>
+                                  )}
+                                  {s.notas_salud && (
+                                    <span className="inline-flex items-center rounded-lg bg-teal-500/12 border border-teal-500/25 px-2 py-0.5 text-[10px] font-bold text-teal-700 dark:text-teal-300 leading-snug break-words">
+                                      {s.notas_salud}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                            </div>
+                            </button>
                           </td>
                           <td className="py-3 px-2 max-w-[165px]">
                             <p className="font-mono font-semibold text-[var(--color-text-body)]">
@@ -1436,13 +1686,18 @@ export default function SoloPilatesPage() {
                     s.estado === "Activo" &&
                     (s.estado_cuota === "Renovación Pendiente" ||
                       (s.es_bono && (s.sesiones_restantes ?? 0) <= 0));
+                  const activeSess = activeRoomByStudentId.get(s.id);
 
                   return (
                     <div
                       key={s.id}
                       className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4 space-y-3 shadow-sm"
                     >
-                      <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => openEditStudentModal(s)}
+                        className="flex items-center gap-3 text-left w-full cursor-pointer"
+                      >
                         <div className="w-14 h-14 rounded-2xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-bg)] shrink-0 flex items-center justify-center">
                           {s.foto_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
@@ -1464,11 +1719,19 @@ export default function SoloPilatesPage() {
                           <p className="text-xs font-mono text-[var(--color-text-secondary)]">
                             {s.codigo_qr} · {s.dni || s.telefono || "Sin DNI"}
                           </p>
-                          {s.notas_salud && (
-                            <span className="mt-1 inline-flex items-center rounded-lg bg-teal-500/12 border border-teal-500/25 px-2 py-0.5 text-[10px] font-bold text-teal-700 dark:text-teal-300 leading-snug break-words">
-                              {s.notas_salud}
-                            </span>
-                          )}
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            {activeSess && (
+                              <span className="inline-flex items-center gap-1 rounded-lg bg-emerald-500/15 border border-emerald-500/35 px-2 py-0.5 text-[10px] font-mono font-extrabold text-emerald-700 dark:text-emerald-300">
+                                <Clock size={10} className="shrink-0" />
+                                <span>En sala ({activeSess.remainingFormatted})</span>
+                              </span>
+                            )}
+                            {s.notas_salud && (
+                              <span className="inline-flex items-center rounded-lg bg-teal-500/12 border border-teal-500/25 px-2 py-0.5 text-[10px] font-bold text-teal-700 dark:text-teal-300 leading-snug break-words">
+                                {s.notas_salud}
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs font-semibold text-teal-600 dark:text-teal-400 leading-snug break-words mt-1">
                             {s.tipo_plan} ·{" "}
                             <span className="whitespace-nowrap inline-block">
@@ -1476,7 +1739,7 @@ export default function SoloPilatesPage() {
                             </span>
                           </p>
                         </div>
-                      </div>
+                      </button>
 
                       <div className="flex items-center justify-between gap-2 text-xs pt-2 border-t border-[var(--color-border)]">
                         <span className="text-[var(--color-text-secondary)]">
@@ -1563,6 +1826,254 @@ export default function SoloPilatesPage() {
                   </div>
                 </div>
               )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* SUBPESTAÑA 1.5: HISTORIAL DE ASISTENCIAS (HOY, AYER Y FECHAS)        */}
+      {/* ==================================================================== */}
+      {activeTab === "historial" && (
+        <div className="space-y-4">
+          <div className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4 sm:p-5 space-y-4 shadow-md">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <span className="text-[11px] font-extrabold uppercase tracking-wider text-teal-600 dark:text-teal-400">
+                  Registro Permanente de Entradas · Solo Pilates
+                </span>
+                <h2 className="text-lg font-extrabold text-[var(--color-text-title)]">
+                  Historial de Asistencias (Hoy, Ayer y Días Anteriores)
+                </h2>
+                <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                  Aunque los alumnos salgan automáticamente de la sala activa a los{" "}
+                  <strong>50 minutos</strong>, todas las entradas quedan guardadas aquí para que
+                  puedas comprobar qué alumnos vinieron hoy, ayer o cualquier día sin preguntar a los
+                  profesores.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={filteredHistoryAttendances.length === 0}
+                  onClick={() =>
+                    exportPilatesAttendancesCsv(
+                      filteredHistoryAttendances,
+                      historyDateFilter === "fecha" ? historyCustomDate : historyDateFilter
+                    )
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] hover:bg-[var(--color-bg-hover)] disabled:opacity-45 px-3.5 py-2 text-xs font-bold text-[var(--color-text-title)] cursor-pointer"
+                >
+                  <Download size={14} className="text-teal-500 shrink-0" />
+                  <span>Exportar Historial CSV ({filteredHistoryAttendances.length})</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Filtros de fecha (Hoy, Ayer, Últimos 7 días, Todas, Fecha exacta) + Buscador */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-2 border-t border-[var(--color-border)]">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(
+                  [
+                    { id: "hoy", label: `Hoy (${kpis.asistenciasHoy})` },
+                    { id: "ayer", label: `Ayer (${kpis.asistenciasAyer})` },
+                    { id: "7dias", label: "Últimos 7 días" },
+                    { id: "todas", label: `Todas (${attendances.length})` },
+                    { id: "fecha", label: "Elegir día" },
+                  ] as Array<{ id: HistoryDateFilter; label: string }>
+                ).map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setHistoryDateFilter(f.id)}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
+                      historyDateFilter === f.id
+                        ? "bg-teal-600 text-white"
+                        : "bg-[var(--color-bg)] text-[var(--color-text-secondary)] border border-[var(--color-border)] hover:text-[var(--color-text-title)]"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+
+                {historyDateFilter === "fecha" && (
+                  <input
+                    type="date"
+                    aria-label="Seleccionar fecha del historial de asistencias"
+                    value={historyCustomDate}
+                    onChange={(e) => setHistoryCustomDate(e.target.value)}
+                    className="rounded-xl border border-teal-500/40 bg-[var(--color-bg)] px-3 py-1.5 text-xs font-mono font-bold text-[var(--color-text-title)] outline-none focus:border-teal-500"
+                  />
+                )}
+              </div>
+
+              <div className="relative flex-1 max-w-md">
+                <Search
+                  size={15}
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--color-text-secondary)]"
+                />
+                <input
+                  type="search"
+                  aria-label="Buscar en el historial de asistencias por nombre o código QR"
+                  placeholder="Buscar si vino un alumno (ej. Pepita), DNI o PIL-XXXX..."
+                  value={historySearchQuery}
+                  onChange={(e) => setHistorySearchQuery(e.target.value)}
+                  className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] pl-9 pr-3.5 py-2 text-xs text-[var(--color-text-title)] outline-none focus:border-teal-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {filteredHistoryAttendances.length === 0 ? (
+            <div className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-10 text-center space-y-2">
+              <div className="w-12 h-12 rounded-2xl bg-teal-500/12 border border-teal-500/30 text-teal-600 dark:text-teal-400 flex items-center justify-center mx-auto">
+                <History size={22} />
+              </div>
+              <p className="text-sm font-bold text-[var(--color-text-title)]">
+                No hay asistencias registradas para el filtro seleccionado
+              </p>
+              <p className="text-xs text-[var(--color-text-secondary)] max-w-md mx-auto">
+                Cada vez que un alumno pase su código QR en recepción o se le marque entrada,
+                quedará guardado aquí con fecha y hora exacta de entrada.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Tabla Desktop de Historial */}
+              <div className="hidden md:block rounded-3xl border border-[var(--color-border)] bg-[var(--color-bg-card)] overflow-hidden shadow-md">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
+                      <th className="py-3.5 px-4">Fecha / Hora Entrada</th>
+                      <th className="py-3.5 px-3">Alumno Pilates</th>
+                      <th className="py-3.5 px-3">Socio QR</th>
+                      <th className="py-3.5 px-3">Plan / Saldo tras entrada</th>
+                      <th className="py-3.5 px-3">Estado Sesión (50 min)</th>
+                      <th className="py-3.5 px-4 text-right">Mostrador</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--color-border)] text-xs">
+                    {filteredHistoryAttendances.map((att) => {
+                      const entryMs = new Date(att.fecha_hora).getTime();
+                      const elapsedMs = nowMs - entryMs;
+                      const isStillInRoom =
+                        !att.salida_anticipada &&
+                        !isNaN(entryMs) &&
+                        elapsedMs >= 0 &&
+                        elapsedMs < PILATES_SESSION_DURATION_MINUTES * 60 * 1000;
+                      const activeSess = activeRoomByStudentId.get(att.alumno_id);
+                      const salidaAutoHora =
+                        att.hora_salida_prevista ||
+                        (!isNaN(entryMs)
+                          ? new Date(
+                              entryMs + PILATES_SESSION_DURATION_MINUTES * 60 * 1000
+                            ).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })
+                          : "—");
+
+                      return (
+                        <tr key={att.id} className="hover:bg-[var(--color-bg-hover)]/50">
+                          <td className="py-3 px-4">
+                            <span className="font-mono font-bold text-[var(--color-text-title)]">
+                              {att.hora_corta}
+                            </span>
+                            <span className="block text-[11px] font-mono text-[var(--color-text-secondary)]">
+                              {att.fecha_iso}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 font-bold text-[var(--color-text-title)] leading-snug break-words">
+                            {att.alumno_nombre}
+                          </td>
+                          <td className="py-3 px-3 font-mono font-bold text-teal-600 dark:text-teal-400 whitespace-nowrap">
+                            {att.codigo_qr}
+                          </td>
+                          <td className="py-3 px-3">
+                            <p className="font-semibold text-[var(--color-text-title)] leading-snug break-words">
+                              {att.tipo_plan}
+                            </p>
+                            <p className="text-[11px] text-[var(--color-text-secondary)]">
+                              {typeof att.sesiones_restantes_tras_entrada === "number"
+                                ? `${att.sesiones_restantes_tras_entrada} sesiones restantes tras entrada`
+                                : "Acceso mensual"}
+                            </p>
+                          </td>
+                          <td className="py-3 px-3">
+                            {isStillInRoom && activeSess ? (
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/35 px-2.5 py-0.5 text-[11px] font-mono font-extrabold text-emerald-700 dark:text-emerald-300 whitespace-nowrap">
+                                <Clock size={12} className="shrink-0" />
+                                <span>En sala ({activeSess.remainingFormatted})</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-500/12 border border-slate-500/25 px-2.5 py-0.5 text-[11px] font-semibold text-[var(--color-text-secondary)] whitespace-nowrap">
+                                <CheckCircle2 size={12} className="text-teal-500 shrink-0" />
+                                <span>Sesión 50m completada (salió {salidaAutoHora})</span>
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 text-right text-[11px] text-[var(--color-text-secondary)]">
+                            {att.origen_pc}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Tarjetas Móvil de Historial (< md) */}
+              <div className="md:hidden space-y-2.5">
+                {filteredHistoryAttendances.map((att) => {
+                  const entryMs = new Date(att.fecha_hora).getTime();
+                  const elapsedMs = nowMs - entryMs;
+                  const isStillInRoom =
+                    !att.salida_anticipada &&
+                    !isNaN(entryMs) &&
+                    elapsedMs >= 0 &&
+                    elapsedMs < PILATES_SESSION_DURATION_MINUTES * 60 * 1000;
+                  const activeSess = activeRoomByStudentId.get(att.alumno_id);
+                  const salidaAutoHora =
+                    att.hora_salida_prevista ||
+                    (!isNaN(entryMs)
+                      ? new Date(
+                          entryMs + PILATES_SESSION_DURATION_MINUTES * 60 * 1000
+                        ).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })
+                      : "—");
+
+                  return (
+                    <div
+                      key={att.id}
+                      className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs font-bold text-teal-600 dark:text-teal-400">
+                          {att.codigo_qr} · {att.fecha_iso}
+                        </span>
+                        <span className="font-mono text-xs font-extrabold text-[var(--color-text-title)]">
+                          Entrada {att.hora_corta}
+                        </span>
+                      </div>
+                      <p className="text-xs font-bold text-[var(--color-text-title)] leading-snug break-words">
+                        {att.alumno_nombre}
+                      </p>
+                      <p className="text-[11px] text-[var(--color-text-secondary)]">
+                        {att.tipo_plan}
+                      </p>
+                      <div className="flex items-center justify-between pt-1.5 border-t border-[var(--color-border)] text-[11px]">
+                        {isStillInRoom && activeSess ? (
+                          <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                            ⏱ En sala ({activeSess.remainingFormatted})
+                          </span>
+                        ) : (
+                          <span className="text-[var(--color-text-secondary)]">
+                            ✓ Salió auto. {salidaAutoHora} (50 min)
+                          </span>
+                        )}
+                        <span className="text-[var(--color-text-secondary)]">{att.origen_pc}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </>
           )}
         </div>

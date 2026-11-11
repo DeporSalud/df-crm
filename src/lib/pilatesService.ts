@@ -28,6 +28,15 @@ export function isPilatesCloudDbEnabled(): boolean {
 
 export const PILATES_META_PREFIX = "DF_PILATES_META:";
 
+/**
+ * Duración oficial de cada sesión de Pilates acordada con Enrique (05/11/2026):
+ * "Nosotros son cada 50 minutos cada clase... cuando detecte un registro, tengo como
+ * un temporizador que resta 50 minutos y a los 50 minutos sale de sala automáticamente,
+ * y luego una pestaña Historial para ver las asistencias del día o el día anterior."
+ */
+export const PILATES_SESSION_DURATION_MINUTES = 50;
+export const PILATES_SESSION_DURATION_MS = PILATES_SESSION_DURATION_MINUTES * 60 * 1000;
+
 const STORAGE_KEYS = {
   STUDENTS: "df_pilates_students_v1",
   ATTENDANCES: "df_pilates_attendances_v1",
@@ -400,6 +409,19 @@ export interface PilatesAttendance {
   sesiones_restantes_tras_entrada: number | null;
   aviso_renovacion: boolean;
   origen_pc: string;
+  salida_anticipada?: boolean;
+  hora_salida_prevista?: string; // HH:MM (entrada + 50 min)
+}
+
+export interface PilatesActiveRoomSession {
+  attendance: PilatesAttendance;
+  student: PilatesStudent | null;
+  elapsedMs: number;
+  remainingMs: number;
+  remainingMinutes: number;
+  remainingFormatted: string; // MM:SS
+  progressPct: number; // 0..100
+  horaSalidaPrevista: string; // HH:MM
 }
 
 export interface PilatesPayment {
@@ -772,11 +794,158 @@ export function getPilatesAttendances(): PilatesAttendance[] {
   }
 }
 
-function writePilatesAttendancesLocal(attendances: PilatesAttendance[]): void {
+function writePilatesAttendancesLocal(
+  attendances: PilatesAttendance[],
+  broadcastSync = false
+): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(STORAGE_KEYS.ATTENDANCES, JSON.stringify(attendances.slice(0, 1500)));
   } catch {}
+  if (broadcastSync) {
+    publishSyncEvent("df_pilates_roster_sync", {
+      attendances: attendances.slice(0, 200),
+      senderInstance: getClientInstanceId(),
+      ts: Date.now(),
+    });
+    publishSyncEvent("df_pilates_updated", { reason: "attendances" });
+  }
+}
+
+/**
+ * Devuelve las sesiones de Pilates que están actualmente activas en sala (dentro de los 50 minutos
+ * exactos desde su fichaje QR o marcado de asistencia).
+ * A los 50 minutos exactos desaparecen automáticamente de "En Sala Ahora" pero permanecen
+ * intactas en el Historial de Asistencias del día y días anteriores.
+ */
+export function getPilatesActiveRoomSessions(
+  nowMs: number = Date.now()
+): PilatesActiveRoomSession[] {
+  const attendances = getPilatesAttendances();
+  const students = getPilatesStudents();
+  const studentMap = new Map<string, PilatesStudent>();
+  for (const s of students) studentMap.set(s.id, s);
+
+  const activeByStudent = new Map<string, PilatesActiveRoomSession>();
+
+  for (const att of attendances) {
+    if (att.salida_anticipada) continue;
+    const entryMs = new Date(att.fecha_hora).getTime();
+    if (isNaN(entryMs)) continue;
+
+    const elapsedMs = nowMs - entryMs;
+    if (elapsedMs < 0 || elapsedMs >= PILATES_SESSION_DURATION_MS) continue;
+
+    // Si el mismo alumno tiene varios registros recientes, quedarnos con el más reciente
+    if (activeByStudent.has(att.alumno_id)) continue;
+
+    const remainingMs = Math.max(0, PILATES_SESSION_DURATION_MS - elapsedMs);
+    const remainingTotalSeconds = Math.ceil(remainingMs / 1000);
+    const mins = Math.floor(remainingTotalSeconds / 60);
+    const secs = remainingTotalSeconds % 60;
+    const remainingFormatted = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60000));
+    const progressPct = Math.min(100, Math.max(0, (elapsedMs / PILATES_SESSION_DURATION_MS) * 100));
+
+    const exitDate = new Date(entryMs + PILATES_SESSION_DURATION_MS);
+    const horaSalidaPrevista =
+      att.hora_salida_prevista ||
+      exitDate.toLocaleTimeString("es-ES", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+    const st = studentMap.get(att.alumno_id) ?? null;
+
+    activeByStudent.set(att.alumno_id, {
+      attendance: att,
+      student: st,
+      elapsedMs,
+      remainingMs,
+      remainingMinutes,
+      remainingFormatted,
+      progressPct,
+      horaSalidaPrevista,
+    });
+  }
+
+  return Array.from(activeByStudent.values()).sort(
+    (a, b) =>
+      new Date(b.attendance.fecha_hora).getTime() -
+      new Date(a.attendance.fecha_hora).getTime()
+  );
+}
+
+/**
+ * Permite finalizar manualmente la estancia en sala de un alumno antes de que se cumplan
+ * los 50 minutos automáticos, conservando intacto su registro en el Historial de Asistencias.
+ */
+export function finalizarSesionSalaPilates(attendanceId: string): void {
+  const all = getPilatesAttendances();
+  const next = all.map((a) =>
+    a.id === attendanceId ? { ...a, salida_anticipada: true } : a
+  );
+  writePilatesAttendancesLocal(next, true);
+}
+
+export function exportPilatesAttendancesCsv(
+  attendances: PilatesAttendance[],
+  periodoLabel: string
+): void {
+  if (typeof window === "undefined") return;
+  const headers = [
+    "Fecha",
+    "Hora Entrada",
+    "Salida Automática (+50m)",
+    "Código QR",
+    "Alumno Pilates",
+    "Plan / Tarifa",
+    "Sesiones Restantes",
+    "Mostrador / Origen",
+  ];
+
+  const escapeCsv = (val: string | number | null | undefined) => {
+    const str = String(val ?? "");
+    if (str.includes(";") || str.includes('"') || str.includes("\n")) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const rows = attendances.map((a) => {
+    const entryMs = new Date(a.fecha_hora).getTime();
+    const salidaPrev =
+      a.hora_salida_prevista ||
+      (!isNaN(entryMs)
+        ? new Date(entryMs + PILATES_SESSION_DURATION_MS).toLocaleTimeString("es-ES", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "—");
+    return [
+      a.fecha_iso,
+      a.hora_corta,
+      salidaPrev,
+      a.codigo_qr,
+      a.alumno_nombre,
+      a.tipo_plan,
+      a.sesiones_restantes_tras_entrada ?? "Mensual",
+      a.origen_pc,
+    ]
+      .map(escapeCsv)
+      .join(";");
+  });
+
+  const csvContent = "\uFEFF" + [headers.join(";"), ...rows].join("\r\n");
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `historial_asistencias_pilates_${periodoLabel.replace(/[^a-zA-Z0-9_-]/g, "_")}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 export function getPilatesPayments(): PilatesPayment[] {
@@ -866,6 +1035,27 @@ export function initPilatesCrossPcSync(): void {
       }
     }
 
+    if (Array.isArray(detail.attendances)) {
+      const localAtt = getPilatesAttendances();
+      const attMap = new Map<string, PilatesAttendance>();
+      for (const a of localAtt) attMap.set(a.id, a);
+      let attChanged = false;
+      for (const incomingAtt of detail.attendances as PilatesAttendance[]) {
+        const prev = attMap.get(incomingAtt.id);
+        if (!prev || prev.salida_anticipada !== incomingAtt.salida_anticipada) {
+          attMap.set(incomingAtt.id, incomingAtt);
+          attChanged = true;
+          changed = true;
+        }
+      }
+      if (attChanged) {
+        const mergedAtt = Array.from(attMap.values()).sort((a, b) =>
+          (b.fecha_hora || "").localeCompare(a.fecha_hora || "")
+        );
+        writePilatesAttendancesLocal(mergedAtt, false);
+      }
+    }
+
     if (detail.securityConfig && typeof detail.securityConfig === "object") {
       const localCfg = getPilatesSecurityConfig();
       const incomingUpdated = String(detail.securityConfig.updatedAt || "");
@@ -891,15 +1081,55 @@ export function initPilatesCrossPcSync(): void {
     }
   });
 
+  subscribeSyncEvent("df_pilates_checkin", (event: PilatesCheckInEvent) => {
+    if (!event || !event.studentId) return;
+    const localAtt = getPilatesAttendances();
+    const eventTimeMs = event.timestamp || Date.now();
+    // Evitar duplicar si este mismo PC ya registró la asistencia hace menos de 5 segundos
+    const alreadyExists = localAtt.some(
+      (a) =>
+        a.alumno_id === event.studentId &&
+        Math.abs(new Date(a.fecha_hora).getTime() - eventTimeMs) < 5000
+    );
+    if (!alreadyExists) {
+      const entryDate = new Date(eventTimeMs);
+      const exitDate = new Date(eventTimeMs + PILATES_SESSION_DURATION_MS);
+      const fechaIso = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, "0")}-${String(entryDate.getDate()).padStart(2, "0")}`;
+      const periodoMes = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, "0")}`;
+      const newAtt: PilatesAttendance = {
+        id: `pil_att_rem_${event.eventUid || eventTimeMs}`,
+        alumno_id: event.studentId,
+        alumno_nombre: event.nombreCompleto,
+        codigo_qr: event.codigoQr,
+        fecha_hora: entryDate.toISOString(),
+        fecha_iso: fechaIso,
+        hora_corta: event.horaEntrada,
+        hora_salida_prevista: exitDate.toLocaleTimeString("es-ES", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        periodo_mes: periodoMes,
+        tipo_plan: event.tipoPlan,
+        sesiones_restantes_tras_entrada: event.sesionesRestantes,
+        aviso_renovacion: event.requiereAvisoAmable,
+        origen_pc: event.origenPc,
+      };
+      writePilatesAttendancesLocal([newAtt, ...localAtt], false);
+      window.dispatchEvent(new CustomEvent("df_pilates_updated", { detail: { remote: true } }));
+    }
+  });
+
   subscribeSyncEvent("df_pilates_request_sync", () => {
     const students = getPilatesStudents();
     const payments = getPilatesPayments();
+    const attendances = getPilatesAttendances();
     const cfg = getPilatesSecurityConfig();
-    if (students.length > 0 || payments.length > 0) {
+    if (students.length > 0 || payments.length > 0 || attendances.length > 0) {
       publishSyncEvent("df_pilates_roster_sync", {
         students: students.length <= 150 ? students : undefined,
         reloadFromCloud: students.length > 150,
         payments,
+        attendances: attendances.slice(0, 200),
         securityConfig: {
           masterPin: cfg.masterPin,
           allowReceptionWelcomeCard: cfg.allowReceptionWelcomeCard,
@@ -1045,6 +1275,71 @@ export async function syncPilatesFromCloudIfEnabled(): Promise<PilatesStudent[]>
     const sorted = sortPilatesStudentsBySocioDesc(mapped);
     if (sorted.length > 0) {
       writePilatesStudentsLocal(sorted, false);
+
+      // Sincronizar también el historial reciente de asistencias de alumnos de Pilates desde Cloud DB (últimos 30 días)
+      try {
+        const sinceDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        const { data: attRows } = await supabase
+          .from("asistencias")
+          .select("id, alumno_id, fecha_hora")
+          .gte("fecha_hora", sinceDate)
+          .order("fecha_hora", { ascending: false })
+          .limit(1000);
+
+        if (Array.isArray(attRows) && attRows.length > 0) {
+          const pilatesMap = new Map<string, PilatesStudent>();
+          for (const st of sorted) pilatesMap.set(st.id, st);
+
+          const localAtt = getPilatesAttendances();
+          const mergedAtt = [...localAtt];
+
+          for (const row of attRows) {
+            const st = pilatesMap.get(String(row.alumno_id || ""));
+            if (!st) continue;
+            const rowTimeMs = new Date(row.fecha_hora).getTime();
+            if (isNaN(rowTimeMs)) continue;
+
+            // Evitar duplicar si ya está en localStorage (con margen de 5s)
+            const exists = mergedAtt.some(
+              (loc) =>
+                loc.alumno_id === st.id &&
+                Math.abs(new Date(loc.fecha_hora).getTime() - rowTimeMs) < 5000
+            );
+            if (!exists) {
+              const dt = new Date(rowTimeMs);
+              const exitDt = new Date(rowTimeMs + PILATES_SESSION_DURATION_MS);
+              const fechaIso = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+              const periodoMes = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+              mergedAtt.push({
+                id: String(row.id || `pil_att_db_${rowTimeMs}`),
+                alumno_id: st.id,
+                alumno_nombre: st.nombre_completo,
+                codigo_qr: st.codigo_qr,
+                fecha_hora: dt.toISOString(),
+                fecha_iso: fechaIso,
+                hora_corta: dt.toLocaleTimeString("es-ES", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                }),
+                hora_salida_prevista: exitDt.toLocaleTimeString("es-ES", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }),
+                periodo_mes: periodoMes,
+                tipo_plan: st.tipo_plan,
+                sesiones_restantes_tras_entrada: st.sesiones_restantes,
+                aviso_renovacion: st.estado_cuota === "Renovación Pendiente",
+                origen_pc: "Nube / Recepción",
+              });
+            }
+          }
+
+          mergedAtt.sort((a, b) => (b.fecha_hora || "").localeCompare(a.fecha_hora || ""));
+          writePilatesAttendancesLocal(mergedAtt, false);
+        }
+      } catch {}
+
       return sorted;
     }
   } catch (err) {
@@ -1362,8 +1657,13 @@ export async function processPilatesScan(
   writePilatesStudentsLocal(nextStudents, true, updatedStudent);
   await syncPilatesStudentToCloudIfEnabled(updatedStudent);
 
-  // Registrar asistencia 24h
+  // Registrar asistencia 24h (con temporizador automático de 50 minutos en sala)
   const allAttendances = getPilatesAttendances();
+  const exitDate = new Date(now.getTime() + PILATES_SESSION_DURATION_MS);
+  const horaSalidaPrevista = exitDate.toLocaleTimeString("es-ES", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   const newAttendance: PilatesAttendance = {
     id: `pil_att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     alumno_id: updatedStudent.id,
@@ -1372,6 +1672,7 @@ export async function processPilatesScan(
     fecha_hora: nowIso,
     fecha_iso: todayIso,
     hora_corta: horaEntrada,
+    hora_salida_prevista: horaSalidaPrevista,
     periodo_mes: currentMonth,
     tipo_plan: updatedStudent.tipo_plan,
     sesiones_restantes_tras_entrada: nuevoSaldoSesiones,
@@ -1379,7 +1680,7 @@ export async function processPilatesScan(
     origen_pc: origenPc,
   };
   const nextAttendances = [newAttendance, ...allAttendances];
-  writePilatesAttendancesLocal(nextAttendances);
+  writePilatesAttendancesLocal(nextAttendances, true);
 
   if (isPilatesCloudDbEnabled()) {
     try {
@@ -1593,11 +1894,18 @@ export function exportPilatesPaymentsCsv(payments: PilatesPayment[], periodoLabe
   URL.revokeObjectURL(url);
 }
 
-export function getPilatesDashboardKpis(periodoMes: string = getCurrentYearMonth()) {
+export function getPilatesDashboardKpis(
+  periodoMes: string = getCurrentYearMonth(),
+  nowMs: number = Date.now()
+) {
   const students = getPilatesStudents();
   const attendances = getPilatesAttendances();
   const payments = getPilatesPayments();
   const todayIso = getTodayISO();
+  const yesterdayDate = new Date(nowMs - 24 * 60 * 60 * 1000);
+  const yesterdayIso = `${yesterdayDate.getFullYear()}-${String(
+    yesterdayDate.getMonth() + 1
+  ).padStart(2, "0")}-${String(yesterdayDate.getDate()).padStart(2, "0")}`;
 
   const activos = students.filter((s) => s.estado === "Activo");
   const alDia = activos.filter(
@@ -1606,7 +1914,9 @@ export function getPilatesDashboardKpis(periodoMes: string = getCurrentYearMonth
   const pendientes = activos.filter(
     (s) => s.estado_cuota === "Renovación Pendiente" || (s.es_bono && (s.sesiones_restantes ?? 0) <= 0)
   );
+  const enSalaAhora = getPilatesActiveRoomSessions(nowMs).length;
   const asistenciasHoy = attendances.filter((a) => a.fecha_iso === todayIso).length;
+  const asistenciasAyer = attendances.filter((a) => a.fecha_iso === yesterdayIso).length;
   const ingresosMes = payments
     .filter((p) => p.periodo_mes === periodoMes)
     .reduce((acc, p) => acc + (Number(p.importe) || 0), 0);
@@ -1616,7 +1926,9 @@ export function getPilatesDashboardKpis(periodoMes: string = getCurrentYearMonth
     totalRegistrados: students.length,
     cuotasAlDia: alDia.length,
     renovacionesPendientes: pendientes.length,
+    enSalaAhora,
     asistenciasHoy,
+    asistenciasAyer,
     ingresosMes,
   };
 }

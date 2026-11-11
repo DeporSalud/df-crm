@@ -205,6 +205,10 @@ export default function PilatesWelcomeModal({
                       {event.asistenciasMes === 1 ? "asistencia este mes" : "asistencias este mes"}
                     </span>
                   </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-xl bg-teal-500/12 border border-teal-500/35 px-3 py-1.5 font-bold text-teal-600 dark:text-teal-400">
+                    <Clock size={14} className="text-teal-500 shrink-0" />
+                    <span>En sala · Salida auto. 50 min</span>
+                  </span>
                 </div>
 
                 {/* Tarjeta clara de Estado de Mensualidad / Bono */}
