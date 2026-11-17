@@ -6,11 +6,12 @@ import {
   UserCheck, Check, Clock, Users, ShieldAlert, Sparkles, Calendar, Search, 
   Lock, LogOut, KeyRound, ArrowLeft, ChevronRight, Flame, Ticket, GraduationCap, 
   CreditCard, Building2, Trash2, AlertTriangle, AlertCircle, Tag, CheckCircle2, ShieldCheck, X,
-  CalendarDays, BarChart3, MessageCircle, Filter, QrCode
+  CalendarDays, BarChart3, MessageCircle, Filter, QrCode, FolderOpen
 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import { logActivity } from "@/lib/activityLogger";
 import AppModal, { ModalState } from "@/components/AppModal";
+import TeacherDocumentsPortalSection from "@/components/TeacherDocumentsPortalSection";
 import {
   getAllTeachersInSchedule,
   getTeacherForClassDate,
@@ -1667,14 +1668,31 @@ export default function ProfesorPortal() {
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("perfil");
+                  setSelectedClase(null);
+                  setTimeout(() => {
+                    document.getElementById("teacher-docs-heading")?.scrollIntoView({ behavior: "smooth" });
+                  }, 80);
+                }}
+                className="px-2.5 py-1 rounded-full bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+              >
+                <FolderOpen className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Nóminas</span>
+              </button>
+
               <span className="text-xs font-mono font-bold text-[var(--color-primary)] bg-[var(--color-bg)] px-2.5 py-1 rounded-full border border-[var(--color-border)] shrink-0">
                 {todayStr}
               </span>
 
               <button
+                type="button"
                 onClick={handleLogout}
-                className="p-1.5 rounded-lg bg-[var(--color-bg)] text-[var(--color-text-secondary)] hover:text-[var(--color-danger)] hover:bg-[var(--color-danger)]/10 border border-[var(--color-border)] transition-colors"
+                className="p-1.5 rounded-lg bg-[var(--color-bg)] text-[var(--color-text-secondary)] hover:text-[var(--color-danger)] hover:bg-[var(--color-danger)]/10 border border-[var(--color-border)] transition-colors cursor-pointer"
                 title="Cerrar Sesión / Salir"
+                aria-label="Cerrar sesión"
               >
                 <LogOut className="w-4 h-4" />
               </button>
@@ -2760,6 +2778,20 @@ export default function ProfesorPortal() {
                   </div>
                 </div>
               </div>
+
+              {/* Gestión Documental Docente: Nóminas y Documentos */}
+              {(() => {
+                const matchedTeacher = teacherRecords.find(
+                  (t) => normalizeText(t.name) === normalizeText(selectedProfesor)
+                );
+                return (
+                  <TeacherDocumentsPortalSection
+                    teacherUuid={matchedTeacher?.uuid || teacherStudent?.id || teacherUuidMap[normalizeText(selectedProfesor)]}
+                    teacherPin={matchedTeacher?.pin}
+                    teacherName={selectedProfesor}
+                  />
+                );
+              })()}
             </div>
           )}
 
@@ -3199,18 +3231,19 @@ export default function ProfesorPortal() {
         </button>
 
         <button
+          type="button"
           onClick={() => {
             setActiveTab("perfil");
             setSelectedClase(null);
           }}
-          className={`flex flex-col items-center py-1 px-4 transition-colors ${
+          className={`flex flex-col items-center py-1 px-4 transition-colors cursor-pointer ${
             activeTab === "perfil"
               ? "text-[var(--color-secondary)] font-bold"
               : "text-[var(--color-text-secondary)] hover:text-white"
           }`}
         >
           <QrCode size={20} className={activeTab === "perfil" ? "scale-110 transition-transform" : ""} />
-          <span className="text-[10px] mt-1 font-semibold">Perfil & QR</span>
+          <span className="text-[10px] mt-1 font-semibold">Perfil & Docs</span>
         </button>
       </nav>
 
