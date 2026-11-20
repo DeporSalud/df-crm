@@ -47,6 +47,30 @@ export function formatPhoneDisplay(phone: string | null | undefined): string {
   return phone ? String(phone).trim() : "";
 }
 
+const PLACEHOLDER_IDENTITY_VALUES = new Set([
+  "",
+  "-",
+  "--",
+  "0",
+  "NULL",
+  "N/A",
+  "NA",
+  "S/N",
+  "SN",
+  "SIN DNI",
+  "SIN EMAIL",
+  "PENDIENTE",
+  "NONE",
+  "UNDEFINED",
+]);
+
+const DUMMY_PHONE_NUMBERS = new Set([
+  "600000000",
+  "000000000",
+  "123456789",
+  "600123456",
+]);
+
 /**
  * Normalizes email:
  * Trims leading/trailing whitespace and converts to lowercase.
@@ -57,12 +81,63 @@ export function normalizeEmail(email: string | null | undefined): string {
 }
 
 /**
+ * Validates whether an email is real and safe for identity comparison / SQL lookup.
+ * Rejects empty, null, whitespace, placeholders, or malformed strings.
+ */
+export function isValidComparableEmail(email: string | null | undefined): boolean {
+  const clean = normalizeEmail(email);
+  if (!clean || clean.length < 5) return false;
+  if (PLACEHOLDER_IDENTITY_VALUES.has(clean.toUpperCase())) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean);
+}
+
+/**
  * Normalizes DNI / NIE / Pasaporte:
  * Trims whitespace, converts to uppercase, removes spaces, dots, and hyphens.
  */
 export function normalizeDNI(dni: string | null | undefined): string {
   if (!dni) return "";
-  return String(dni).trim().toUpperCase().replace(/[\s\-\.]/g, "");
+  const rawUpper = String(dni).trim().toUpperCase();
+  if (PLACEHOLDER_IDENTITY_VALUES.has(rawUpper)) return "";
+  const cleaned = rawUpper.replace(/[\s\-\.]/g, "");
+  if (PLACEHOLDER_IDENTITY_VALUES.has(cleaned)) return "";
+  return cleaned;
+}
+
+/**
+ * Sanitizes a DNI/NIE/Passport value before writing to database:
+ * Returns null if empty, placeholder, or shorter than 4 alphanumeric chars.
+ */
+export function sanitizeDNIForStorage(dni: string | null | undefined): string | null {
+  const clean = normalizeDNI(dni);
+  if (!clean || clean.length < 4) return null;
+  return clean;
+}
+
+/**
+ * Validates whether a DNI/NIE/Passport is safe for identity equality/lookup.
+ * Requires 7..20 alphanumeric characters and at least 5 digits so short tokens,
+ * empty strings, or placeholders never collide across students.
+ */
+export function isValidComparableDNI(dni: string | null | undefined): boolean {
+  const clean = normalizeDNI(dni);
+  if (!clean || clean.length < 7 || clean.length > 20) return false;
+  if (!/^[A-Z0-9]+$/.test(clean)) return false;
+  const digitCount = (clean.match(/\d/g) || []).length;
+  return digitCount >= 5;
+}
+
+/**
+ * Validates whether a phone number is real and safe for identity comparison / SQL lookup.
+ * Rejects empty, short (<9 digits), dummy ("600000000"), or repeated-digit placeholders.
+ */
+export function isValidComparablePhone(phone: string | null | undefined): boolean {
+  const digits = normalizePhoneDigits(phone);
+  if (!digits || digits.length < 9) return false;
+  const last9 = digits.slice(-9);
+  if (DUMMY_PHONE_NUMBERS.has(last9)) return false;
+  if (/^(\d)\1{8}$/.test(last9)) return false;
+  return true;
 }
 
 /**

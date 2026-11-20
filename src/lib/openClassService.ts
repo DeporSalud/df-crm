@@ -8,6 +8,15 @@ import {
   isClassActiveOnDate,
   getTeacherForClassDate,
 } from "@/lib/classScheduleUtils";
+import {
+  normalizeEmail,
+  normalizePhoneDigits,
+  normalizeDNI,
+  isValidComparableEmail,
+  isValidComparablePhone,
+  isValidComparableDNI,
+  removeDiacritics,
+} from "@/lib/identityUtils";
 export function isTeacherProfile(student?: any, emailOrId?: string, userRole?: string): boolean {
   if (!student && !emailOrId && !userRole) return false;
   const plan = (student?.plan_activo || "").toLowerCase();
@@ -1351,44 +1360,58 @@ async function resolveActiveSiblingStudent(foundStudent: any): Promise<any> {
     return foundStudent;
   }
 
-  // Si tiene 'Sin Plan Activo', buscar si existe un registro activo hermano por email, teléfono o nombre
-  const cleanName = (foundStudent.nombre_completo || "").trim();
-  const cleanEmail = foundStudent.email ? foundStudent.email.trim().toLowerCase() : "";
-  const cleanPhone = foundStudent.telefono ? foundStudent.telefono.replace(/\D/g, "").slice(-9) : "";
+  // Si tiene 'Sin Plan Activo', comprobar ÚNICAMENTE si existe una ficha duplicada de la MISMA persona
+  // (mismo nombre completo normalizado >= 2 palabras + mismo email/teléfono/DNI válido; JAMÁS por nombre suelto ni cruzando hermanas).
+  const normFullName = removeDiacritics(foundStudent.nombre_completo);
+  const nameWords = normFullName.split(/\s+/).filter(Boolean);
+  if (nameWords.length < 2) {
+    return foundStudent;
+  }
+
+  const cleanEmail = normalizeEmail(foundStudent.email);
+  const cleanPhone = normalizePhoneDigits(foundStudent.telefono).slice(-9);
+  const cleanDni = normalizeDNI(foundStudent.dni);
 
   const orClauses: string[] = [];
-  if (cleanEmail && cleanEmail.includes("@")) {
+  if (isValidComparableEmail(cleanEmail)) {
     orClauses.push(`email.ilike.${cleanEmail}`);
   }
-  if (cleanPhone.length >= 9) {
+  if (isValidComparablePhone(foundStudent.telefono) && cleanPhone.length === 9) {
     orClauses.push(`telefono.ilike.%${cleanPhone}%`);
   }
-  if (cleanName.length >= 4) {
-    orClauses.push(`nombre_completo.ilike.%${cleanName}%`);
+  if (isValidComparableDNI(cleanDni)) {
+    orClauses.push(`dni.ilike.${cleanDni}`);
   }
 
   if (orClauses.length === 0) return foundStudent;
 
   try {
-    const { data: siblings } = await supabase
+    const { data: candidates } = await supabase
       .from("alumnos")
       .select("*, alumnos_clases(*)")
+      .neq("sede", "pilates")
       .neq("id", foundStudent.id)
       .or(orClauses.join(","));
 
-    if (siblings && siblings.length > 0) {
-      // Priorizar el hermano que tenga clases matriculadas o plan regular
-      const activeSibling = siblings.find(s => 
-        (Array.isArray(s.alumnos_clases) && s.alumnos_clases.length > 0) ||
-        (s.plan_activo && !s.plan_activo.toLowerCase().includes("sin plan"))
-      );
-      if (activeSibling) {
-        console.log(`[Scanner] Smart deduplication: re-routing ${foundStudent.nombre_completo} (${foundStudent.id}) to active enrolled profile ${activeSibling.nombre_completo} (${activeSibling.id})`);
-        return activeSibling;
+    if (candidates && candidates.length > 0) {
+      const activeDuplicate = candidates.find((s) => {
+        if (removeDiacritics(s.nombre_completo) !== normFullName) return false;
+        const candDni = normalizeDNI(s.dni);
+        if (isValidComparableDNI(cleanDni) && isValidComparableDNI(candDni) && cleanDni !== candDni) {
+          return false;
+        }
+        return (
+          (Array.isArray(s.alumnos_clases) && s.alumnos_clases.length > 0) ||
+          (s.plan_activo && !s.plan_activo.toLowerCase().includes("sin plan"))
+        );
+      });
+      if (activeDuplicate) {
+        console.log(`[Scanner] Smart deduplication: re-routing duplicate ${foundStudent.nombre_completo} (${foundStudent.id}) to active enrolled profile (${activeDuplicate.id})`);
+        return activeDuplicate;
       }
     }
   } catch (e) {
-    console.warn("[Scanner] Error resolving sibling student:", e);
+    console.warn("[Scanner] Error resolving duplicate student:", e);
   }
 
   return foundStudent;
@@ -1400,7 +1423,7 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
 
   // 1. UUID exacto
   if (trimmed.length === 36 && (trimmed.match(/-/g) || []).length === 4) {
-    const { data } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("id", trimmed).maybeSingle();
+    const { data } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").eq("id", trimmed).maybeSingle();
     if (data) return await resolveActiveSiblingStudent(data);
   }
 
@@ -1447,23 +1470,28 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
       if (byTeacherId) return await resolveActiveSiblingStudent(byTeacherId);
     }
 
-    // Exact nfc_token
-    const { data: byNfc } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").eq("nfc_token", token).limit(1).maybeSingle();
-    if (byNfc) return await resolveActiveSiblingStudent(byNfc);
+    // Exact nfc_token (never match empty or 1-2 char fragments)
+    if (token.trim().length >= 3) {
+      const { data: byNfc } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").eq("nfc_token", token.trim()).limit(1).maybeSingle();
+      if (byNfc) return await resolveActiveSiblingStudent(byNfc);
+    }
 
-    // Exact DNI
-    const { data: byDni } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").ilike("dni", token).limit(1).maybeSingle();
-    if (byDni) return await resolveActiveSiblingStudent(byDni);
+    // Exact DNI (strictly guarded: only valid comparable DNIs >= 7 chars, never empty/short/placeholder)
+    if (isValidComparableDNI(token)) {
+      const normDniToken = normalizeDNI(token);
+      const { data: byDni } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").ilike("dni", normDniToken).limit(1).maybeSingle();
+      if (byDni) return await resolveActiveSiblingStudent(byDni);
+    }
 
-    // Exact email
-    if (token.includes("@")) {
-      const { data: byEmail } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").ilike("email", token).limit(1).maybeSingle();
+    // Exact email (strictly guarded)
+    if (isValidComparableEmail(token)) {
+      const { data: byEmail } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").ilike("email", normalizeEmail(token)).limit(1).maybeSingle();
       if (byEmail) return await resolveActiveSiblingStudent(byEmail);
     }
 
     // Exact ID match if UUID
     if (token.length === 36 && (token.match(/-/g) || []).length === 4) {
-      const { data: byId } = await supabase.from("alumnos").select("*, alumnos_clases(*)").eq("id", token).limit(1).maybeSingle();
+      const { data: byId } = await supabase.from("alumnos").select("*, alumnos_clases(*)").neq("sede", "pilates").eq("id", token).limit(1).maybeSingle();
       if (byId) return await resolveActiveSiblingStudent(byId);
     }
 
@@ -1472,6 +1500,7 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
       const { data: byAltAuth } = await supabase
         .from("alumnos")
         .select("*, alumnos_clases(*)")
+        .neq("sede", "pilates")
         .ilike("direccion", `%DF_ALT_AUTH:%${token}%`);
       if (byAltAuth && byAltAuth.length > 0) {
         const lowerTok = token.toLowerCase();
@@ -1489,17 +1518,17 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     }
   }
 
-  // 3. Teléfono normalizado (con y sin espacios)
-  const phoneDigits = trimmed.replace(/\D/g, "").replace(/^34/, "");
-  if (phoneDigits.length >= 9) {
-    const digits9 = phoneDigits.slice(-9);
+  // 3. Teléfono normalizado (solo teléfonos válidos no dummy de 9 dígitos completos)
+  if (isValidComparablePhone(trimmed)) {
+    const digits9 = normalizePhoneDigits(trimmed).slice(-9);
     const spaced1 = `${digits9.slice(0, 3)} ${digits9.slice(3, 6)} ${digits9.slice(6, 9)}`;
     const spaced2 = `${digits9.slice(0, 3)} ${digits9.slice(3, 5)} ${digits9.slice(5, 7)} ${digits9.slice(7, 9)}`;
 
     const { data: byPhone } = await supabase
       .from("alumnos")
       .select("*, alumnos_clases(*)")
-      .or(`telefono.eq.${digits9},telefono.eq.${spaced1},telefono.eq.${spaced2},telefono.ilike.%${digits9.slice(3, 9)}%`)
+      .neq("sede", "pilates")
+      .or(`telefono.eq.${digits9},telefono.eq.${spaced1},telefono.eq.${spaced2},telefono.ilike.%${digits9}%`)
       .limit(1)
       .maybeSingle();
 
@@ -1512,6 +1541,7 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
     const { data: byName } = await supabase
       .from("alumnos")
       .select("*, alumnos_clases(*)")
+      .neq("sede", "pilates")
       .ilike("nombre_completo", `%${cleanToken}%`)
       .limit(1)
       .maybeSingle();
@@ -1523,17 +1553,29 @@ export async function findStudentByCodeOrText(rawCode: string): Promise<any | nu
       const { data: byWord } = await supabase
         .from("alumnos")
         .select("*, alumnos_clases(*)")
+        .neq("sede", "pilates")
         .ilike("nombre_completo", `%${w}%`)
         .limit(1)
         .maybeSingle();
       if (byWord) return await resolveActiveSiblingStudent(byWord);
     }
 
-    // Intento 2: OR ampliado (nfc_token, dni, email, telefono, nombre_completo)
+    // Intento 2: OR ampliado (solo campos seguros no vacíos y excluyendo pilates)
+    const orParts = [
+      `nfc_token.ilike.%${cleanToken}%`,
+      `nombre_completo.ilike.%${cleanToken}%`,
+    ];
+    if (isValidComparableDNI(cleanToken)) {
+      orParts.push(`dni.ilike.%${normalizeDNI(cleanToken)}%`);
+    }
+    if (cleanToken.includes("@")) {
+      orParts.push(`email.ilike.%${cleanToken}%`);
+    }
     const { data: byOr } = await supabase
       .from("alumnos")
       .select("*, alumnos_clases(*)")
-      .or(`nfc_token.ilike.%${cleanToken}%,dni.ilike.%${cleanToken}%,email.ilike.%${cleanToken}%,telefono.ilike.%${cleanToken}%,nombre_completo.ilike.%${cleanToken}%`)
+      .neq("sede", "pilates")
+      .or(orParts.join(","))
       .limit(1)
       .maybeSingle();
     if (byOr) return await resolveActiveSiblingStudent(byOr);
